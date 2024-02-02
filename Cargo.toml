@@ -6,6 +6,7 @@ description = "Lab-t Lightweight Android build tool"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = "1.0.79"
 clap = { version = "4.4.8", features = ["derive"] }
 cliclack = "0.1.9"
 console = "0.15.7"
