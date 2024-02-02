@@ -1,4 +1,5 @@
 use crate::templating::{Activity, ActivityXml, AndroidManifest, StringsRes};
+use anyhow::{bail, Context};
 use clap::Args;
 use dialoguer::{theme::ColorfulTheme, Input};
 use regex::Regex;
@@ -256,31 +257,8 @@ impl Init {
             Err(e) => return Err(e),
         }
     }
-    pub fn template_files(&self, paths: &ProjectPaths) -> io::Result<()> {
+    pub fn template_files(&self, paths: &ProjectPaths) -> anyhow::Result<()> {
         let args = self.args.clone();
-
-        // Error mapper for adding more context to io Err result
-        let io_error_mapper = |action: &str, path: PathBuf, err: io::Error| -> io::Error {
-            io::Error::new(
-                err.kind(),
-                format!(
-                    "{action}: {}, Path: {}",
-                    err.to_string().as_str(),
-                    path.to_str().unwrap_or("")
-                ),
-            )
-        };
-        let templating_error_mapper =
-            |action: &str, path: PathBuf, err: sailfish::RenderError| -> io::Error {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!(
-                        "{action}: {}, Path: {}",
-                        err.to_string(),
-                        path.to_str().unwrap_or("")
-                    ),
-                )
-            };
 
         {
             // Render an AndroidManifest.xml
@@ -289,8 +267,11 @@ impl Init {
             path.push("AndroidManifest.xml");
 
             // Create manifest file
-            let mut file =
-                File::create(&path).map_err(|err| io_error_mapper(&action, path.clone(), err))?;
+            let mut file = File::create(&path).context(format!(
+                "Creating file for {} - Path: {}",
+                &action,
+                path.to_str().unwrap_or("")
+            ))?;
 
             // Run template
             let manifest = AndroidManifest::new(
@@ -309,13 +290,18 @@ impl Init {
                     .as_str(),
             );
             // Render mabifest and return rendered string
-            let data = manifest
-                .render_once()
-                .map_err(|err| templating_error_mapper(&action, path.clone(), err))?;
+            let data = manifest.render_once().context(format!(
+                "Rendering for {} Path: {}",
+                action,
+                path.to_str().unwrap_or("")
+            ))?;
 
             // Write rendered string to file
-            file.write_all(data.as_bytes())
-                .map_err(|err| io_error_mapper(&action, path.clone(), err))?;
+            file.write_all(data.as_bytes()).context(format!(
+                "Writing data for {} to {}",
+                action,
+                path.to_str().unwrap_or("")
+            ))?;
         }
 
         // Main Activity.java
@@ -329,8 +315,11 @@ impl Init {
                 }
             });
             // Create file
-            let mut file =
-                File::create(&path).map_err(|err| io_error_mapper(&action, path.clone(), err))?;
+            let mut file = File::create(&path).context(format!(
+                "Creating file for {} - Path: {}",
+                &action,
+                path.to_str().unwrap_or("")
+            ))?;
 
             // initialize template
             let activity = Activity::new(
@@ -345,31 +334,54 @@ impl Init {
                 Some("activity_main".to_string()),
             );
 
-            let data = activity
-                .render_once()
-                .map_err(|err| templating_error_mapper(&action, path.clone(), err))?;
-            file.write_all(data.as_bytes())
-                .map_err(|err| io_error_mapper(&action, path.clone(), err))?;
+            // generate template
+            let data = activity.render_once().context(format!(
+                "Rendering for {} Path: {}",
+                &action,
+                path.to_str().unwrap_or("")
+            ))?;
+
+            // write data to file
+            file.write_all(data.as_bytes()).context(format!(
+                "Writing data for {} - to File: {}",
+                action,
+                path.to_str().unwrap_or("")
+            ))?;
         }
         {
             let path = paths.res.join("layout/activity_main.xml");
             let action = "XML-Activity-Templating";
-            let mut file =
-                File::create(&path).map_err(|err| io_error_mapper(&action, path.clone(), err))?;
+            let mut file = File::create(&path).context(format!(
+                "Creating file for {} - Path: {}",
+                &action,
+                path.to_str().unwrap_or("")
+            ))?;
             let activity_main = ActivityXml::new();
-            let data = activity_main
-                .render_once()
-                .map_err(|err| templating_error_mapper(&action, path.clone(), err))?;
-            file.write_all(data.as_bytes())
-                .map_err(|err| io_error_mapper(&action, path.clone(), err))?;
+
+            // render template
+            let data = activity_main.render_once().context(format!(
+                "Rendering for {} Path: {}",
+                &action,
+                path.to_str().unwrap_or("")
+            ))?;
+
+            // write rendered template to file
+            file.write_all(data.as_bytes()).context(format!(
+                "Writing data for {} - to File: {}",
+                action,
+                path.to_str().unwrap_or("")
+            ))?;
         }
         {
             let mut path = paths.res.clone();
             path.push("values/strings.xml");
             let action = "Strings-Templating";
 
-            let mut file =
-                File::create(&path).map_err(|err| io_error_mapper(&action, path.clone(), err))?;
+            let mut file = File::create(&path).context(format!(
+                "Creating file for {} - Path: {}",
+                &action,
+                path.to_str().unwrap_or("")
+            ))?;
             let strings_xml = StringsRes::new(
                 args.name.to_owned().unwrap_or("App".to_string()).as_str(),
                 args.main_activity
@@ -377,22 +389,29 @@ impl Init {
                     .unwrap_or("App".to_string())
                     .as_str(),
             );
-            let data = strings_xml
-                .render_once()
-                .map_err(|err| templating_error_mapper(&action, path.clone(), err))?;
+            // render template
+            let data = strings_xml.render_once().context(format!(
+                "Rendering for {} Path: {}",
+                &action,
+                path.to_str().unwrap_or("")
+            ))?;
 
-            file.write_all(data.as_bytes())
-                .map_err(|err| io_error_mapper(&action, path.clone(), err))?;
+            // write rendered template to file
+            file.write_all(data.as_bytes()).context(format!(
+                "Writing data for {} - to File: {}",
+                action,
+                path.to_str().unwrap_or("")
+            ))?;
         }
         Ok(())
     }
 }
 
 impl Submodule for Init {
-    fn run(&mut self) -> io::Result<()> {
+    fn run(&mut self) -> anyhow::Result<()> {
         if self.args.interactive {
             if let Err(err) = self.interactive() {
-                return Err(io::Error::new(io::ErrorKind::Other, err.to_string()));
+                bail!(err);
             }
         }
 

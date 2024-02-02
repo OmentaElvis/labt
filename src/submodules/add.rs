@@ -1,6 +1,5 @@
-use std::io::Result;
-
 use super::Submodule;
+use anyhow::Result;
 use clap::Args;
 
 #[derive(Clone, Args)]

@@ -1,7 +1,7 @@
-use std::io;
+use anyhow::Result;
 
 pub trait Submodule {
-    fn run(&mut self) -> io::Result<()> {
+    fn run(&mut self) -> Result<()> {
         Ok(())
     }
 }
