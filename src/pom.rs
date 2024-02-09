@@ -276,7 +276,7 @@ impl Parser {
 
 /// Parses a pom xml file from a given stream and produces a Result
 /// containing the Project object
-pub fn parse_pom<R>(r: BufReader<R>) -> anyhow::Result<Project>
+pub fn parse_pom<R>(r: BufReader<R>, project: Project) -> anyhow::Result<Project>
 where
     R: Read,
 {
