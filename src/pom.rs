@@ -3,6 +3,7 @@ use anyhow::Result;
 use quick_xml::{events::Event, Reader};
 use std::io::BufReader;
 use std::io::Read;
+use tokio::io::AsyncRead;
 
 //// constants for common tags
 mod tags {
@@ -302,4 +303,30 @@ where
     Ok(parser.project)
 }
 
+pub async fn parse_pom_async<R: AsyncRead + Unpin>(
+    r: tokio::io::BufReader<R>,
+    project: Project,
+) -> anyhow::Result<Project> {
+    let mut reader = Reader::from_reader(r);
+    const BUFFER_SIZE: usize = 4096;
+    let mut buf = Vec::with_capacity(BUFFER_SIZE);
+
+    let mut parser = Parser::new(project);
+
+    loop {
+        match reader
+            .read_event_into_async(&mut buf)
+            .await
+            .context("Reading xml events")?
+        {
+            Event::Eof => {
+                break;
+            }
+            ev => parser.process(ev).context("Processing xml events")?,
+        }
+        buf.clear()
+    }
+
+    Ok(parser.project)
+}
 // su
