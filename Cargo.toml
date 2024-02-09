@@ -11,9 +11,13 @@ clap = { version = "4.4.8", features = ["derive"] }
 cliclack = "0.1.9"
 console = "0.15.7"
 dialoguer = "0.11.0"
+futures-util = "0.3.30"
 indicatif = "0.17.7"
-quick-xml = "0.31.0"
+quick-xml = { version = "0.31.0", features = ["async-tokio"] }
 regex = "1.10.2"
+reqwest = { version = "0.11.24", features = ["stream", "blocking"] }
 sailfish = "0.8.3"
+tokio = { version = "1.36.0", features = ["rt", "full", "io-util"] }
+tokio-util = { version = "0.7.10", features = ["io"] }
 toml = "0.8.9"
 toml_edit = "0.21.1"
