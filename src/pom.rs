@@ -121,10 +121,10 @@ struct Parser {
 
 impl Parser {
     /// Initializes a new project
-    pub fn new() -> Self {
+    pub fn new(project: Project) -> Self {
         Parser {
             state: ParserState::Project,
-            project: Project::default(),
+            project,
             current_dependency: None,
         }
     }
@@ -284,7 +284,7 @@ where
     const BUFFER_SIZE: usize = 4096;
     let mut buf = Vec::with_capacity(BUFFER_SIZE);
 
-    let mut parser = Parser::new();
+    let mut parser = Parser::new(project);
 
     loop {
         match reader
