@@ -66,6 +66,9 @@ impl Project {
     pub fn get_dependencies(&self) -> &Vec<Project> {
         return &self.dependencies;
     }
+    pub fn qualified_name(&self) -> String {
+        format!("{}:{}:{}", self.group_id, self.artifact_id, self.version)
+    }
 }
 
 /// Parser states, helps in keeping track of the current event
