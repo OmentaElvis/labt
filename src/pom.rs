@@ -13,8 +13,10 @@ mod tags {
     pub const DEPENDENCIES: &[u8] = b"dependencies";
     pub const PROJECT: &[u8] = b"project";
     pub const DEPENDENCY: &[u8] = b"dependency";
+    pub const EXCLUSIONS: &[u8] = b"exclusions";
+    pub const EXCLUSION: &[u8] = b"exclusion";
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Project {
     /// The actual project name
     artifact_id: String,
@@ -24,8 +26,28 @@ pub struct Project {
     group_id: String,
     /// The project main dependencies
     dependencies: Vec<Project>,
+    /// This module excludes
+    excludes: Vec<Exclusion>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Exclusion {
+    /// The actual project name
+    pub artifact_id: String,
+    /// The organization name/package name
+    pub group_id: String,
+}
+impl Exclusion {
+    pub fn new(group_id: &str, artifact_id: &str) -> Self {
+        Exclusion {
+            artifact_id: artifact_id.to_string(),
+            group_id: group_id.to_string(),
+        }
+    }
+    pub fn qualified_name(&self) -> String {
+        format!("{}:{}", self.group_id, self.artifact_id)
+    }
+}
 impl Default for Project {
     fn default() -> Self {
         // FIXME remove these funny default and use ones provided by maven
@@ -34,6 +56,7 @@ impl Default for Project {
             version: "1.0.0".to_string(),
             group_id: "com.my_organization.name".to_string(),
             dependencies: vec![],
+            excludes: vec![],
         }
     }
 }
@@ -46,6 +69,7 @@ impl Project {
             artifact_id: String::from(artifact_id),
             version: String::from(version),
             dependencies: vec![],
+            excludes: vec![],
         }
     }
     /// Returns the artifact id of the project
@@ -69,6 +93,12 @@ impl Project {
     }
     pub fn qualified_name(&self) -> String {
         format!("{}:{}:{}", self.group_id, self.artifact_id, self.version)
+    }
+    pub fn get_excludes(&self) -> &Vec<Exclusion> {
+        return &self.excludes;
+    }
+    pub fn add_exclusion(&mut self, exclude: Exclusion) {
+        self.excludes.push(exclude);
     }
 }
 
@@ -111,6 +141,26 @@ enum DependencyState {
     /// The Dependency version number
     /// <version></version>
     ReadVersion,
+    /// The dependency exclusions
+    /// <exclusions></exclusions>
+    Exclusions(ExclusionsState),
+}
+
+/// Keeps track of the exclusions specific events
+#[derive(Clone, Debug)]
+enum ExclusionsState {
+    /// The dependency exclusions
+    /// <exclusions></exclusions>
+    Exclusions,
+    /// The dependency exclusion
+    /// <exclusion></exclusion>
+    Exclusion(Exclusion),
+    /// The Dependency artifactId/name
+    /// <artifactId><)artifactId>
+    ReadArtifactId(Exclusion),
+    /// The Dependency groupId/package name
+    /// <groupId></groupId>
+    ReadGroupId(Exclusion),
 }
 
 struct Parser {
@@ -150,6 +200,7 @@ impl Parser {
                     tags::ARTIFACT_ID => DependencyState::ReadArtifactId,
                     tags::GROUP_ID => DependencyState::ReadGroupId,
                     tags::VERSION => DependencyState::ReadVersion,
+                    tags::EXCLUSIONS => DependencyState::Exclusions(ExclusionsState::Exclusions),
                     _ => DependencyState::Dependency,
                 },
                 Event::End(end) if end.local_name().into_inner() == tags::DEPENDENCY => {
@@ -202,8 +253,78 @@ impl Parser {
                 }
                 _ => DependencyState::ReadVersion,
             },
+
+            // <exclusions></exclusions>
+            DependencyState::Exclusions(exclu_state) => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::EXCLUSIONS => {
+                    DependencyState::Dependency
+                }
+                event => DependencyState::Exclusions(self.parse_exclusions(event, exclu_state)?),
+            },
         };
         return Ok(new_state);
+    }
+
+    fn parse_exclusions(
+        &mut self,
+        event: Event,
+        state: ExclusionsState,
+    ) -> Result<ExclusionsState> {
+        let new_state = match state {
+            // <exclusions></exclusions>
+            ExclusionsState::Exclusions => match event {
+                Event::Start(start) => match start.local_name().into_inner() {
+                    tags::EXCLUSION => ExclusionsState::Exclusion(Exclusion::default()),
+                    _ => ExclusionsState::Exclusions,
+                },
+                _ => ExclusionsState::Exclusions,
+            },
+
+            // <exclusion></exclusion>
+            ExclusionsState::Exclusion(exclusion) => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::EXCLUSION => {
+                    if let Some(mut dependency) = self.current_dependency.clone() {
+                        dependency.add_exclusion(exclusion);
+                        self.current_dependency = Some(dependency);
+                    }
+                    ExclusionsState::Exclusions
+                }
+                Event::Start(start) => match start.local_name().into_inner() {
+                    tags::ARTIFACT_ID => ExclusionsState::ReadArtifactId(exclusion),
+                    tags::GROUP_ID => ExclusionsState::ReadGroupId(exclusion),
+                    _ => ExclusionsState::Exclusion(exclusion),
+                },
+                _ => ExclusionsState::Exclusion(exclusion),
+            },
+
+            // <artifactId> </artifactId>
+            ExclusionsState::ReadArtifactId(mut exclusion) => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::ARTIFACT_ID => {
+                    ExclusionsState::Exclusion(exclusion)
+                }
+                Event::Text(e) => {
+                    let artifact_id = e.unescape()?.to_string();
+                    exclusion.artifact_id = artifact_id;
+                    ExclusionsState::ReadArtifactId(exclusion)
+                }
+                _ => ExclusionsState::ReadArtifactId(exclusion),
+            },
+
+            // <groupId></groupId>
+            ExclusionsState::ReadGroupId(mut exclusion) => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::GROUP_ID => {
+                    ExclusionsState::Exclusion(exclusion)
+                }
+                Event::Text(e) => {
+                    let group_id = e.unescape()?.to_string();
+                    exclusion.group_id = group_id;
+                    ExclusionsState::ReadGroupId(exclusion)
+                }
+                _ => ExclusionsState::ReadGroupId(exclusion),
+            },
+        };
+
+        Ok(new_state)
     }
 
     /// Processes the xml stream events into its respective tags.
