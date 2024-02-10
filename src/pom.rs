@@ -15,7 +15,19 @@ mod tags {
     pub const DEPENDENCY: &[u8] = b"dependency";
     pub const EXCLUSIONS: &[u8] = b"exclusions";
     pub const EXCLUSION: &[u8] = b"exclusion";
+    pub const SCOPE: &[u8] = b"scope";
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Scope {
+    COMPILE,
+    TEST,
+    RUNTIME,
+    SYSTEM,
+    PROVIDED,
+    IMPORT,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Project {
     /// The actual project name
@@ -28,6 +40,8 @@ pub struct Project {
     dependencies: Vec<Project>,
     /// This module excludes
     excludes: Vec<Exclusion>,
+    /// The scope of the project
+    scope: Scope,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -57,6 +71,7 @@ impl Default for Project {
             group_id: "com.my_organization.name".to_string(),
             dependencies: vec![],
             excludes: vec![],
+            scope: Scope::COMPILE,
         }
     }
 }
@@ -70,6 +85,7 @@ impl Project {
             version: String::from(version),
             dependencies: vec![],
             excludes: vec![],
+            scope: Scope::COMPILE,
         }
     }
     /// Returns the artifact id of the project
@@ -99,6 +115,9 @@ impl Project {
     }
     pub fn add_exclusion(&mut self, exclude: Exclusion) {
         self.excludes.push(exclude);
+    }
+    pub fn get_scope(&self) -> &Scope {
+        return &self.scope;
     }
 }
 
@@ -144,6 +163,9 @@ enum DependencyState {
     /// The dependency exclusions
     /// <exclusions></exclusions>
     Exclusions(ExclusionsState),
+    /// The scope
+    /// <scope></scope>
+    ReadScope,
 }
 
 /// Keeps track of the exclusions specific events
@@ -201,6 +223,7 @@ impl Parser {
                     tags::GROUP_ID => DependencyState::ReadGroupId,
                     tags::VERSION => DependencyState::ReadVersion,
                     tags::EXCLUSIONS => DependencyState::Exclusions(ExclusionsState::Exclusions),
+                    tags::SCOPE => DependencyState::ReadScope,
                     _ => DependencyState::Dependency,
                 },
                 Event::End(end) if end.local_name().into_inner() == tags::DEPENDENCY => {
@@ -252,6 +275,31 @@ impl Parser {
                     DependencyState::ReadVersion
                 }
                 _ => DependencyState::ReadVersion,
+            },
+
+            // <scope></scope>
+            DependencyState::ReadScope => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::SCOPE => {
+                    DependencyState::Dependency
+                }
+                Event::Text(e) => {
+                    if let Some(dep) = &mut self.current_dependency {
+                        let scope = e.unescape()?;
+                        // FIXME fix this conversion from Cow<_, str> to str without
+                        // unnecessary clonning
+                        dep.scope = match scope.to_string().as_str() {
+                            "compile" => Scope::COMPILE,
+                            "test" => Scope::TEST,
+                            "provided" => Scope::PROVIDED,
+                            "import" => Scope::IMPORT,
+                            "system" => Scope::SYSTEM,
+                            "runtime" => Scope::RUNTIME,
+                            _ => Scope::COMPILE,
+                        }
+                    }
+                    DependencyState::ReadScope
+                }
+                _ => DependencyState::ReadScope,
             },
 
             // <exclusions></exclusions>
