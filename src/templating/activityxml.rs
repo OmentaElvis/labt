@@ -6,6 +6,12 @@ pub struct ActivityXml {}
 
 impl ActivityXml {
     pub fn new() -> ActivityXml {
-        return ActivityXml {};
+        ActivityXml {}
+    }
+}
+
+impl Default for ActivityXml {
+    fn default() -> Self {
+        Self::new()
     }
 }

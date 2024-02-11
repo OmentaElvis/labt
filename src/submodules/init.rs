@@ -10,7 +10,7 @@ use sailfish::TemplateOnce;
 use std::{
     fs::{self, File},
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use super::Submodule;
@@ -58,7 +58,7 @@ pub struct ProjectPaths {
 
 impl Init {
     pub fn new(args: &InitArgs) -> Init {
-        return Init { args: args.clone() };
+        Init { args: args.clone() }
     }
     fn interactive(&mut self) -> dialoguer::Result<()> {
         // Query user for the project name
@@ -105,16 +105,14 @@ impl Init {
             .validate_with(|input: &String| {
                 if input.is_empty() {
                     Err("Value required")
-                } else {
-                    if let Ok(re) = Regex::new(r"^([a-z]+(\.)?)+$") {
-                        if !re.is_match(input.as_str()) {
-                            Err("Please provide a valid package Name. e.g. com.example.app")
-                        } else {
-                            Ok(())
-                        }
+                } else if let Ok(re) = Regex::new(r"^([a-z]+(\.)?)+$") {
+                    if !re.is_match(input.as_str()) {
+                        Err("Please provide a valid package Name. e.g. com.example.app")
                     } else {
                         Ok(())
                     }
+                } else {
+                    Ok(())
                 }
             })
             .interact_text()?;
@@ -176,22 +174,15 @@ impl Init {
     /// project root path. If force_use_cwd is set to true, this
     /// function tries to build the path structure from the root_path
     /// instead of building a subfolder with project name as the new root_path
-    fn build_tree(
-        &self,
-        root_path: &PathBuf,
-        force_use_cwd: bool,
-    ) -> Result<ProjectPaths, io::Error> {
+    fn build_tree(&self, root_path: &Path, force_use_cwd: bool) -> Result<ProjectPaths, io::Error> {
         // Create project folder
-        let mut path = root_path.clone();
+        let mut path = root_path.to_path_buf();
 
         // canonicalize if relative in order to allow extracting of
         // the parent folder name
         if path.is_relative() {
             path = path.canonicalize().map_err(|err| {
-                return io::Error::new(
-                    err.kind(),
-                    format!("Unable to canonicalize path: {}", err.to_string()),
-                );
+                io::Error::new(err.kind(), format!("Unable to canonicalize path: {}", err))
             })?;
         }
 
@@ -230,10 +221,10 @@ impl Init {
             .package
             .clone()
             .unwrap_or("com.example.app".to_string())
-            .replace(".", "/");
+            .replace('.', "/");
 
         let mut java_path: PathBuf = app_path.join("java");
-        java_path.push(&package);
+        java_path.push(package);
 
         fs::create_dir_all(&java_path)?;
 
@@ -271,7 +262,7 @@ impl Init {
             app: app_path,
         })
     }
-    fn is_dir_empty(&self, path: &PathBuf) -> io::Result<bool> {
+    fn is_dir_empty(&self, path: &Path) -> io::Result<bool> {
         if !path.exists() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -286,8 +277,8 @@ impl Init {
         }
 
         match path.read_dir() {
-            Ok(mut files) => return Ok(files.next().is_none()),
-            Err(e) => return Err(e),
+            Ok(mut files) => Ok(files.next().is_none()),
+            Err(e) => Err(e),
         }
     }
     pub fn template_files(&self, paths: &ProjectPaths) -> anyhow::Result<()> {

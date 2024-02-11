@@ -16,11 +16,11 @@ impl AndroidManifest {
         version_name: &str,
         main_activity: &str,
     ) -> AndroidManifest {
-        return AndroidManifest {
+        AndroidManifest {
             package_name: String::from(package),
             version_number,
             version_name: String::from(version_name),
             main_activity: String::from(main_activity),
-        };
+        }
     }
 }

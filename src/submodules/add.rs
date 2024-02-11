@@ -11,12 +11,12 @@ pub struct AddArgs {
 }
 
 pub struct Add {
-    args: AddArgs,
+    pub args: AddArgs,
 }
 
 impl Add {
     pub fn new(args: &AddArgs) -> Add {
-        return Add { args: args.clone() };
+        Add { args: args.clone() }
     }
 }
 

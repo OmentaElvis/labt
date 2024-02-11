@@ -9,9 +9,9 @@ pub struct StringsRes {
 
 impl StringsRes {
     pub fn new(app_name: &str, main_activity_title: &str) -> StringsRes {
-        return StringsRes {
+        StringsRes {
             app_name: String::from(app_name),
             main_activity_title: String::from(main_activity_title),
-        };
+        }
     }
 }

@@ -10,10 +10,10 @@ pub struct Activity {
 
 impl Activity {
     pub fn new(package_name: &str, class_name: &str, xml_layout: Option<String>) -> Activity {
-        return Activity {
+        Activity {
             package_name: String::from(package_name),
             class_name: String::from(class_name),
             xml_layout,
-        };
+        }
     }
 }

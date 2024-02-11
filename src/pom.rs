@@ -5,7 +5,7 @@ use std::io::BufReader;
 use std::io::Read;
 use tokio::io::AsyncRead;
 
-//// constants for common tags
+/// constants for common tags
 mod tags {
     pub const ARTIFACT_ID: &[u8] = b"artifactId";
     pub const GROUP_ID: &[u8] = b"groupId";
@@ -90,34 +90,34 @@ impl Project {
     }
     /// Returns the artifact id of the project
     pub fn get_artifact_id(&self) -> String {
-        return self.artifact_id.clone();
+        self.artifact_id.clone()
     }
     /// Returns the version of the project
     pub fn get_version(&self) -> String {
-        return self.version.clone();
+        self.version.clone()
     }
     /// Returns the group id of the project
     pub fn get_group_id(&self) -> String {
-        return self.group_id.clone();
+        self.group_id.clone()
     }
     /// Adds a dependency to this project
     pub fn add_dependency(&mut self, dep: Project) {
         self.dependencies.push(dep);
     }
     pub fn get_dependencies(&self) -> &Vec<Project> {
-        return &self.dependencies;
+        &self.dependencies
     }
     pub fn qualified_name(&self) -> String {
         format!("{}:{}:{}", self.group_id, self.artifact_id, self.version)
     }
     pub fn get_excludes(&self) -> &Vec<Exclusion> {
-        return &self.excludes;
+        &self.excludes
     }
     pub fn add_exclusion(&mut self, exclude: Exclusion) {
         self.excludes.push(exclude);
     }
     pub fn get_scope(&self) -> &Scope {
-        return &self.scope;
+        &self.scope
     }
 }
 
@@ -310,7 +310,7 @@ impl Parser {
                 event => DependencyState::Exclusions(self.parse_exclusions(event, exclu_state)?),
             },
         };
-        return Ok(new_state);
+        Ok(new_state)
     }
 
     fn parse_exclusions(
