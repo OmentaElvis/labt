@@ -8,3 +8,4 @@ pub trait Submodule {
 
 pub mod add;
 pub mod init;
+pub mod resolve;

@@ -1,5 +1,6 @@
 use crate::submodules::add::{Add, AddArgs};
 use crate::submodules::init::{Init, InitArgs};
+use crate::submodules::resolve::{ResolveArgs, Resolver};
 use crate::submodules::Submodule;
 use clap::{Parser, Subcommand};
 
@@ -15,6 +16,8 @@ enum Commands {
     Add(AddArgs),
     /// Initializes a new project
     Init(InitArgs),
+    /// Fetches the project dependencies
+    Resolve(ResolveArgs),
 }
 
 pub fn parse_args() {
@@ -26,6 +29,11 @@ pub fn parse_args() {
         }
         Some(Commands::Init(args)) => {
             if let Err(e) = Init::new(args).run() {
+                println!("{e}");
+            }
+        }
+        Some(Commands::Resolve(args)) => {
+            if let Err(e) = Resolver::new(args).run() {
                 println!("{e}");
             }
         }
