@@ -143,7 +143,7 @@ impl Init {
         let version_name = Input::<String>::with_theme(&ColorfulTheme::default())
             .with_prompt("Version name")
             .allow_empty(false)
-            .default("1.0.0".to_string())
+            .default("0.1.0".to_string())
             .show_default(true)
             .validate_with(|input: &String| {
                 if input.trim().is_empty() {
