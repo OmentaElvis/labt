@@ -27,7 +27,7 @@ pub struct InitArgs {
     #[arg(long, action)]
     interactive: bool,
     /// Directory to create project in
-    path: PathBuf,
+    path: Option<PathBuf>,
     #[arg(long)]
     /// Internal version number
     version_number: Option<i32>,
@@ -172,9 +172,17 @@ impl Init {
 
         Ok(())
     }
-    fn build_tree(&self) -> Result<ProjectPaths, io::Error> {
+    /// builds the project directory structure from the provided
+    /// project root path. If force_use_cwd is set to true, this
+    /// function tries to build the path structure from the root_path
+    /// instead of building a subfolder with project name as the new root_path
+    fn build_tree(
+        &self,
+        root_path: &PathBuf,
+        force_use_cwd: bool,
+    ) -> Result<ProjectPaths, io::Error> {
         // Create project folder
-        let mut path = self.args.path.clone();
+        let mut path = root_path.clone();
 
         // canonicalize if relative in order to allow extracting of
         // the parent folder name
@@ -187,12 +195,14 @@ impl Init {
             })?;
         }
 
-        // Try to extract project name. Current path may have been provided
-        // by the user, check to see if the user provided name of the project as
-        // argument, if not use the parent folder as the project name
-
-        if let Some(name) = &self.args.name {
-            path.push(name.clone());
+        // Try to use the project name as the destination directory,
+        // first check if use of current working dir is required. this is
+        // set if the project name was not set and it was inferred from the
+        // directory name.
+        if !force_use_cwd {
+            if let Some(name) = &self.args.name {
+                path.push(name.clone());
+            }
         }
 
         // check if directory exists, else create a new dir
@@ -312,7 +322,7 @@ impl Init {
                     .unwrap_or("MainActivity".to_string())
                     .as_str(),
             );
-            // Render mabifest and return rendered string
+            // Render manifest and return rendered string
             let data = manifest.render_once().context(format!(
                 "Rendering for {} Path: {}",
                 action,
@@ -461,15 +471,32 @@ impl Init {
 
 impl Submodule for Init {
     fn run(&mut self) -> anyhow::Result<()> {
+        let mut force_use_cwd = false;
+
+        if self.args.path.is_none() {
+            let cwd = std::env::current_dir()?;
+            // infer the project name from directory name
+            if self.args.name.is_none() {
+                self.args.name = cwd
+                    .file_name()
+                    .map(|n| n.to_str().unwrap_or("").to_string());
+            }
+            self.args.path = Some(cwd);
+            force_use_cwd = true;
+        }
         if self.args.interactive {
             if let Err(err) = self.interactive() {
                 bail!(err);
             }
         }
-
-        let project_paths = self.build_tree()?;
-        self.template_files(&project_paths)?;
-
+        if let Some(path) = &self.args.path {
+            let project_paths = self.build_tree(path, force_use_cwd)?;
+            self.template_files(&project_paths)?;
+        } else {
+            return Err(anyhow::anyhow!(
+                "Could not identify a project path from the arguments nor the working directory"
+            ));
+        }
         Ok(())
     }
 }
