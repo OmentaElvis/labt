@@ -1,4 +1,7 @@
-use crate::templating::{Activity, ActivityXml, AndroidManifest, StringsRes};
+use crate::{
+    config::{LabToml, Project},
+    templating::{Activity, ActivityXml, AndroidManifest, StringsRes},
+};
 use anyhow::{bail, Context};
 use clap::Args;
 use dialoguer::{theme::ColorfulTheme, Input};
@@ -37,6 +40,9 @@ pub struct InitArgs {
     #[arg(long, short, action)]
     /// Supress logs
     quiet: bool,
+    /// Project description
+    #[arg(long, short)]
+    description: Option<String>,
 }
 
 pub struct Init {
@@ -77,6 +83,22 @@ impl Init {
             .default(default_name)
             .interact_text()?;
 
+        // check if the description was already fed through command line args
+        // if it exists , set the value of default description to that of the
+        // argument
+        let default_description = match &self.args.description {
+            Some(d) => d.clone(),
+            None => String::from(""),
+        };
+
+        // prompt the user for the project description
+        let descriprion = Input::<String>::with_theme(&ColorfulTheme::default())
+            .with_prompt("description")
+            .allow_empty(true)
+            .show_default(self.args.description.is_some())
+            .default(default_description)
+            .interact_text()?;
+
         // prompt the user, for package name
         let package = Input::<String>::with_theme(&ColorfulTheme::default())
             .with_prompt("Package name")
@@ -98,6 +120,7 @@ impl Init {
             .interact_text()?;
         self.args.package = Some(package);
         self.args.name = Some(name);
+        self.args.description = Some(descriprion);
 
         // prompt user for version number
         let version_number = Input::<i32>::with_theme(&ColorfulTheme::default())
