@@ -426,6 +426,35 @@ impl Init {
                 path.to_str().unwrap_or("")
             ))?;
         }
+        {
+            // Write the project .toml file
+            let mut path = paths.root.clone();
+            let args = self.args.clone();
+            let toml = LabToml {
+                project: Project {
+                    name: args.name.unwrap_or("myapp".to_string()),
+                    description: args.description.unwrap_or("".to_string()),
+                    version_number: args.version_number.unwrap_or(1),
+                    version: args.version_name.unwrap_or("0.1.0".to_string()),
+                    package: args.package.unwrap_or("com.example".to_string()),
+                },
+            };
+            // serialize to toml string
+            let toml = toml::to_string(&toml).context("Serializing LabtToml to toml string")?;
+            path.push("Labt.toml");
+
+            // create file target to write toml file
+            let mut file = File::create(&path).context(format!(
+                "Creating Labt.toml file at {}",
+                path.to_str().unwrap_or("[unknown]")
+            ))?;
+
+            // write the toml to file
+            file.write_all(toml.as_bytes()).context(format!(
+                "Writing LabtToml string to toml file at {}",
+                path.to_str().unwrap_or("[unknown]")
+            ))?;
+        }
         Ok(())
     }
 }
