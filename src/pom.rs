@@ -206,7 +206,7 @@ impl Parser {
     fn parse_deps(&mut self, event: Event, state: DependencyState) -> Result<DependencyState> {
         let new_state = match state {
             DependencyState::Dependencies => match event {
-                // check for dependecies
+                // check for dependencies
                 Event::Start(tag) => match tag.local_name().into_inner() {
                     tags::DEPENDENCY => {
                         self.current_dependency = Some(Project::default());
@@ -227,7 +227,7 @@ impl Parser {
                     _ => DependencyState::Dependency,
                 },
                 Event::End(end) if end.local_name().into_inner() == tags::DEPENDENCY => {
-                    // FIXME It doesnt feel correct that i had to clone this field
+                    // FIXME It doesn't feel correct that i had to clone this field
                     if let Some(dep) = self.current_dependency.clone() {
                         self.project.add_dependency(dep);
                         self.current_dependency = None;
@@ -286,7 +286,7 @@ impl Parser {
                     if let Some(dep) = &mut self.current_dependency {
                         let scope = e.unescape()?;
                         // FIXME fix this conversion from Cow<_, str> to str without
-                        // unnecessary clonning
+                        // unnecessary cloning
                         dep.scope = match scope.to_string().as_str() {
                             "compile" => Scope::COMPILE,
                             "test" => Scope::TEST,

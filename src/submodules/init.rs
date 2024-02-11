@@ -38,7 +38,7 @@ pub struct InitArgs {
     /// Application Main activity
     main_activity: Option<String>,
     #[arg(long, short, action)]
-    /// Supress logs
+    /// Suppress logs
     quiet: bool,
     /// Project description
     #[arg(long, short)]
