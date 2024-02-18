@@ -439,6 +439,7 @@ impl Init {
                     version: args.version_name.unwrap_or("0.1.0".to_string()),
                     package: args.package.unwrap_or("com.example".to_string()),
                 },
+                dependencies: None,
             };
             // serialize to toml string
             let toml = toml::to_string(&toml).context("Serializing LabtToml to toml string")?;
@@ -461,6 +462,13 @@ impl Init {
 }
 
 impl Submodule for Init {
+    /*
+        ============Entry point for this module =================
+    */
+
+    /// Executed by this module loader, it receives the commandline
+    /// arguments for this subcommand stored in self.args
+    /// This is the entry point for Init subcommand
     fn run(&mut self) -> anyhow::Result<()> {
         let mut force_use_cwd = false;
 
