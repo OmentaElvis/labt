@@ -25,16 +25,18 @@ pub fn parse_args() {
 
     match &args.command {
         Some(Commands::Add(args)) => {
-            Add::new(args).run().unwrap();
+            if let Err(e) = Add::new(args).run() {
+                eprintln!("Error: {:?}", e);
+            }
         }
         Some(Commands::Init(args)) => {
             if let Err(e) = Init::new(args).run() {
-                println!("{e}");
+                eprintln!("Error: {:?}", e);
             }
         }
         Some(Commands::Resolve(args)) => {
             if let Err(e) = Resolver::new(args).run() {
-                println!("{e}");
+                eprintln!("Error: {:?}", e);
             }
         }
         None => {}
