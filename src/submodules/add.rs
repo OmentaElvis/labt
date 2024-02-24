@@ -1,6 +1,6 @@
-use crate::config::add_dependency_to_config;
+use crate::{config::add_dependency_to_config, pom::Project};
 
-use super::Submodule;
+use super::{resolve::resolve, Submodule};
 use anyhow::{Context, Result};
 use clap::{Args, Command};
 use regex::Regex;
@@ -88,7 +88,12 @@ impl Submodule for Add {
                 return Ok(());
             }
         };
-        add_dependency_to_config(group_id, artifact_id, version)?;
+        add_dependency_to_config(group_id.clone(), artifact_id.clone(), version.clone())?;
+        let mut project = Project::new(group_id.as_str(), artifact_id.as_str(), version.as_str());
+        resolve(&mut project)?;
+
+        // println!("{:?}", project);
+
         Ok(())
     }
 }
