@@ -107,6 +107,9 @@ impl Project {
     pub fn get_dependencies(&self) -> &Vec<Project> {
         &self.dependencies
     }
+    pub fn get_dependencies_mut(&mut self) -> &mut Vec<Project> {
+        &mut self.dependencies
+    }
     pub fn qualified_name(&self) -> String {
         format!("{}:{}:{}", self.group_id, self.artifact_id, self.version)
     }
