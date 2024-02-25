@@ -3,14 +3,22 @@ use std::env::current_dir;
 use std::fs::File;
 use std::io;
 use std::io::Read;
+use std::io::Seek;
 use std::io::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use crate::config::lock::strings::ARTIFACT_ID;
+use crate::config::lock::strings::DEPENDENCIES;
+use crate::config::lock::strings::GROUP_ID;
+use crate::config::lock::strings::LOCK_FILE;
+use crate::config::lock::strings::PROJECT;
+use crate::config::lock::strings::VERSION;
 use crate::pom::{self, Project};
 
 use super::Submodule;
 use anyhow::anyhow;
+use anyhow::bail;
 use anyhow::Context;
 use anyhow::Result;
 use clap::Args;
@@ -23,6 +31,7 @@ use toml_edit::value;
 use toml_edit::Array;
 use toml_edit::ArrayOfTables;
 use toml_edit::Document;
+use toml_edit::Formatted;
 use toml_edit::Item;
 use toml_edit::Table;
 
@@ -46,7 +55,7 @@ impl Submodule for Resolver {
         Ok(())
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ProjectDep {
     pub artifact_id: String,
     pub group_id: String,
@@ -324,11 +333,88 @@ async fn fetch_async(project: Project) -> anyhow::Result<Project> {
 }
 
 pub fn resolve(project: &mut Project) -> anyhow::Result<()> {
-    let mut resolved = vec![];
+    let mut resolved: Vec<ProjectDep> = vec![];
+
+    let mut path: PathBuf = current_dir().context("Unable to open current directory")?;
+    path.push(LOCK_FILE);
+
+    let mut file = File::options()
+        .write(true)
+        .read(true)
+        .create(true)
+        .open(path)
+        .context("Unable to open lock file")?;
+
+    let mut lock = String::new();
+    file.read_to_string(&mut lock)
+        .context("Unable to read lock file contents")?;
+
+    let lock = lock
+        .parse::<Document>()
+        .context("Unable to parse lock file")?;
+
+    if lock.contains_array_of_tables(PROJECT) {
+        if let Some(table_arrays) = lock[PROJECT].as_array_of_tables() {
+            let missing_err = |key: &str, position: usize| -> anyhow::Result<()> {
+                bail!("Missing {} in table at position {} ", key, position);
+            };
+
+            for dep in table_arrays.iter() {
+                let mut project = ProjectDep::default();
+                let position = dep.position().unwrap_or(0);
+
+                // check for artifact_id
+                if let Some(artifact_id) = dep.get(ARTIFACT_ID) {
+                    project.artifact_id = artifact_id
+                        .as_value()
+                        .unwrap_or(&toml_edit::Value::String(Formatted::new(String::new())))
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+                } else {
+                    missing_err(ARTIFACT_ID, position)?;
+                }
+
+                // check for group_id
+                if let Some(group_id) = dep.get(GROUP_ID) {
+                    project.group_id = group_id
+                        .as_value()
+                        .unwrap_or(&toml_edit::Value::String(Formatted::new(String::new())))
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+                } else {
+                    missing_err(GROUP_ID, position)?;
+                }
+
+                // check for version
+                if let Some(version) = dep.get(VERSION) {
+                    project.version = version
+                        .as_value()
+                        .unwrap_or(&toml_edit::Value::String(Formatted::new(String::new())))
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+                } else {
+                    missing_err(VERSION, position)?;
+                }
+
+                if let Some(dependencies) = dep.get(DEPENDENCIES) {
+                    if let Some(array) = dependencies.as_array() {
+                        let mut deps = Vec::new();
+                        deps.extend(array.iter().map(|d| d.as_str().unwrap_or("").to_string()));
+                        project.dependencies = deps;
+                    }
+                }
+
+                resolved.push(project);
+            }
+        }
+    }
+
     let mut unresolved = vec![];
     project.build_tree(&mut resolved, &mut unresolved)?;
-
-    write_lock(resolved)?;
+    write_lock(&mut file, resolved)?;
     Ok(())
 }
 
@@ -341,17 +427,7 @@ pub fn dump(project: &Project) {
     );
 }
 
-pub fn write_lock(resolved: Vec<ProjectDep>) -> anyhow::Result<()> {
-    let mut path: PathBuf = current_dir().context("Unable to open current directory")?;
-    path.push("Labt.lock");
-
-    let mut file = File::options()
-        .truncate(true)
-        .write(true)
-        .read(true)
-        .create(true)
-        .open(path)
-        .context("Unable to open lock file")?;
+pub fn write_lock(file: &mut File, resolved: Vec<ProjectDep>) -> anyhow::Result<()> {
     let mut lock = String::new();
     file.read_to_string(&mut lock)
         .context("Unable to read lock file contents")?;
@@ -370,15 +446,16 @@ pub fn write_lock(resolved: Vec<ProjectDep>) -> anyhow::Result<()> {
         deps_array.extend(dep.dependencies.iter());
 
         let mut table = Table::new();
-        table.insert("artifact_id", value(&dep.artifact_id));
-        table.insert("group_id", value(&dep.group_id));
-        table.insert("version", value(&dep.version));
-        table.insert("dependencies", value(deps_array));
+        table.insert(ARTIFACT_ID, value(&dep.artifact_id));
+        table.insert(GROUP_ID, value(&dep.group_id));
+        table.insert(VERSION, value(&dep.version));
+        table.insert(DEPENDENCIES, value(deps_array));
         table
     }));
 
     lock["project"] = Item::ArrayOfTables(tables_array);
 
+    file.seek(io::SeekFrom::Start(0))?;
     file.write_all(lock.to_string().as_bytes())
         .context("Error writing lock file")?;
 
