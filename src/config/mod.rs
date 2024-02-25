@@ -52,7 +52,7 @@ pub struct Dependency {
 
 const LABT_TOML_FILE_NAME: &str = "Labt.toml";
 const VERSION_STRING: &str = "version";
-const GROUP_ID_STRING: &str = "groupId";
+const GROUP_ID_STRING: &str = "group_id";
 const DEPENDENCIES_STRING: &str = "dependencies";
 
 /// Reads Labt.toml from the current working directory, and returns
