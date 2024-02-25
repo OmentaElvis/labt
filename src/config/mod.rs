@@ -3,7 +3,7 @@ use std::{
     fs::File,
     io::{Read, Write},
 };
-
+pub mod lock;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use toml_edit::Document;
