@@ -1,4 +1,5 @@
 use crate::submodules::add::{Add, AddArgs};
+use crate::submodules::build::{Build, BuildArgs};
 use crate::submodules::init::{Init, InitArgs};
 use crate::submodules::resolve::{ResolveArgs, Resolver};
 use crate::submodules::Submodule;
@@ -18,6 +19,8 @@ enum Commands {
     Init(InitArgs),
     /// Fetches the project dependencies
     Resolve(ResolveArgs),
+    /// Builds the project
+    Build(BuildArgs),
 }
 
 pub fn parse_args() {
@@ -36,6 +39,11 @@ pub fn parse_args() {
         }
         Some(Commands::Resolve(args)) => {
             if let Err(e) = Resolver::new(args).run() {
+                eprintln!("Error: {:?}", e);
+            }
+        }
+        Some(Commands::Build(args)) => {
+            if let Err(e) = Build::new(args).run() {
                 eprintln!("Error: {:?}", e);
             }
         }
