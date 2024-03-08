@@ -1,9 +1,14 @@
 use std::cell::RefCell;
 
+use anyhow::Context;
 use clap::{Args, ValueEnum};
+
+use crate::plugin::load_plugins;
 
 use super::Submodule;
 
+// temporary, will remove if a cleaner way of passing the current step
+// to plugins is achieved
 thread_local! {
     pub static BUILD_STEP: RefCell<Step> = RefCell::new(Step::PRE);
 }
@@ -17,7 +22,7 @@ pub struct Build {
     pub args: BuildArgs,
 }
 
-#[derive(Clone, ValueEnum, Debug)]
+#[derive(Clone, Copy, ValueEnum, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Step {
     /// PRE compilation step which indicates that should
     /// run code generators, dependency injection, fetching dynamic
@@ -44,16 +49,52 @@ impl Build {
 
 impl Submodule for Build {
     fn run(&mut self) -> anyhow::Result<()> {
-        if let Some(step) = self.args.step.clone() {
+        // The order by which to run the plugin build step
+        let order: Vec<Step> = if let Some(step) = self.args.step {
+            // if the build step was added explicitly, then just run that one
+            // particular step
+            vec![step]
+        } else {
+            // TODO add a more intelligent filter to run only the
+            // required steps instead of just running everything
+            vec![
+                Step::PRE,
+                Step::AAPT,
+                Step::COMPILE,
+                Step::DEX,
+                Step::BUNDLE,
+                Step::POST,
+            ]
+        };
+
+        let map = load_plugins()?;
+
+        for step in order {
             // update build step if already provided
             BUILD_STEP.with(|s| {
                 *s.borrow_mut() = step;
             });
-        }
 
-        BUILD_STEP.with(|step| {
-            println!("{:#?}", *step.borrow());
-        });
+            if let Some(plugins) = map.get(&step) {
+                for plugin in plugins {
+                    // loop through each plugin executing each
+                    let exe = plugin.load().context(format!(
+                        "Error loading plugin: {}:{} at build step {:?}",
+                        plugin.name, plugin.version, plugin.step
+                    ))?;
+
+                    let chunk = exe.load().context(format!(
+                        "Error loading lua code for {}:{} at build step {:?}",
+                        plugin.name, plugin.version, plugin.step
+                    ))?;
+
+                    chunk.exec().context(format!(
+                        "Failed to execute plugin code {:?} for plugin {}:{} at build step {:?}",
+                        plugin.path, plugin.name, plugin.version, plugin.step
+                    ))?;
+                }
+            }
+        }
 
         Ok(())
     }
