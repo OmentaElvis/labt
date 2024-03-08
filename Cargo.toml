@@ -13,6 +13,7 @@ console = "0.15.7"
 dialoguer = "0.11.0"
 futures-util = "0.3.30"
 indicatif = "0.17.7"
+mlua = { version = "0.9.6", features = ["vendored", "lua54", "serde", "serialize"] }
 quick-xml = { version = "0.31.0", features = ["async-tokio"] }
 regex = "1.10.2"
 reqwest = { version = "0.11.24", features = ["stream", "blocking"] }
