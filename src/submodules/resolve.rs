@@ -25,6 +25,7 @@ use clap::Args;
 use futures_util::TryStreamExt;
 use pom::{parse_pom, parse_pom_async};
 use reqwest::Client;
+use serde::Serialize;
 use tokio::io::BufReader;
 use tokio_util::io::StreamReader;
 use toml_edit::value;
@@ -55,7 +56,7 @@ impl Submodule for Resolver {
         Ok(())
     }
 }
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct ProjectDep {
     pub artifact_id: String,
     pub group_id: String,
@@ -333,8 +334,6 @@ async fn fetch_async(project: Project) -> anyhow::Result<Project> {
 }
 
 pub fn resolve(project: &mut Project) -> anyhow::Result<()> {
-    let mut resolved: Vec<ProjectDep> = vec![];
-
     let mut path: PathBuf = current_dir().context("Unable to open current directory")?;
     path.push(LOCK_FILE);
 
@@ -344,6 +343,27 @@ pub fn resolve(project: &mut Project) -> anyhow::Result<()> {
         .create(true)
         .open(path)
         .context("Unable to open lock file")?;
+
+    let mut resolved: Vec<ProjectDep> = load_lock_dependencies_with(&mut file)?;
+    let mut unresolved = vec![];
+    project.build_tree(&mut resolved, &mut unresolved)?;
+    write_lock(&mut file, resolved)?;
+    Ok(())
+}
+
+pub fn load_lock_dependencies() -> anyhow::Result<Vec<ProjectDep>> {
+    let mut path: PathBuf = current_dir().context("Unable to open current directory")?;
+    path.push(LOCK_FILE);
+
+    let mut file = File::open(path).context("Unable to open lock file")?;
+
+    let resolved: Vec<ProjectDep> = load_lock_dependencies_with(&mut file)?;
+
+    Ok(resolved)
+}
+
+pub fn load_lock_dependencies_with(file: &mut File) -> anyhow::Result<Vec<ProjectDep>> {
+    let mut resolved: Vec<ProjectDep> = vec![];
 
     let mut lock = String::new();
     file.read_to_string(&mut lock)
@@ -411,11 +431,7 @@ pub fn resolve(project: &mut Project) -> anyhow::Result<()> {
             }
         }
     }
-
-    let mut unresolved = vec![];
-    project.build_tree(&mut resolved, &mut unresolved)?;
-    write_lock(&mut file, resolved)?;
-    Ok(())
+    Ok(resolved)
 }
 
 pub fn dump(project: &Project) {
