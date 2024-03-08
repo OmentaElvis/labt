@@ -9,6 +9,7 @@ use cliargs::parse_args;
 use crate::envs::HOME;
 pub mod cliargs;
 pub mod config;
+pub mod plugin;
 pub mod pom;
 pub mod submodules;
 pub mod templating;
