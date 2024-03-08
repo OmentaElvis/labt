@@ -8,6 +8,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use crate::config::get_config;
 use crate::config::lock::strings::ARTIFACT_ID;
 use crate::config::lock::strings::DEPENDENCIES;
 use crate::config::lock::strings::GROUP_ID;
@@ -53,6 +54,14 @@ impl Resolver {
 
 impl Submodule for Resolver {
     fn run(&mut self) -> Result<()> {
+        // try reading toml file
+        let config = get_config()?;
+        if let Some(deps) = config.dependencies {
+            for (artifact_id, table) in deps {
+                let mut project = Project::new(&table.group_id, &artifact_id, &table.version);
+                resolve(&mut project)?;
+            }
+        }
         Ok(())
     }
 }
