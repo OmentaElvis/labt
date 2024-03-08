@@ -8,7 +8,6 @@ description = "Lab-t Lightweight Android build tool"
 [dependencies]
 anyhow = "1.0.79"
 clap = { version = "4.4.8", features = ["derive"] }
-cliclack = "0.1.9"
 console = "0.15.7"
 dialoguer = "0.11.0"
 futures-util = "0.3.30"
