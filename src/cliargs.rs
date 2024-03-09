@@ -3,13 +3,25 @@ use crate::submodules::build::{Build, BuildArgs};
 use crate::submodules::init::{Init, InitArgs};
 use crate::submodules::resolve::{ResolveArgs, Resolver};
 use crate::submodules::Submodule;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use console::style;
+use log::error;
 
 #[derive(Parser)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 }
+
+const LOGO: &str = r#"
+  _        _    ____  _   
+ | |      / \  | __ )| |_ 
+ | |     / _ \ |  _ \| __|
+ | |___ / ___ \| |_) | |_ 
+ |_____/_/   \_\____/ \__|
+ Lightweight Android Build
+          Tool
+"#;
 
 #[derive(Subcommand)]
 enum Commands {
@@ -29,24 +41,29 @@ pub fn parse_args() {
     match &args.command {
         Some(Commands::Add(args)) => {
             if let Err(e) = Add::new(args).run() {
-                eprintln!("Error: {:?}", e);
+                error!(target: "build","{:?}", e);
             }
         }
         Some(Commands::Init(args)) => {
             if let Err(e) = Init::new(args).run() {
-                eprintln!("Error: {:?}", e);
+                error!(target: "build","{:?}", e);
             }
         }
         Some(Commands::Resolve(args)) => {
             if let Err(e) = Resolver::new(args).run() {
-                eprintln!("Error: {:?}", e);
+                error!(target: "build","{:?}", e);
             }
         }
         Some(Commands::Build(args)) => {
             if let Err(e) = Build::new(args).run() {
-                eprintln!("Error: {:?}", e);
+                error!(target: "build", "{:?}", e);
             }
         }
-        None => {}
+        None => {
+            let mut c = Cli::command();
+            let line = style("----------------------------").bold().dim();
+            println!("{line}{}{line}", LOGO);
+            c.print_help().unwrap();
+        }
     }
 }
