@@ -1,10 +1,14 @@
 use std::{
+    cell::RefCell,
     fs::{create_dir, create_dir_all},
     path::PathBuf,
 };
 
 use anyhow::bail;
 use cliargs::parse_args;
+use env_logger::Env;
+use indicatif::MultiProgress;
+use indicatif_log_bridge::LogWrapper;
 
 use crate::envs::HOME;
 pub mod cliargs;
@@ -13,6 +17,10 @@ pub mod plugin;
 pub mod pom;
 pub mod submodules;
 pub mod templating;
+
+thread_local! {
+    pub static MULTI_PRPGRESS_BAR: RefCell<MultiProgress> = RefCell::new(MultiProgress::new());
+}
 
 pub mod envs {
     pub const LABT_HOME: &str = "LABT_HOME";
@@ -70,6 +78,14 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    let logger = env_logger::Builder::from_env(Env::default().default_filter_or("info"))
+        .format_timestamp(None)
+        .build();
+
+    let multi = MULTI_PRPGRESS_BAR.with(|multi| multi.borrow().clone());
+    LogWrapper::new(multi.clone(), logger).try_init()?;
+
     parse_args();
+
     Ok(())
 }
