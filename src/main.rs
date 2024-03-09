@@ -1,11 +1,13 @@
 use std::{
     cell::RefCell,
     fs::{create_dir, create_dir_all},
+    io::Write,
     path::PathBuf,
 };
 
 use anyhow::bail;
 use cliargs::parse_args;
+use console::style;
 use env_logger::Env;
 use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
@@ -80,6 +82,25 @@ fn main() -> anyhow::Result<()> {
 
     let logger = env_logger::Builder::from_env(Env::default().default_filter_or("info"))
         .format_timestamp(None)
+        .format(|buf, record| {
+            let level = match record.level() {
+                log::Level::Error => style("ERROR").red().bold(),
+                log::Level::Warn => style(" WARN").yellow().bold(),
+                log::Level::Info => style(" INFO").green().bold(),
+                log::Level::Debug => style("DEBUG").blue().bold(),
+                log::Level::Trace => style("TRACE").blue().bold(),
+            };
+
+            writeln!(
+                buf,
+                "{}{} {}{} {}",
+                style("[").dim(),
+                level,
+                style(record.target()).dim(),
+                style("]").dim(),
+                record.args()
+            )
+        })
         .build();
 
     let multi = MULTI_PRPGRESS_BAR.with(|multi| multi.borrow().clone());
