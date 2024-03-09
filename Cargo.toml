@@ -10,8 +10,11 @@ anyhow = "1.0.79"
 clap = { version = "4.4.8", features = ["derive"] }
 console = "0.15.7"
 dialoguer = "0.11.0"
+env_logger = "0.11.3"
 futures-util = "0.3.30"
 indicatif = "0.17.7"
+indicatif-log-bridge = "0.2.2"
+log = "0.4.21"
 mlua = { version = "0.9.6", features = ["vendored", "lua54", "serde", "serialize"] }
 quick-xml = { version = "0.31.0", features = ["async-tokio"] }
 regex = "1.10.2"
