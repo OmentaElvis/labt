@@ -17,6 +17,9 @@ use crate::config::lock::strings::PROJECT;
 use crate::config::lock::strings::VERSION;
 use crate::pom::{self, Project};
 
+use super::resolvers::NetResolver;
+use super::resolvers::Resolver;
+use super::resolvers::ResolverErrorKind;
 use super::Submodule;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -26,7 +29,7 @@ use clap::Args;
 use futures_util::TryStreamExt;
 use log::error;
 use log::info;
-use pom::{parse_pom, parse_pom_async};
+use pom::parse_pom_async;
 use reqwest::Client;
 use serde::Serialize;
 use tokio::io::BufReader;
@@ -251,55 +254,29 @@ impl BuildTree for Project {
         Ok(())
     }
     fn fetch(&mut self) -> anyhow::Result<()> {
-        let client = reqwest::blocking::Client::builder()
-            .user_agent("Labt/1.1")
-            .build()?;
-        let maven_url = format!(
-            "https://repo1.maven.org/maven2/{0}/{1}/{2}/{1}-{2}.pom",
-            self.get_group_id().replace('.', "/"),
-            self.get_artifact_id(),
-            self.get_version(),
-        );
-        let google_url = format!(
-            "https://maven.google.com/{0}/{1}/{2}/{1}-{2}.pom",
-            self.get_group_id().replace('.', "/"),
-            self.get_artifact_id(),
-            self.get_version(),
-        );
-        let cached = format!(
-            "http://localhost:3000/{0}/{1}/{2}/{1}-{2}.pom",
-            self.get_group_id(),
-            self.get_artifact_id(),
-            self.get_version()
-        );
-        let urls = [cached, maven_url, google_url];
+        let maven_url = Box::new(NetResolver::new("https://repo1.maven.org/maven2"));
+        let google_url = Box::new(NetResolver::new("https://maven.google.com"));
+        let local = Box::new(NetResolver::new("http://localhost:3000"));
+        let resolvers: [Box<dyn Resolver>; 2] = [maven_url, google_url];
         let mut i = 0;
 
-        let response = loop {
-            if i >= urls.len() {
-                break None;
+        loop {
+            if i >= resolvers.len() {
+                break;
             }
 
-            let res = client.get(&urls[i]).send()?;
-            if res.status().is_success() {
-                break Some(res);
-            }
-
+            let resolver = &resolvers[i];
             i += 1;
-        };
-
-        if let Some(res) = response {
-            let reader = io::BufReader::new(res);
-            let p = parse_pom(reader, self.to_owned())?;
-            self.get_dependencies_mut()
-                .extend(p.get_dependencies().iter().map(|dep| dep.to_owned()));
-        } else {
-            return Err(anyhow!(format!(
-                "Failed to resolve: {}:{}:{}",
-                self.get_artifact_id(),
-                self.get_group_id(),
-                self.get_version()
-            )));
+            if let Err(err) = resolver.fetch(self) {
+                match err.kind() {
+                    ResolverErrorKind::NotFound => continue,
+                    _ => {
+                        return Err(
+                            anyhow!(err).context("Error while trying to resolve dependency")
+                        );
+                    }
+                }
+            }
         }
 
         Ok(())
