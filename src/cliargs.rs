@@ -1,7 +1,7 @@
 use crate::submodules::add::{Add, AddArgs};
 use crate::submodules::build::{Build, BuildArgs};
 use crate::submodules::init::{Init, InitArgs};
-use crate::submodules::resolve::{ResolveArgs, Resolver};
+use crate::submodules::resolve::{Resolve, ResolveArgs};
 use crate::submodules::Submodule;
 use clap::{CommandFactory, Parser, Subcommand};
 use console::style;
@@ -50,7 +50,7 @@ pub fn parse_args() {
             }
         }
         Some(Commands::Resolve(args)) => {
-            if let Err(e) = Resolver::new(args).run() {
+            if let Err(e) = Resolve::new(args).run() {
                 error!(target: "build","{:?}", e);
             }
         }

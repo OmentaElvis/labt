@@ -24,6 +24,8 @@ use anyhow::Context;
 use anyhow::Result;
 use clap::Args;
 use futures_util::TryStreamExt;
+use log::error;
+use log::info;
 use pom::{parse_pom, parse_pom_async};
 use reqwest::Client;
 use serde::Serialize;
@@ -42,17 +44,17 @@ pub struct ResolveArgs {
     // TODO add arguments
 }
 
-pub struct Resolver {
+pub struct Resolve {
     pub args: ResolveArgs,
 }
 
-impl Resolver {
+impl Resolve {
     pub fn new(args: &ResolveArgs) -> Self {
-        Resolver { args: args.clone() }
+        Resolve { args: args.clone() }
     }
 }
 
-impl Submodule for Resolver {
+impl Submodule for Resolve {
     fn run(&mut self) -> Result<()> {
         // try reading toml file
         let config = get_config()?;
@@ -125,19 +127,17 @@ impl BuildTree for Project {
     ) -> anyhow::Result<()> {
         // push this project to unresolved
         unresolved.push(self.qualified_name());
-        println!(
-            "\x1b[94m[Fetch]\x1b[0m \x1b[90m{:?}\x1b[0m {}:{}:{}",
-            self.get_scope(),
+        info!(target: "fetch", "{}:{}:{} scope {:?}",
             self.get_group_id(),
             self.get_artifact_id(),
             self.get_version(),
+            self.get_scope(),
         );
         // fetch the dependencies of this project
         if let Err(err) = self.fetch() {
-            println!(
-                "\x1b[91m[Error]\x1b[0m \x1b[90m{:?}\x1b[0m \x1b[90m{}\x1b[0m \n{:?}",
-                self.get_scope(),
+            error!(target: "fetch", "{} scope {:?} \n{:?}",
                 self.qualified_name(),
+                self.get_scope(),
                 err
             );
         }
@@ -443,20 +443,10 @@ pub fn load_lock_dependencies_with(file: &mut File) -> anyhow::Result<Vec<Projec
     Ok(resolved)
 }
 
-pub fn dump(project: &Project) {
-    println!(
-        "{}:{}:{}",
-        project.get_group_id(),
-        project.get_artifact_id(),
-        project.get_version()
-    );
-}
-
 pub fn write_lock(file: &mut File, resolved: Vec<ProjectDep>) -> anyhow::Result<()> {
     let mut lock = String::new();
     file.read_to_string(&mut lock)
         .context("Unable to read lock file contents")?;
-    println!("{}", lock);
 
     let mut lock = lock
         .parse::<Document>()
