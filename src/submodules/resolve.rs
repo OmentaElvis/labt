@@ -8,6 +8,7 @@ use std::io::Seek;
 use std::io::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use crate::config::get_config;
 use crate::config::lock::strings::ARTIFACT_ID;
@@ -17,6 +18,7 @@ use crate::config::lock::strings::LOCK_FILE;
 use crate::config::lock::strings::PROJECT;
 use crate::config::lock::strings::VERSION;
 use crate::pom::{self, Project};
+use crate::MULTI_PRPGRESS_BAR;
 
 use super::resolvers::NetResolver;
 use super::resolvers::Resolver;
@@ -28,6 +30,8 @@ use anyhow::Context;
 use anyhow::Result;
 use clap::Args;
 use futures_util::TryStreamExt;
+use indicatif::ProgressBar;
+use indicatif::ProgressStyle;
 use log::error;
 use log::info;
 use pom::parse_pom_async;
@@ -118,11 +122,19 @@ impl PartialOrd for ProjectDep {
 struct ProjectWrapper {
     project: Project,
     resolvers: Rc<RefCell<Vec<Box<dyn Resolver>>>>,
+    progress: Option<Rc<RefCell<ProgressBar>>>,
 }
 
 impl ProjectWrapper {
     pub fn new(project: Project, resolvers: Rc<RefCell<Vec<Box<dyn Resolver>>>>) -> Self {
-        ProjectWrapper { project, resolvers }
+        ProjectWrapper {
+            project,
+            resolvers,
+            progress: None,
+        }
+    }
+    pub fn set_progress_bar(&mut self, progress: Option<Rc<RefCell<ProgressBar>>>) {
+        self.progress = progress;
     }
     #[allow(unused)]
     pub fn add_resolver(&mut self, resolver: Box<dyn Resolver>) {
@@ -176,6 +188,11 @@ impl BuildTree for ProjectWrapper {
     ) -> anyhow::Result<()> {
         // push this project to unresolved
         unresolved.push(self.project.qualified_name());
+        if let Some(prog) = &self.progress {
+            let prog = prog.borrow();
+            prog.set_message(format!(" {} ", self.project.qualified_name()));
+            prog.set_prefix("Fetching");
+        }
         info!(target: "fetch", "{}:{}:{} scope {:?}",
             self.project.get_group_id(),
             self.project.get_artifact_id(),
@@ -274,6 +291,9 @@ impl BuildTree for ProjectWrapper {
                 return Ok(());
             }
             let mut wrapper = ProjectWrapper::new(dep.clone(), self.resolvers.clone());
+            if let Some(progress) = &self.progress {
+                wrapper.set_progress_bar(Some(progress.clone()));
+            }
             wrapper.build_tree(resolved, unresolved)?;
         }
 
@@ -301,34 +321,6 @@ impl BuildTree for ProjectWrapper {
         });
         Ok(())
     }
-    // fn fetch(&mut self) -> anyhow::Result<()> {
-    //     let maven_url = Box::new(NetResolver::new("https://repo1.maven.org/maven2"));
-    //     let google_url = Box::new(NetResolver::new("https://maven.google.com"));
-    //     let local = Box::new(NetResolver::new("http://localhost:3000"));
-    //     let resolvers: [Box<dyn Resolver>; 2] = [google_url, maven_url];
-    //     let mut i = 0;
-
-    //     loop {
-    //         if i >= resolvers.len() {
-    //             break;
-    //         }
-
-    //         let resolver = &resolvers[i];
-    //         i += 1;
-    //         if let Err(err) = resolver.fetch(self) {
-    //             match err.kind() {
-    //                 ResolverErrorKind::NotFound => continue,
-    //                 _ => {
-    //                     return Err(
-    //                         anyhow!(err).context("Error while trying to resolve dependency")
-    //                     );
-    //                 }
-    //             }
-    //         }
-    //     }
-
-    //     Ok(())
-    // }
 }
 
 #[allow(unused)]
@@ -391,9 +383,21 @@ pub fn resolve(project: Project) -> anyhow::Result<Project> {
 
     let mut resolved: Vec<ProjectDep> = load_lock_dependencies_with(&mut file)?;
     let mut unresolved = vec![];
+    let spinner = Rc::new(RefCell::new(
+        MULTI_PRPGRESS_BAR.with(|multi| multi.borrow().add(ProgressBar::new_spinner())),
+    ));
+    spinner
+        .borrow()
+        .enable_steady_tick(Duration::from_millis(100));
+    spinner
+        .borrow()
+        .set_style(ProgressStyle::with_template("\n{spinner} {prefix:.blue} {wide_msg}").unwrap());
 
     let mut wrapper = ProjectWrapper::new(project.clone(), Rc::new(resolvers));
+    wrapper.set_progress_bar(Some(spinner.clone()));
+
     wrapper.build_tree(&mut resolved, &mut unresolved)?;
+    spinner.borrow().finish_and_clear();
     write_lock(&mut file, resolved)?;
     Ok(wrapper.project)
 }
