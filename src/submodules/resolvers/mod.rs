@@ -2,17 +2,23 @@ use std::error::Error;
 use std::fmt::Display;
 use std::io;
 
+use anyhow::Context;
 use reqwest::StatusCode;
 
-use crate::pom::{parse_pom, Project};
+use crate::{
+    pom::{parse_pom, Project},
+};
 
 pub trait Resolver {
     fn fetch(&self, project: &mut Project) -> Result<(), ResolverError>;
+    fn get_name(&self) -> String;
 }
 
 pub struct CacheResolver {}
 pub struct NetResolver {
     base_url: String,
+    name: String,
+    client: reqwest::blocking::Client,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -59,20 +65,13 @@ impl Resolver for CacheResolver {
     fn fetch(&self, _project: &mut Project) -> Result<(), ResolverError> {
         todo!();
     }
+    fn get_name(&self) -> String {
+        String::from("cache")
+    }
 }
 
 impl Resolver for NetResolver {
     fn fetch(&self, project: &mut Project) -> Result<(), ResolverError> {
-        let client = reqwest::blocking::Client::builder()
-            .user_agent("Labt/1.1")
-            .build()
-            .map_err(move |err| {
-                ResolverError::new(
-                    "Failed to create reqwest client for resolver",
-                    ResolverErrorKind::Internal,
-                    Some(err.into()),
-                )
-            })?;
         let url = format!(
             "{0}/{1}/{2}/{3}/{2}-{3}.pom",
             self.base_url,
@@ -81,7 +80,7 @@ impl Resolver for NetResolver {
             project.get_version(),
         );
 
-        let res = client.get(&url).send().map_err(|err| {
+        let res = self.client.get(&url).send().map_err(|err| {
             ResolverError::new(
                 "Failed to complete the HTTP request for the resolver client",
                 ResolverErrorKind::Internal,
@@ -117,12 +116,22 @@ impl Resolver for NetResolver {
         }
         Ok(())
     }
+    fn get_name(&self) -> String {
+        self.name.clone()
+    }
 }
 
 impl NetResolver {
-    pub fn new(base_url: &str) -> Self {
-        NetResolver {
+    pub fn init(name: &str, base_url: &str) -> anyhow::Result<Self> {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("Labt/1.1")
+            .build()
+            .context("Failed to initialize Net resolver client")?;
+
+        Ok(NetResolver {
+            client,
+            name: name.to_string(),
             base_url: base_url.to_string(),
-        }
+        })
     }
 }

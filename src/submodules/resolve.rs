@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::env::current_dir;
 use std::fs::File;
@@ -63,8 +64,8 @@ impl Submodule for Resolve {
         let config = get_config()?;
         if let Some(deps) = config.dependencies {
             for (artifact_id, table) in deps {
-                let mut project = Project::new(&table.group_id, &artifact_id, &table.version);
-                resolve(&mut project)?;
+                let project = Project::new(&table.group_id, &artifact_id, &table.version);
+                resolve(project)?;
             }
         }
         Ok(())
@@ -113,39 +114,84 @@ impl PartialOrd for ProjectDep {
         }
     }
 }
+
+struct ProjectWrapper {
+    project: Project,
+    resolvers: Rc<RefCell<Vec<Box<dyn Resolver>>>>,
+}
+
+impl ProjectWrapper {
+    pub fn new(project: Project, resolvers: Rc<RefCell<Vec<Box<dyn Resolver>>>>) -> Self {
+        ProjectWrapper { project, resolvers }
+    }
+    #[allow(unused)]
+    pub fn add_resolver(&mut self, resolver: Box<dyn Resolver>) {
+        self.resolvers.borrow_mut().push(resolver);
+    }
+    fn fetch(&mut self) -> anyhow::Result<()> {
+        let mut found = false;
+        for resolver in self.resolvers.borrow_mut().iter() {
+            if let Err(err) = resolver.fetch(&mut self.project) {
+                match err.kind() {
+                    ResolverErrorKind::NotFound => continue,
+                    _ => {
+                        return Err(anyhow!(err).context(format!(
+                            "Error while trying to resolve dependency on {}",
+                            resolver.get_name()
+                        )));
+                    }
+                }
+            } else {
+                found = true;
+                break;
+            }
+        }
+
+        // we failed to fetch dependency across all configured resolvers
+        if !found {
+            bail!(
+                "Dependency \"{}\" not found on all configured resolvers",
+                self.project.qualified_name()
+            );
+        }
+
+        Ok(())
+    }
+}
+
 trait BuildTree {
     fn build_tree(
         &mut self,
         resolved: &mut Vec<ProjectDep>,
         unresolved: &mut Vec<String>,
     ) -> anyhow::Result<()>;
-    fn fetch(&mut self) -> anyhow::Result<()>;
+    // fn fetch(&mut self) -> anyhow::Result<()>;
 }
 
-impl BuildTree for Project {
+impl BuildTree for ProjectWrapper {
     fn build_tree(
         &mut self,
         resolved: &mut Vec<ProjectDep>,
         unresolved: &mut Vec<String>,
     ) -> anyhow::Result<()> {
         // push this project to unresolved
-        unresolved.push(self.qualified_name());
+        unresolved.push(self.project.qualified_name());
         info!(target: "fetch", "{}:{}:{} scope {:?}",
-            self.get_group_id(),
-            self.get_artifact_id(),
-            self.get_version(),
-            self.get_scope(),
+            self.project.get_group_id(),
+            self.project.get_artifact_id(),
+            self.project.get_version(),
+            self.project.get_scope(),
         );
         // fetch the dependencies of this project
         if let Err(err) = self.fetch() {
             error!(target: "fetch", "{} scope {:?} \n{:?}",
-                self.qualified_name(),
-                self.get_scope(),
+                self.project.qualified_name(),
+                self.project.get_scope(),
                 err
             );
         }
-        let excludes = Rc::new(self.get_excludes().clone());
-        self.get_dependencies_mut().retain(|dep| {
+        let excludes = Rc::new(self.project.get_excludes().clone());
+        self.project.get_dependencies_mut().retain(|dep| {
             if dep.get_scope().ne(&pom::Scope::COMPILE) {
                 return false;
             }
@@ -187,7 +233,7 @@ impl BuildTree for Project {
             true // this particular guy survived, such a waster of clock cycles, good for it
         });
 
-        for dep in &mut self.get_dependencies_mut().iter_mut() {
+        for dep in self.project.get_dependencies() {
             // TODO some tests need to be done on this block, if feels "hacky"
             if let Some((index, res)) = resolved.iter_mut().enumerate().find(|(_, res)| {
                 res.group_id == dep.get_group_id() && res.artifact_id == dep.get_artifact_id()
@@ -227,7 +273,8 @@ impl BuildTree for Project {
                 // TODO check config for ignore, warn, or Error
                 return Ok(());
             }
-            dep.build_tree(resolved, unresolved)?;
+            let mut wrapper = ProjectWrapper::new(dep.clone(), self.resolvers.clone());
+            wrapper.build_tree(resolved, unresolved)?;
         }
 
         // remove this project from unresolved
@@ -235,10 +282,11 @@ impl BuildTree for Project {
 
         // add this project to list of resolved
         resolved.push(ProjectDep {
-            artifact_id: self.get_artifact_id(),
-            group_id: self.get_group_id(),
-            version: self.get_version(),
+            artifact_id: self.project.get_artifact_id(),
+            group_id: self.project.get_group_id(),
+            version: self.project.get_version(),
             dependencies: self
+                .project
                 .get_dependencies()
                 .iter()
                 .map(|dep| {
@@ -253,34 +301,34 @@ impl BuildTree for Project {
         });
         Ok(())
     }
-    fn fetch(&mut self) -> anyhow::Result<()> {
-        let maven_url = Box::new(NetResolver::new("https://repo1.maven.org/maven2"));
-        let google_url = Box::new(NetResolver::new("https://maven.google.com"));
-        let local = Box::new(NetResolver::new("http://localhost:3000"));
-        let resolvers: [Box<dyn Resolver>; 2] = [maven_url, google_url];
-        let mut i = 0;
+    // fn fetch(&mut self) -> anyhow::Result<()> {
+    //     let maven_url = Box::new(NetResolver::new("https://repo1.maven.org/maven2"));
+    //     let google_url = Box::new(NetResolver::new("https://maven.google.com"));
+    //     let local = Box::new(NetResolver::new("http://localhost:3000"));
+    //     let resolvers: [Box<dyn Resolver>; 2] = [google_url, maven_url];
+    //     let mut i = 0;
 
-        loop {
-            if i >= resolvers.len() {
-                break;
-            }
+    //     loop {
+    //         if i >= resolvers.len() {
+    //             break;
+    //         }
 
-            let resolver = &resolvers[i];
-            i += 1;
-            if let Err(err) = resolver.fetch(self) {
-                match err.kind() {
-                    ResolverErrorKind::NotFound => continue,
-                    _ => {
-                        return Err(
-                            anyhow!(err).context("Error while trying to resolve dependency")
-                        );
-                    }
-                }
-            }
-        }
+    //         let resolver = &resolvers[i];
+    //         i += 1;
+    //         if let Err(err) = resolver.fetch(self) {
+    //             match err.kind() {
+    //                 ResolverErrorKind::NotFound => continue,
+    //                 _ => {
+    //                     return Err(
+    //                         anyhow!(err).context("Error while trying to resolve dependency")
+    //                     );
+    //                 }
+    //             }
+    //         }
+    //     }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 }
 
 #[allow(unused)]
@@ -319,9 +367,20 @@ async fn fetch_async(project: Project) -> anyhow::Result<Project> {
     }
 }
 
-pub fn resolve(project: &mut Project) -> anyhow::Result<()> {
+pub fn resolve(project: Project) -> anyhow::Result<Project> {
     let mut path: PathBuf = current_dir().context("Unable to open current directory")?;
     path.push(LOCK_FILE);
+
+    //initialize resolvers
+    let maven_url: Box<dyn Resolver> = Box::new(NetResolver::init(
+        "central",
+        "https://repo1.maven.org/maven2",
+    )?);
+    let google_url: Box<dyn Resolver> =
+        Box::new(NetResolver::init("google", "https://maven.google.com")?);
+    let local: Box<dyn Resolver> = Box::new(NetResolver::init("local", "http://localhost:3000")?);
+
+    let resolvers = RefCell::new(vec![local, google_url, maven_url]);
 
     let mut file = File::options()
         .write(true)
@@ -332,9 +391,11 @@ pub fn resolve(project: &mut Project) -> anyhow::Result<()> {
 
     let mut resolved: Vec<ProjectDep> = load_lock_dependencies_with(&mut file)?;
     let mut unresolved = vec![];
-    project.build_tree(&mut resolved, &mut unresolved)?;
+
+    let mut wrapper = ProjectWrapper::new(project.clone(), Rc::new(resolvers));
+    wrapper.build_tree(&mut resolved, &mut unresolved)?;
     write_lock(&mut file, resolved)?;
-    Ok(())
+    Ok(wrapper.project)
 }
 
 pub fn load_lock_dependencies() -> anyhow::Result<Vec<ProjectDep>> {
