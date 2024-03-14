@@ -13,6 +13,7 @@ use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
 
 use crate::envs::HOME;
+pub mod caching;
 pub mod cliargs;
 pub mod config;
 pub mod plugin;
