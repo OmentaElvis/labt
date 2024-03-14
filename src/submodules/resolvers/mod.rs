@@ -1,4 +1,3 @@
-use std::error::Error;
 use std::fmt::Display;
 use std::io::{self, BufReader};
 use std::{error::Error, io::BufWriter};
@@ -17,7 +16,7 @@ pub trait Resolver {
     fn fetch(&self, project: &mut Project) -> Result<(), ResolverError>;
     fn get_name(&self) -> String;
 }
-
+#[derive(Default)]
 pub struct CacheResolver {}
 pub struct NetResolver {
     base_url: String,
@@ -64,10 +63,60 @@ impl Error for ResolverError {
         self.source.as_ref().map(|e| &**e as _)
     }
 }
-
+impl CacheResolver {
+    pub fn new() -> Self {
+        CacheResolver {}
+    }
+}
 impl Resolver for CacheResolver {
-    fn fetch(&self, _project: &mut Project) -> Result<(), ResolverError> {
-        todo!();
+    fn fetch(&self, project: &mut Project) -> Result<(), ResolverError> {
+        let mut cache = Cache::new(
+            project.get_group_id(),
+            project.get_artifact_id(),
+            project.get_version(),
+            CacheType::POM,
+        );
+
+        cache.use_labt_home().map_err(|err| {
+            ResolverError::new(
+                "Failed to locate labt home",
+                ResolverErrorKind::Internal,
+                Some(err),
+            )
+        })?;
+        let cache = match cache.open() {
+            Ok(cache) => cache,
+            Err(err) => match err.kind() {
+                io::ErrorKind::NotFound => {
+                    return Err(ResolverError::new(
+                        "Cache miss",
+                        ResolverErrorKind::NotFound,
+                        Some(err.into()),
+                    ))
+                }
+                _ => {
+                    return Err(ResolverError::new(
+                        "Failed to open cache",
+                        ResolverErrorKind::Internal,
+                        Some(err.into()),
+                    ))
+                }
+            },
+        };
+
+        let reader = BufReader::new(cache);
+        let p = parse_pom(reader, project.to_owned()).map_err(|err| {
+            ResolverError::new(
+                "Failed to parse pom file",
+                ResolverErrorKind::Internal,
+                Some(err),
+            )
+        })?;
+        project
+            .get_dependencies_mut()
+            .extend(p.get_dependencies().iter().map(|dep| dep.to_owned()));
+
+        Ok(())
     }
     fn get_name(&self) -> String {
         String::from("cache")

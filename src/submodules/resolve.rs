@@ -20,6 +20,7 @@ use crate::config::lock::strings::VERSION;
 use crate::pom::{self, Project};
 use crate::MULTI_PRPGRESS_BAR;
 
+use super::resolvers::CacheResolver;
 use super::resolvers::NetResolver;
 use super::resolvers::Resolver;
 use super::resolvers::ResolverErrorKind;
@@ -364,15 +365,15 @@ pub fn resolve(project: Project) -> anyhow::Result<Project> {
     path.push(LOCK_FILE);
 
     //initialize resolvers
+    let cache: Box<dyn Resolver> = Box::<CacheResolver>::default();
     let maven_url: Box<dyn Resolver> = Box::new(NetResolver::init(
         "central",
         "https://repo1.maven.org/maven2",
     )?);
     let google_url: Box<dyn Resolver> =
         Box::new(NetResolver::init("google", "https://maven.google.com")?);
-    let local: Box<dyn Resolver> = Box::new(NetResolver::init("local", "http://localhost:3000")?);
 
-    let resolvers = RefCell::new(vec![local, google_url, maven_url]);
+    let resolvers = RefCell::new(vec![cache, google_url, maven_url]);
 
     let mut file = File::options()
         .write(true)
