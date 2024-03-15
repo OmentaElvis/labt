@@ -16,7 +16,9 @@ use crate::config::lock::strings::DEPENDENCIES;
 use crate::config::lock::strings::GROUP_ID;
 use crate::config::lock::strings::LOCK_FILE;
 use crate::config::lock::strings::PROJECT;
+use crate::config::lock::strings::SCOPE;
 use crate::config::lock::strings::VERSION;
+use crate::pom::Scope;
 use crate::pom::{self, Project};
 use crate::MULTI_PRPGRESS_BAR;
 
@@ -81,6 +83,7 @@ pub struct ProjectDep {
     pub artifact_id: String,
     pub group_id: String,
     pub version: String,
+    pub scope: Scope,
     pub dependencies: Vec<String>,
 }
 
@@ -306,6 +309,7 @@ impl BuildTree for ProjectWrapper {
             artifact_id: self.project.get_artifact_id(),
             group_id: self.project.get_group_id(),
             version: self.project.get_version(),
+            scope: self.project.get_scope(),
             dependencies: self
                 .project
                 .get_dependencies()
@@ -497,6 +501,14 @@ pub fn load_lock_dependencies_with(file: &mut File) -> anyhow::Result<Vec<Projec
                 } else {
                     missing_err(VERSION, position)?;
                 }
+                // check for scope
+                if let Some(scope) = dep.get(SCOPE) {
+                    project.scope = Scope::from(
+                        scope
+                            .as_value()
+                            .unwrap_or(&toml_edit::Value::from("compile")),
+                    );
+                }
 
                 if let Some(dependencies) = dep.get(DEPENDENCIES) {
                     if let Some(array) = dependencies.as_array() {
@@ -534,6 +546,7 @@ pub fn write_lock(file: &mut File, resolved: Vec<ProjectDep>) -> anyhow::Result<
         table.insert(ARTIFACT_ID, value(&dep.artifact_id));
         table.insert(GROUP_ID, value(&dep.group_id));
         table.insert(VERSION, value(&dep.version));
+        table.insert(SCOPE, value(&dep.scope));
         table.insert(DEPENDENCIES, value(deps_array));
         table
     }));
@@ -545,4 +558,32 @@ pub fn write_lock(file: &mut File, resolved: Vec<ProjectDep>) -> anyhow::Result<
         .context("Error writing lock file")?;
 
     Ok(())
+}
+
+impl From<&Scope> for toml_edit::Value {
+    fn from(scope: &Scope) -> Self {
+        match scope {
+            Scope::COMPILE => Self::from("compile"),
+            Scope::TEST => Self::from("test"),
+            Scope::RUNTIME => Self::from("runtime"),
+            Scope::SYSTEM => Self::from("system"),
+            Scope::PROVIDED => Self::from("provided"),
+            Scope::IMPORT => Self::from("import"),
+        }
+    }
+}
+
+impl From<&toml_edit::Value> for Scope {
+    fn from(value: &toml_edit::Value) -> Self {
+        let scope = value.as_str().unwrap_or("compile").to_lowercase();
+        match scope.as_str() {
+            "compile" => Self::COMPILE,
+            "test" => Self::TEST,
+            "runtime" => Self::RUNTIME,
+            "system" => Self::SYSTEM,
+            "provided" => Self::PROVIDED,
+            "import" => Self::IMPORT,
+            _ => Self::COMPILE,
+        }
+    }
 }

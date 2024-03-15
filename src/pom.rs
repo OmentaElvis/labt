@@ -1,6 +1,7 @@
 use anyhow::Context;
 use anyhow::Result;
 use quick_xml::{events::Event, Reader};
+use serde::Serialize;
 use std::io::BufReader;
 use std::io::Read;
 use tokio::io::AsyncRead;
@@ -18,8 +19,9 @@ mod tags {
     pub const SCOPE: &[u8] = b"scope";
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize)]
 pub enum Scope {
+    #[default]
     COMPILE,
     TEST,
     RUNTIME,
@@ -119,8 +121,8 @@ impl Project {
     pub fn add_exclusion(&mut self, exclude: Exclusion) {
         self.excludes.push(exclude);
     }
-    pub fn get_scope(&self) -> &Scope {
-        &self.scope
+    pub fn get_scope(&self) -> Scope {
+        self.scope.clone()
     }
 }
 

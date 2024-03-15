@@ -6,5 +6,6 @@ pub mod strings {
     pub const VERSION: &str = "version";
     pub const DEPENDENCIES: &str = "dependencies";
     pub const PROJECT: &str = "project";
+    pub const SCOPE: &str = "scope";
     pub const LOCK_FILE: &str = "Labt.lock";
 }
