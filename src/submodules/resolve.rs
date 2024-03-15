@@ -56,10 +56,14 @@ impl Submodule for Resolve {
         // try reading toml file
         let config = get_config()?;
         if let Some(deps) = config.dependencies {
-            for (artifact_id, table) in deps {
-                let project = Project::new(&table.group_id, &artifact_id, &table.version);
-                resolve(project)?;
-            }
+            let dependencies: Vec<Project> = deps
+                .iter()
+                .map(|(artifact_id, table)| {
+                    Project::new(&table.group_id, artifact_id, &table.version)
+                })
+                .collect();
+
+            resolve(dependencies)?;
         }
         Ok(())
     }
@@ -361,7 +365,7 @@ async fn fetch_async(project: Project) -> anyhow::Result<Project> {
 ///
 /// This function will return an error if one of the underlying IO errors or parse error occurs
 /// on config and pom files
-pub fn resolve(project: Project) -> anyhow::Result<Project> {
+pub fn resolve(dependencies: Vec<Project>) -> anyhow::Result<Vec<Project>> {
     // load labt.lock file directory
     let mut path: PathBuf = current_dir().context("Unable to open current directory")?;
     path.push(LOCK_FILE);
@@ -380,7 +384,7 @@ pub fn resolve(project: Project) -> anyhow::Result<Project> {
         Box::new(NetResolver::init("google", "https://maven.google.com")?);
 
     // list of resolvers by their order of priority
-    let resolvers = RefCell::new(vec![cache, google_url, maven_url]);
+    let resolvers = Rc::new(RefCell::new(vec![cache, google_url, maven_url]));
 
     // load resolved dependencies from lock file
     let mut resolved: Vec<ProjectDep> = if path.exists() {
@@ -401,12 +405,17 @@ pub fn resolve(project: Project) -> anyhow::Result<Project> {
         .borrow()
         .set_style(ProgressStyle::with_template("\n{spinner} {prefix:.blue} {wide_msg}").unwrap());
 
-    // create a new project wrapper for dependency resolution
-    let mut wrapper = ProjectWrapper::new(project.clone(), Rc::new(resolvers));
-    wrapper.set_progress_bar(Some(spinner.clone()));
+    let mut resolved_projects: Vec<Project> = Vec::new();
 
-    // walk the dependency tree
-    wrapper.build_tree(&mut resolved, &mut unresolved)?;
+    for project in dependencies {
+        // create a new project wrapper for dependency resolution
+        let mut wrapper = ProjectWrapper::new(project.clone(), Rc::clone(&resolvers));
+        wrapper.set_progress_bar(Some(spinner.clone()));
+
+        // walk the dependency tree
+        wrapper.build_tree(&mut resolved, &mut unresolved)?;
+        resolved_projects.push(wrapper.project);
+    }
     // clear progressbar
     spinner.borrow().finish_and_clear();
 
@@ -417,5 +426,5 @@ pub fn resolve(project: Project) -> anyhow::Result<Project> {
         .open(path)
         .context("Unable to open lock file")?;
     write_lock(&mut file, resolved)?;
-    Ok(wrapper.project)
+    Ok(resolved_projects)
 }
