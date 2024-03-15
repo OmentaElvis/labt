@@ -213,7 +213,14 @@ impl Resolver for NetResolver {
                 None,
             ));
         }
-        Ok(self.base_url.clone())
+        let base_url = format!(
+            "{0}/{1}/{2}/{3}/",
+            self.base_url,
+            project.get_group_id().replace('.', "/"),
+            project.get_artifact_id(),
+            project.get_version(),
+        );
+        Ok(base_url)
     }
     fn get_name(&self) -> String {
         self.name.clone()
