@@ -113,7 +113,7 @@ impl PartialOrd for ProjectDep {
     }
 }
 
-struct ProjectWrapper {
+pub struct ProjectWrapper {
     project: Project,
     resolvers: Rc<RefCell<Vec<Box<dyn Resolver>>>>,
     progress: Option<Rc<RefCell<ProgressBar>>>,
@@ -168,7 +168,7 @@ impl ProjectWrapper {
     }
 }
 
-trait BuildTree {
+pub trait BuildTree {
     fn build_tree(
         &mut self,
         resolved: &mut Vec<ProjectDep>,
@@ -196,6 +196,41 @@ impl BuildTree for ProjectWrapper {
             self.project.get_version(),
             self.project.get_scope(),
         );
+        // before we even proceed to do this "expensive" fetch just confirm this isn't a
+        // potential version conflict and return instead
+        if let Some((index, res)) = resolved.iter_mut().enumerate().find(|(_, res)| {
+            res.group_id == self.project.get_group_id()
+                && res.artifact_id == self.project.get_artifact_id()
+        }) {
+            // now check version for possible conflicts
+            match version_compare::compare(&res.version, self.project.get_version()) {
+                Ok(v) => match v {
+                    version_compare::Cmp::Eq => {
+                        // the versions are same, so skip resolving
+                        return Ok(());
+                    }
+                    version_compare::Cmp::Ne => {
+                        // TODO not really sure of what to do with this
+                    }
+                    version_compare::Cmp::Gt | version_compare::Cmp::Ge => {
+                        // dependency conflict, so use the latest version which happens to be already resolved
+                        return Ok(());
+                    }
+                    version_compare::Cmp::Lt | version_compare::Cmp::Le => {
+                        // dependency version conflict, so replace the already resolved version with the latesr
+                        // version and proceed to resolve for this version
+                        resolved[index].version = self.project.get_version();
+                    }
+                },
+                Err(_) => {
+                    return Err(anyhow!(format!(
+                        "Invalid versions string. Either {} or {} is invalid",
+                        res.version,
+                        self.project.get_version()
+                    )));
+                }
+            }
+        }
         // fetch the dependencies of this project
         let url = self.fetch().context(format!(
             "Error fetching {} scope {:?}",
@@ -247,7 +282,7 @@ impl BuildTree for ProjectWrapper {
         });
 
         for dep in self.project.get_dependencies() {
-            // TODO some tests need to be done on this block, if feels "hacky"
+            // TODO remove this since it is redundant, but for some reason it breaks everything
             if let Some((index, res)) = resolved.iter_mut().enumerate().find(|(_, res)| {
                 res.group_id == dep.get_group_id() && res.artifact_id == dep.get_artifact_id()
             }) {
