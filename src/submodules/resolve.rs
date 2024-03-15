@@ -28,7 +28,6 @@ use clap::Args;
 use futures_util::TryStreamExt;
 use indicatif::ProgressBar;
 use indicatif::ProgressStyle;
-use log::error;
 use log::info;
 use pom::parse_pom_async;
 use reqwest::Client;
@@ -75,6 +74,7 @@ pub struct ProjectDep {
     pub version: String,
     pub scope: Scope,
     pub dependencies: Vec<String>,
+    pub url: String,
 }
 
 impl PartialEq for ProjectDep {
@@ -134,11 +134,12 @@ impl ProjectWrapper {
     pub fn add_resolver(&mut self, resolver: Box<dyn Resolver>) {
         self.resolvers.borrow_mut().push(resolver);
     }
-    fn fetch(&mut self) -> anyhow::Result<()> {
+    fn fetch(&mut self) -> anyhow::Result<String> {
         let mut found = false;
+        let mut url = String::new();
         for resolver in self.resolvers.borrow_mut().iter() {
-            if let Err(err) = resolver.fetch(&mut self.project) {
-                match err.kind() {
+            match resolver.fetch(&mut self.project) {
+                Err(err) => match err.kind() {
                     ResolverErrorKind::NotFound => continue,
                     _ => {
                         return Err(anyhow!(err).context(format!(
@@ -146,10 +147,12 @@ impl ProjectWrapper {
                             resolver.get_name()
                         )));
                     }
+                },
+                Ok(base_url) => {
+                    url = base_url;
+                    found = true;
+                    break;
                 }
-            } else {
-                found = true;
-                break;
             }
         }
 
@@ -161,7 +164,7 @@ impl ProjectWrapper {
             );
         }
 
-        Ok(())
+        Ok(url)
     }
 }
 
@@ -194,13 +197,12 @@ impl BuildTree for ProjectWrapper {
             self.project.get_scope(),
         );
         // fetch the dependencies of this project
-        if let Err(err) = self.fetch() {
-            error!(target: "fetch", "{} scope {:?} \n{:?}",
-                self.project.qualified_name(),
-                self.project.get_scope(),
-                err
-            );
-        }
+        let url = self.fetch().context(format!(
+            "Error fetching {} scope {:?}",
+            self.project.qualified_name(),
+            self.project.get_scope(),
+        ))?;
+
         let excludes = Rc::new(self.project.get_excludes().clone());
         self.project.get_dependencies_mut().retain(|dep| {
             if dep.get_scope().ne(&pom::Scope::COMPILE) {
@@ -300,6 +302,7 @@ impl BuildTree for ProjectWrapper {
             group_id: self.project.get_group_id(),
             version: self.project.get_version(),
             scope: self.project.get_scope(),
+            url,
             dependencies: self
                 .project
                 .get_dependencies()

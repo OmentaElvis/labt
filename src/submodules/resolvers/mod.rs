@@ -13,7 +13,7 @@ use crate::{
 };
 
 pub trait Resolver {
-    fn fetch(&self, project: &mut Project) -> Result<(), ResolverError>;
+    fn fetch(&self, project: &mut Project) -> Result<String, ResolverError>;
     fn get_name(&self) -> String;
 }
 #[derive(Default)]
@@ -69,7 +69,7 @@ impl CacheResolver {
     }
 }
 impl Resolver for CacheResolver {
-    fn fetch(&self, project: &mut Project) -> Result<(), ResolverError> {
+    fn fetch(&self, project: &mut Project) -> Result<String, ResolverError> {
         let mut cache = Cache::new(
             project.get_group_id(),
             project.get_artifact_id(),
@@ -116,7 +116,8 @@ impl Resolver for CacheResolver {
             .get_dependencies_mut()
             .extend(p.get_dependencies().iter().map(|dep| dep.to_owned()));
 
-        Ok(())
+        // TODO fetch correct url from this cache
+        Ok(String::new())
     }
     fn get_name(&self) -> String {
         String::from("cache")
@@ -124,7 +125,7 @@ impl Resolver for CacheResolver {
 }
 
 impl Resolver for NetResolver {
-    fn fetch(&self, project: &mut Project) -> Result<(), ResolverError> {
+    fn fetch(&self, project: &mut Project) -> Result<String, ResolverError> {
         let url = format!(
             "{0}/{1}/{2}/{3}/{2}-{3}.pom",
             self.base_url,
@@ -212,7 +213,7 @@ impl Resolver for NetResolver {
                 None,
             ));
         }
-        Ok(())
+        Ok(self.base_url.clone())
     }
     fn get_name(&self) -> String {
         self.name.clone()

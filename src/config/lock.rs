@@ -13,7 +13,7 @@ use toml_edit::Table;
 
 use crate::{pom::Scope, submodules::resolve::ProjectDep};
 
-use self::strings::{ARTIFACT_ID, DEPENDENCIES, GROUP_ID, LOCK_FILE, PROJECT, SCOPE, VERSION};
+use self::strings::{ARTIFACT_ID, DEPENDENCIES, GROUP_ID, LOCK_FILE, PROJECT, SCOPE, URL, VERSION};
 
 /// containst string constants to be used in writing
 /// and parsing lock files
@@ -24,6 +24,7 @@ pub mod strings {
     pub const DEPENDENCIES: &str = "dependencies";
     pub const PROJECT: &str = "project";
     pub const SCOPE: &str = "scope";
+    pub const URL: &str = "url";
     pub const LOCK_FILE: &str = "Labt.lock";
 }
 
@@ -52,7 +53,11 @@ pub fn load_lock_dependencies_with(file: &mut File) -> anyhow::Result<Vec<Projec
     if lock.contains_array_of_tables(PROJECT) {
         if let Some(table_arrays) = lock[PROJECT].as_array_of_tables() {
             let missing_err = |key: &str, position: usize| -> anyhow::Result<()> {
-                bail!("Missing {} in table at position {} ", key, position);
+                bail!(
+                    "Labt.lock: Missing {} in table at position {} ",
+                    key,
+                    position
+                );
             };
 
             for dep in table_arrays.iter() {
@@ -102,6 +107,16 @@ pub fn load_lock_dependencies_with(file: &mut File) -> anyhow::Result<Vec<Projec
                             .unwrap_or(&toml_edit::Value::from("compile")),
                     );
                 }
+                if let Some(url) = dep.get(URL) {
+                    project.url = url
+                        .as_value()
+                        .unwrap_or(&toml_edit::Value::from(""))
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+                } else {
+                    missing_err(URL, position)?;
+                }
 
                 if let Some(dependencies) = dep.get(DEPENDENCIES) {
                     if let Some(array) = dependencies.as_array() {
@@ -140,6 +155,7 @@ pub fn write_lock(file: &mut File, resolved: Vec<ProjectDep>) -> anyhow::Result<
         table.insert(GROUP_ID, value(&dep.group_id));
         table.insert(VERSION, value(&dep.version));
         table.insert(SCOPE, value(&dep.scope));
+        table.insert(URL, value(&dep.url));
         table.insert(DEPENDENCIES, value(deps_array));
         table
     }));
