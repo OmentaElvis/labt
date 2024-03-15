@@ -75,6 +75,7 @@ pub struct ProjectDep {
     pub scope: Scope,
     pub dependencies: Vec<String>,
     pub url: String,
+    pub packaging: String,
 }
 
 impl PartialEq for ProjectDep {
@@ -338,6 +339,7 @@ impl BuildTree for ProjectWrapper {
             version: self.project.get_version(),
             scope: self.project.get_scope(),
             url,
+            packaging: self.project.get_packaging(),
             dependencies: self
                 .project
                 .get_dependencies()

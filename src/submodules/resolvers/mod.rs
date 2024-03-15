@@ -112,6 +112,7 @@ impl Resolver for CacheResolver {
                 Some(err),
             )
         })?;
+        project.set_packaging(p.get_packaging());
         project
             .get_dependencies_mut()
             .extend(p.get_dependencies().iter().map(|dep| dep.to_owned()));
@@ -196,6 +197,7 @@ impl Resolver for NetResolver {
                     Some(err),
                 )
             })?;
+            project.set_packaging(p.get_packaging());
             project
                 .get_dependencies_mut()
                 .extend(p.get_dependencies().iter().map(|dep| dep.to_owned()));

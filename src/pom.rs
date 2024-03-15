@@ -16,6 +16,7 @@ mod tags {
     pub const DEPENDENCY: &[u8] = b"dependency";
     pub const EXCLUSIONS: &[u8] = b"exclusions";
     pub const EXCLUSION: &[u8] = b"exclusion";
+    pub const PACKAGING: &[u8] = b"packaging";
     pub const SCOPE: &[u8] = b"scope";
 }
 
@@ -44,6 +45,8 @@ pub struct Project {
     excludes: Vec<Exclusion>,
     /// The scope of the project
     scope: Scope,
+    /// The packaging of the project
+    packaging: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -74,6 +77,7 @@ impl Default for Project {
             dependencies: vec![],
             excludes: vec![],
             scope: Scope::COMPILE,
+            packaging: String::from("jar"),
         }
     }
 }
@@ -85,9 +89,7 @@ impl Project {
             group_id: String::from(group_id),
             artifact_id: String::from(artifact_id),
             version: String::from(version),
-            dependencies: vec![],
-            excludes: vec![],
-            scope: Scope::COMPILE,
+            ..Default::default()
         }
     }
     /// Returns the artifact id of the project
@@ -124,6 +126,12 @@ impl Project {
     pub fn get_scope(&self) -> Scope {
         self.scope.clone()
     }
+    pub fn get_packaging(&self) -> String {
+        self.packaging.clone()
+    }
+    pub fn set_packaging(&mut self, packaging: String) {
+        self.packaging = packaging;
+    }
 }
 
 /// Parser states, helps in keeping track of the current event
@@ -145,6 +153,9 @@ enum ParserState {
     /// Indicates that the state machine is handling a dependency
     /// <dependencies></dependencies>
     Dependencies(DependencyState),
+    /// The packaging of this project
+    /// <packaging></packaging>
+    ReadPackaging,
 }
 
 /// Keeps track of the dependency specific events
@@ -392,6 +403,7 @@ impl Parser {
                     tags::ARTIFACT_ID => ParserState::ReadArtifactId,
                     tags::GROUP_ID => ParserState::ReadGroupId,
                     tags::VERSION => ParserState::ReadVersion,
+                    tags::PACKAGING => ParserState::ReadPackaging,
                     _ => ParserState::Project,
                 },
                 _ => ParserState::Project,
@@ -432,6 +444,16 @@ impl Parser {
                     ParserState::ReadVersion
                 }
                 _ => ParserState::ReadVersion,
+            },
+            ParserState::ReadPackaging => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::PACKAGING => {
+                    ParserState::Project
+                }
+                Event::Text(e) => {
+                    self.project.packaging = e.unescape()?.to_string();
+                    ParserState::ReadPackaging
+                }
+                _ => ParserState::ReadPackaging,
             },
 
             // <dependencies></dependencies>

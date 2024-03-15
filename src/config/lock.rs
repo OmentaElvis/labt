@@ -13,7 +13,9 @@ use toml_edit::Table;
 
 use crate::{pom::Scope, submodules::resolve::ProjectDep};
 
-use self::strings::{ARTIFACT_ID, DEPENDENCIES, GROUP_ID, LOCK_FILE, PROJECT, SCOPE, URL, VERSION};
+use self::strings::{
+    ARTIFACT_ID, DEPENDENCIES, GROUP_ID, LOCK_FILE, PACKAGING, PROJECT, SCOPE, URL, VERSION,
+};
 
 /// containst string constants to be used in writing
 /// and parsing lock files
@@ -25,6 +27,7 @@ pub mod strings {
     pub const PROJECT: &str = "project";
     pub const SCOPE: &str = "scope";
     pub const URL: &str = "url";
+    pub const PACKAGING: &str = "packaging";
     pub const LOCK_FILE: &str = "Labt.lock";
 }
 
@@ -117,6 +120,16 @@ pub fn load_lock_dependencies_with(file: &mut File) -> anyhow::Result<Vec<Projec
                 } else {
                     missing_err(URL, position)?;
                 }
+                if let Some(url) = dep.get(PACKAGING) {
+                    project.packaging = url
+                        .as_value()
+                        .unwrap_or(&toml_edit::Value::from("jar"))
+                        .as_str()
+                        .unwrap_or("jar")
+                        .to_string();
+                } else {
+                    project.packaging = String::from("jar");
+                }
 
                 if let Some(dependencies) = dep.get(DEPENDENCIES) {
                     if let Some(array) = dependencies.as_array() {
@@ -156,6 +169,7 @@ pub fn write_lock(file: &mut File, resolved: Vec<ProjectDep>) -> anyhow::Result<
         table.insert(VERSION, value(&dep.version));
         table.insert(SCOPE, value(&dep.scope));
         table.insert(URL, value(&dep.url));
+        table.insert(PACKAGING, value(&dep.packaging));
         table.insert(DEPENDENCIES, value(deps_array));
         table
     }));
