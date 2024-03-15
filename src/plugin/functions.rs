@@ -3,6 +3,7 @@ use mlua::IntoLua;
 use mlua::Lua;
 use mlua::LuaSerdeExt;
 
+use crate::config::lock::load_lock_dependencies;
 use crate::config::lock::strings::ARTIFACT_ID;
 use crate::config::lock::strings::DEPENDENCIES;
 use crate::config::lock::strings::GROUP_ID;
@@ -10,7 +11,6 @@ use crate::config::lock::strings::VERSION;
 use crate::config::{get_config, LabToml};
 use crate::submodules::build::Step;
 use crate::submodules::build::BUILD_STEP;
-use crate::submodules::resolve::load_lock_dependencies;
 use crate::submodules::resolve::ProjectDep;
 
 pub fn load_labt_table(lua: &mut Lua) -> Result<()> {
