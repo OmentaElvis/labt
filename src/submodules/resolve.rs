@@ -360,30 +360,47 @@ async fn fetch_async(project: Project) -> anyhow::Result<Project> {
     }
 }
 
+/// Starts the resolution algorithm. Reads any existing Labt.lock and it includes
+/// its resolution in the algorithm. After complete resolution it writes the result to
+/// Labt.lock
+///
+/// # Panics
+/// if we fail to initialize template for spinner progress bar, should not happen at runtime
+///
+/// # Errors
+///
+/// This function will return an error if one of the underlying IO errors or parse error occurs
+/// on config and pom files
 pub fn resolve(project: Project) -> anyhow::Result<Project> {
+    // load labt.lock file directory
     let mut path: PathBuf = current_dir().context("Unable to open current directory")?;
     path.push(LOCK_FILE);
 
     //initialize resolvers
+    // TODO move these to a config for more flexibility
+    // cache resolver
     let cache: Box<dyn Resolver> = Box::<CacheResolver>::default();
+    // maven resolver
     let maven_url: Box<dyn Resolver> = Box::new(NetResolver::init(
         "central",
         "https://repo1.maven.org/maven2",
     )?);
+    // google resolver
     let google_url: Box<dyn Resolver> =
         Box::new(NetResolver::init("google", "https://maven.google.com")?);
 
+    // list of resolvers by their order of priority
     let resolvers = RefCell::new(vec![cache, google_url, maven_url]);
 
-    let mut file = File::options()
-        .write(true)
-        .read(true)
-        .create(true)
-        .open(path)
-        .context("Unable to open lock file")?;
-
-    let mut resolved: Vec<ProjectDep> = load_lock_dependencies_with(&mut file)?;
+    // load resolved dependencies from lock file
+    let mut resolved: Vec<ProjectDep> = if path.exists() {
+        load_lock_dependencies()?
+    } else {
+        vec![]
+    };
     let mut unresolved = vec![];
+
+    // start a new spinner progress bar and add it to the global multi progress bar
     let spinner = Rc::new(RefCell::new(
         MULTI_PRPGRESS_BAR.with(|multi| multi.borrow().add(ProgressBar::new_spinner())),
     ));
@@ -394,11 +411,21 @@ pub fn resolve(project: Project) -> anyhow::Result<Project> {
         .borrow()
         .set_style(ProgressStyle::with_template("\n{spinner} {prefix:.blue} {wide_msg}").unwrap());
 
+    // create a new project wrapper for dependency resolution
     let mut wrapper = ProjectWrapper::new(project.clone(), Rc::new(resolvers));
     wrapper.set_progress_bar(Some(spinner.clone()));
 
+    // walk the dependency tree
     wrapper.build_tree(&mut resolved, &mut unresolved)?;
+    // clear progressbar
     spinner.borrow().finish_and_clear();
+
+    let mut file = File::options()
+        .write(true)
+        .read(true)
+        .create(true)
+        .open(path)
+        .context("Unable to open lock file")?;
     write_lock(&mut file, resolved)?;
     Ok(wrapper.project)
 }
