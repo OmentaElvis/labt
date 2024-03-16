@@ -4,6 +4,7 @@ use std::{
     io::{Read, Write},
 };
 pub mod lock;
+pub mod maven_metadata;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use toml_edit::Document;
