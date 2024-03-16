@@ -146,7 +146,7 @@ pub fn load_lock_dependencies_with(file: &mut File) -> anyhow::Result<Vec<Projec
     Ok(resolved)
 }
 
-pub fn write_lock(file: &mut File, resolved: Vec<ProjectDep>) -> anyhow::Result<()> {
+pub fn write_lock(file: &mut File, resolved: &[ProjectDep]) -> anyhow::Result<()> {
     let mut lock = String::new();
     file.read_to_string(&mut lock)
         .context("Unable to read lock file contents")?;

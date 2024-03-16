@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::fmt::Display;
 use std::io::{self, BufReader};
 use std::{error::Error, io::BufWriter};
@@ -6,11 +7,14 @@ use anyhow::Context;
 use log::warn;
 use reqwest::StatusCode;
 
+use crate::caching::properties::{read_properties, PropertiesError};
 use crate::{
     caching::Cache,
     caching::CacheType,
     pom::{parse_pom, Project},
 };
+
+use super::resolve::ProjectDep;
 
 pub trait Resolver {
     fn fetch(&self, project: &mut Project) -> Result<String, ResolverError>;
@@ -70,55 +74,61 @@ impl CacheResolver {
 }
 impl Resolver for CacheResolver {
     fn fetch(&self, project: &mut Project) -> Result<String, ResolverError> {
-        let mut cache = Cache::new(
-            project.get_group_id(),
-            project.get_artifact_id(),
-            project.get_version(),
-            CacheType::POM,
-        );
+        // initialize projectDep from project object
+        let mut project_dep = ProjectDep::from(project.borrow());
 
-        cache.use_labt_home().map_err(|err| {
-            ResolverError::new(
-                "Failed to locate labt home",
-                ResolverErrorKind::Internal,
-                Some(err),
-            )
-        })?;
-        let cache = match cache.open() {
-            Ok(cache) => cache,
-            Err(err) => match err.kind() {
-                io::ErrorKind::NotFound => {
-                    return Err(ResolverError::new(
-                        "Cache miss",
-                        ResolverErrorKind::NotFound,
-                        Some(err.into()),
-                    ))
-                }
-                _ => {
-                    return Err(ResolverError::new(
-                        "Failed to open cache",
+        // try reading the properties from cache checking if error occured
+        read_properties(&mut project_dep).map_err(move |err| {
+            // check for other errors
+            if let Some(prop_error) = err.downcast_ref::<PropertiesError>() {
+                match prop_error {
+                    // A cache miss
+                    PropertiesError::IOError(msg) => {
+                        return ResolverError::new(
+                            msg.to_string().as_str(),
+                            ResolverErrorKind::NotFound,
+                            Some(err),
+                        )
+                    }
+                    // A malformed toml error so ideally if it is a cache resolver
+                    // we should proceed to do a network fetch. hopefully it should
+                    // fix the syntax errors
+                    PropertiesError::ParseError => ResolverError::new(
+                        "Failed to parse cache properties file",
+                        ResolverErrorKind::ParseError,
+                        Some(err),
+                    ),
+                    // home not found, so cache dir is not present
+                    PropertiesError::LabtHomeError => ResolverError::new(
+                        "Failed to fetch from cache dir",
                         ResolverErrorKind::Internal,
-                        Some(err.into()),
-                    ))
+                        Some(err),
+                    ),
                 }
-            },
-        };
-
-        let reader = BufReader::new(cache);
-        let p = parse_pom(reader, project.to_owned()).map_err(|err| {
-            ResolverError::new(
-                "Failed to parse pom file",
-                ResolverErrorKind::Internal,
-                Some(err),
-            )
+            } else {
+                // failed to resolve from cache,
+                // FIXME TODO see why the first condition fails and we result into this else
+                ResolverError::new(
+                    "Failed to resolve from cache",
+                    ResolverErrorKind::NotFound,
+                    Some(err),
+                )
+            }
         })?;
-        project.set_packaging(p.get_packaging());
-        project
-            .get_dependencies_mut()
-            .extend(p.get_dependencies().iter().map(|dep| dep.to_owned()));
 
-        // TODO fetch correct url from this cache
-        Ok(String::new())
+        let deps = project_dep.dependencies.iter().map(|dep| {
+            let split: Vec<&str> = dep.splitn(3, ':').collect();
+            let group_id = split[0];
+            let artifact_id = split[1];
+            let version = split[2];
+
+            Project::new(group_id, artifact_id, version)
+        });
+
+        project.set_packaging(project_dep.packaging);
+        project.get_dependencies_mut().extend(deps);
+
+        Ok(project_dep.url)
     }
     fn get_name(&self) -> String {
         String::from("cache")

@@ -4,12 +4,24 @@ use std::{
     path::PathBuf,
 };
 
-use anyhow::Context;
+pub mod download;
+pub mod properties;
 
-use crate::get_home;
+use anyhow::Context;
+use indicatif::ProgressBar;
+use log::info;
+
+use crate::{get_home, submodules::resolve::ProjectDep, MULTI_PRPGRESS_BAR};
+
+use self::{download::download, properties::write_properties};
 #[derive(Clone, Debug)]
 pub enum CacheType {
     POM,
+    AAR,
+    JAR,
+    SOURCE,
+    PROPERTIES,
+    UNKNOWN(String),
 }
 #[derive(Debug)]
 pub struct Cache {
@@ -37,16 +49,6 @@ impl Cache {
             file: None,
         }
     }
-    pub fn from(cache: &Cache) -> Self {
-        Cache {
-            group_id: cache.group_id.clone(),
-            artifact_id: cache.artifact_id.clone(),
-            version: cache.version.clone(),
-            cache_type: cache.cache_type.clone(),
-            path: cache.path.clone(),
-            file: None,
-        }
-    }
     pub fn get_cache_path(&self) -> Option<PathBuf> {
         self.path.clone()
     }
@@ -60,8 +62,15 @@ impl Cache {
         Ok(())
     }
     fn get_name_from_type(&self) -> String {
-        match self.cache_type {
+        match &self.cache_type {
             CacheType::POM => format!("{}-{}.pom", self.artifact_id, self.version),
+            CacheType::AAR => format!("{}-{}.aar", self.artifact_id, self.version),
+            CacheType::JAR => format!("{}-{}.jar", self.artifact_id, self.version),
+            CacheType::SOURCE => format!("{}-{}-source.jar", self.artifact_id, self.version),
+            CacheType::UNKNOWN(ext) => {
+                format!("{}-{}.{}", self.artifact_id, self.version, ext)
+            }
+            CacheType::PROPERTIES => format!("{}-{}.toml", self.artifact_id, self.version),
         }
     }
     fn build_path(&self) -> std::io::Result<PathBuf> {
@@ -96,6 +105,15 @@ impl Cache {
         let file = File::open(path)?;
         cache.file = Some(file);
         Ok(cache)
+    }
+    /// Checks if this cache entry exists
+    /// returns false if Labt home is not initialized
+    pub fn exists(&self) -> bool {
+        if let Ok(path) = self.build_path() {
+            path.exists()
+        } else {
+            false
+        }
     }
 }
 
@@ -132,4 +150,85 @@ impl Read for Cache {
             ))
         }
     }
+}
+impl From<ProjectDep> for Cache {
+    /// initialize a new Cache file from a ProjectDep
+    fn from(value: ProjectDep) -> Self {
+        Cache::new(
+            value.group_id,
+            value.artifact_id,
+            value.version,
+            CacheType::from(value.packaging),
+        )
+    }
+}
+impl From<&ProjectDep> for Cache {
+    /// initialize a new Cache file from a ProjectDep reference
+    fn from(value: &ProjectDep) -> Self {
+        Cache::new(
+            value.group_id.clone(),
+            value.artifact_id.clone(),
+            value.version.clone(),
+            CacheType::from(value.packaging.clone()),
+        )
+    }
+}
+
+impl From<String> for CacheType {
+    /// Converts cachetype from string to CacheType enum
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "pom" => CacheType::POM,
+            "aar" => CacheType::AAR,
+            "jar" => CacheType::JAR,
+            "source" => CacheType::SOURCE,
+            "toml" => CacheType::PROPERTIES,
+            _ => CacheType::UNKNOWN(value),
+        }
+    }
+}
+impl From<&Cache> for Cache {
+    // recycle properties of provided Cache to create a new one
+    fn from(cache: &Cache) -> Self {
+        Cache {
+            group_id: cache.group_id.clone(),
+            artifact_id: cache.artifact_id.clone(),
+            version: cache.version.clone(),
+            cache_type: cache.cache_type.clone(),
+            path: cache.path.clone(),
+            file: None,
+        }
+    }
+}
+
+pub fn save_dependencies(deps: &Vec<ProjectDep>) -> anyhow::Result<()> {
+    // if it was a cache miss, then write properties to file for the next resolution
+    for project in deps.iter().filter(|p| !p.cache_hit) {
+        write_properties(project)?;
+    }
+    // initialize a new progressbar
+    let pb =
+        MULTI_PRPGRESS_BAR.with(|multi| multi.borrow().add(ProgressBar::new(deps.len() as u64)));
+    // begin the download  of the dependencies
+    for project in deps {
+        let mut cache = Cache::from(project);
+        cache.use_labt_home().context(format!(
+            "Unable to access Labt home for {}:{}:{}",
+            project.group_id, project.artifact_id, project.version
+        ))?;
+        // increment progressbar
+        pb.inc(1);
+        // if it is a cache hit, skip
+        if cache.exists() {
+            info!(target: "fetch", "Cache hit {}", cache.get_name_from_type());
+            continue;
+        }
+        let size = download(project).context(format!(
+            "Failed to download dependency from [{}]",
+            project.url
+        ))?;
+        info!(target: "fetch", "Downloaded {} {}", cache.get_name_from_type(), size);
+    }
+
+    Ok(())
 }

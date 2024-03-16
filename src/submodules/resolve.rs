@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
+use crate::caching::save_dependencies;
 use crate::config::get_config;
 use crate::config::lock::load_lock_dependencies;
 use crate::config::lock::strings::LOCK_FILE;
@@ -76,6 +77,7 @@ pub struct ProjectDep {
     pub dependencies: Vec<String>,
     pub url: String,
     pub packaging: String,
+    pub cache_hit: bool,
 }
 
 impl PartialEq for ProjectDep {
@@ -114,6 +116,31 @@ impl PartialOrd for ProjectDep {
     }
 }
 
+impl From<&Project> for ProjectDep {
+    fn from(project: &Project) -> Self {
+        ProjectDep {
+            artifact_id: project.get_artifact_id(),
+            group_id: project.get_group_id(),
+            version: project.get_version(),
+            scope: project.get_scope(),
+            packaging: project.get_packaging(),
+            dependencies: project
+                .get_dependencies()
+                .iter()
+                .map(|dep| {
+                    format!(
+                        "{}:{}:{}",
+                        dep.get_group_id(),
+                        dep.get_artifact_id(),
+                        dep.get_version()
+                    )
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+}
+
 pub struct ProjectWrapper {
     project: Project,
     resolvers: Rc<RefCell<Vec<Box<dyn Resolver>>>>,
@@ -135,9 +162,11 @@ impl ProjectWrapper {
     pub fn add_resolver(&mut self, resolver: Box<dyn Resolver>) {
         self.resolvers.borrow_mut().push(resolver);
     }
-    fn fetch(&mut self) -> anyhow::Result<String> {
+    fn fetch(&mut self) -> anyhow::Result<(String, bool)> {
         let mut found = false;
         let mut url = String::new();
+        let mut cache_hit = false;
+
         for resolver in self.resolvers.borrow_mut().iter() {
             match resolver.fetch(&mut self.project) {
                 Err(err) => match err.kind() {
@@ -152,6 +181,7 @@ impl ProjectWrapper {
                 Ok(base_url) => {
                     url = base_url;
                     found = true;
+                    cache_hit = resolver.get_name() == *"cache";
                     break;
                 }
             }
@@ -165,7 +195,7 @@ impl ProjectWrapper {
             );
         }
 
-        Ok(url)
+        Ok((url, cache_hit))
     }
 }
 
@@ -233,7 +263,7 @@ impl BuildTree for ProjectWrapper {
             }
         }
         // fetch the dependencies of this project
-        let url = self.fetch().context(format!(
+        let (url, cache_hit) = self.fetch().context(format!(
             "Error fetching {} scope {:?}",
             self.project.qualified_name(),
             self.project.get_scope(),
@@ -333,27 +363,10 @@ impl BuildTree for ProjectWrapper {
         unresolved.pop();
 
         // add this project to list of resolved
-        resolved.push(ProjectDep {
-            artifact_id: self.project.get_artifact_id(),
-            group_id: self.project.get_group_id(),
-            version: self.project.get_version(),
-            scope: self.project.get_scope(),
-            url,
-            packaging: self.project.get_packaging(),
-            dependencies: self
-                .project
-                .get_dependencies()
-                .iter()
-                .map(|dep| {
-                    format!(
-                        "{}:{}:{}",
-                        dep.get_group_id(),
-                        dep.get_artifact_id(),
-                        dep.get_version()
-                    )
-                })
-                .collect(),
-        });
+        let mut project = ProjectDep::from(&self.project);
+        project.url = url;
+        project.cache_hit = cache_hit;
+        resolved.push(project);
         Ok(())
     }
 }
@@ -465,6 +478,7 @@ pub fn resolve(dependencies: Vec<Project>) -> anyhow::Result<Vec<Project>> {
         .create(true)
         .open(path)
         .context("Unable to open lock file")?;
-    write_lock(&mut file, resolved)?;
+    write_lock(&mut file, &resolved)?;
+    save_dependencies(&resolved).context("Failed downloading saved dependencies")?;
     Ok(resolved_projects)
 }
