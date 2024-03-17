@@ -440,6 +440,7 @@ impl Init {
                     package: args.package.unwrap_or("com.example".to_string()),
                 },
                 dependencies: None,
+                resolvers: None,
             };
             // serialize to toml string
             let toml = toml::to_string(&toml).context("Serializing LabtToml to toml string")?;

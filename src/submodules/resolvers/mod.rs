@@ -15,10 +15,15 @@ use crate::{
 };
 
 use super::resolve::ProjectDep;
+pub const CENTRAL_REPO_STR: &str = "central";
+pub const CENTRAL_REPO_URL: &str = "https://repo1.maven.org/maven2/";
+pub const GOOGLE_REPO_STR: &str = "google";
+pub const GOOGLE_REPO_URL: &str = "https://maven.google.com/";
 
 pub trait Resolver {
     fn fetch(&self, project: &mut Project) -> Result<String, ResolverError>;
     fn get_name(&self) -> String;
+    fn get_priority(&self) -> i32;
 }
 #[derive(Default)]
 pub struct CacheResolver {}
@@ -26,6 +31,7 @@ pub struct NetResolver {
     base_url: String,
     name: String,
     client: reqwest::blocking::Client,
+    priority: i32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -133,6 +139,9 @@ impl Resolver for CacheResolver {
     fn get_name(&self) -> String {
         String::from("cache")
     }
+    fn get_priority(&self) -> i32 {
+        10
+    }
 }
 
 impl Resolver for NetResolver {
@@ -230,6 +239,9 @@ impl Resolver for NetResolver {
     fn get_name(&self) -> String {
         self.name.clone()
     }
+    fn get_priority(&self) -> i32 {
+        self.priority
+    }
 }
 
 impl NetResolver {
@@ -243,6 +255,23 @@ impl NetResolver {
             client,
             name: name.to_string(),
             base_url: base_url.to_string(),
+            priority: 1,
         })
     }
+    pub fn set_priority(&mut self, priority: i32) {
+        self.priority = priority;
+    }
+}
+
+/// Returns the default resolvers
+/// Currently this includes cache, central and google
+// Returns an error if one of the default resolvers fails initialization
+pub fn get_default_resolvers() -> anyhow::Result<Vec<Box<dyn Resolver>>> {
+    let cache: Box<dyn Resolver> = Box::new(CacheResolver::new());
+
+    let central: Box<dyn Resolver> =
+        Box::new(NetResolver::init(CENTRAL_REPO_STR, CENTRAL_REPO_URL)?);
+
+    let google: Box<dyn Resolver> = Box::new(NetResolver::init(GOOGLE_REPO_STR, GOOGLE_REPO_URL)?);
+    Ok(vec![cache, central, google])
 }

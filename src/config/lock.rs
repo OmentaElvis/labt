@@ -169,7 +169,7 @@ pub fn write_lock(file: &mut File, resolved: &[ProjectDep]) -> anyhow::Result<()
         table.insert(GROUP_ID, value(&dep.group_id));
         table.insert(VERSION, value(&dep.version));
         table.insert(SCOPE, value(&dep.scope));
-        table.insert(URL, value(&dep.get_root_url()));
+        table.insert(URL, value(dep.get_root_url()));
         table.insert(PACKAGING, value(&dep.packaging));
         table.insert(DEPENDENCIES, value(deps_array));
         table

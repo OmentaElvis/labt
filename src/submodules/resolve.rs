@@ -8,16 +8,14 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::caching::save_dependencies;
-use crate::config::get_config;
 use crate::config::lock::load_lock_dependencies;
 use crate::config::lock::strings::LOCK_FILE;
 use crate::config::lock::write_lock;
+use crate::config::{get_config, get_resolvers_from_config};
 use crate::pom::Scope;
 use crate::pom::{self, Project};
 use crate::MULTI_PRPGRESS_BAR;
 
-use super::resolvers::CacheResolver;
-use super::resolvers::NetResolver;
 use super::resolvers::Resolver;
 use super::resolvers::ResolverErrorKind;
 use super::Submodule;
@@ -55,15 +53,17 @@ impl Submodule for Resolve {
     fn run(&mut self) -> Result<()> {
         // try reading toml file
         let config = get_config()?;
-        if let Some(deps) = config.dependencies {
+        if let Some(deps) = &config.dependencies {
             let dependencies: Vec<Project> = deps
                 .iter()
                 .map(|(artifact_id, table)| {
                     Project::new(&table.group_id, artifact_id, &table.version)
                 })
                 .collect();
+            let resolvers =
+                get_resolvers_from_config(&config).context("Failed to get resolvers")?;
 
-            resolve(dependencies)?;
+            resolve(dependencies, resolvers)?;
         }
         Ok(())
     }
@@ -468,26 +468,16 @@ async fn fetch_async(project: Project) -> anyhow::Result<Project> {
 ///
 /// This function will return an error if one of the underlying IO errors or parse error occurs
 /// on config and pom files
-pub fn resolve(dependencies: Vec<Project>) -> anyhow::Result<Vec<Project>> {
+pub fn resolve(
+    dependencies: Vec<Project>,
+    resolvers: Vec<Box<dyn Resolver>>,
+) -> anyhow::Result<Vec<Project>> {
     // load labt.lock file directory
     let mut path: PathBuf = current_dir().context("Unable to open current directory")?;
     path.push(LOCK_FILE);
 
-    //initialize resolvers
-    // TODO move these to a config for more flexibility
-    // cache resolver
-    let cache: Box<dyn Resolver> = Box::<CacheResolver>::default();
-    // maven resolver
-    let maven_url: Box<dyn Resolver> = Box::new(NetResolver::init(
-        "central",
-        "https://repo1.maven.org/maven2",
-    )?);
-    // google resolver
-    let google_url: Box<dyn Resolver> =
-        Box::new(NetResolver::init("google", "https://maven.google.com")?);
-
     // list of resolvers by their order of priority
-    let resolvers = Rc::new(RefCell::new(vec![cache, google_url, maven_url]));
+    let resolvers = Rc::new(RefCell::new(resolvers));
 
     // load resolved dependencies from lock file
     let mut resolved: Vec<ProjectDep> = if path.exists() {

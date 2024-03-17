@@ -9,6 +9,8 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use toml_edit::Document;
 
+use crate::submodules::resolvers::{get_default_resolvers, NetResolver, Resolver};
+
 /// The entire project toml file,
 /// This contains details about the project configurations,
 /// dependencies and plugins
@@ -20,6 +22,12 @@ pub struct LabToml {
     /// \[dependencies\]
     /// artifactId = {dependency inline table}
     pub dependencies: Option<HashMap<String, Dependency>>,
+    /// The list of configured resolvers
+    /// ```toml
+    /// [resolvers]
+    /// central = {url= "https://repo1.maven.org/maven2", default= true}
+    /// ```
+    pub resolvers: Option<HashMap<String, ResolverTable>>,
 }
 
 /// The project details
@@ -49,6 +57,19 @@ pub struct Dependency {
     pub version: String,
     /// The project dependency type i.e. jar, aar etc.
     pub dep_type: Option<String>,
+    /// Where to fetch the project
+    pub resolver: Option<String>,
+}
+
+/// A resolver table
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ResolverTable {
+    /// The repo url
+    pub url: String,
+    /// Is this repo to be treated as a default resolver
+    /// for unspecified dependencies
+    #[serde(default)]
+    pub priority: i32,
 }
 
 const LABT_TOML_FILE_NAME: &str = "Labt.toml";
@@ -111,6 +132,54 @@ pub fn get_editable_config() -> anyhow::Result<Document> {
     Ok(toml)
 }
 
+/// Reads Labt.toml for configured resolvers and adds them to the default
+/// resolvers or overrides them if matched with internal resolvers
+pub fn get_resolvers() -> anyhow::Result<Vec<Box<dyn Resolver>>> {
+    let config = get_config().context("Failed to get the project config")?;
+    get_resolvers_from_config(&config).context("Failed to get resolvers from project config")
+}
+
+/// Reads config for configured resolvers and adds them to the default
+/// resolvers or overrides them if matched with internal resolvers
+/// useful to avoid parsing Labt.toml again if already parsed
+pub fn get_resolvers_from_config(config: &LabToml) -> anyhow::Result<Vec<Box<dyn Resolver>>> {
+    let mut resolvers =
+        get_default_resolvers().context("Failed to initialize default resolvers")?;
+
+    if let Some(config_resolvers) = &config.resolvers {
+        for (name, resolver) in config_resolvers {
+            let mut net_resolver = NetResolver::init(name.as_str(), resolver.url.as_str())
+                .context(format!(
+                    "Failed to initialize resolver {} for repo at {}",
+                    name, resolver.url
+                ))?;
+            // update priority as configured
+            net_resolver.set_priority(resolver.priority);
+
+            let m_resolver: Box<dyn Resolver> = Box::new(net_resolver);
+
+            // check default resolvers if this resolver exists,
+            if let Some((index, _)) = resolvers
+                .iter()
+                .enumerate()
+                .find(|(_, res)| res.get_name() == name.clone())
+            {
+                // just override the default resolver
+                resolvers[index] = m_resolver;
+            } else {
+                // the resolver does not exist on default resolvers
+                resolvers.push(m_resolver);
+            }
+        }
+    }
+
+    // reverse sort the resolvers based on priority
+    // highest priority value = top of vec
+    resolvers.sort_by_key(|b| std::cmp::Reverse(b.get_priority()));
+
+    Ok(resolvers)
+}
+
 pub fn add_dependency_to_config(
     group_id: String,
     artifact_id: String,
@@ -141,4 +210,65 @@ pub fn add_dependency_to_config(
     file.write_all(config.to_string().as_bytes())?;
 
     Ok(())
+}
+
+#[test]
+fn get_resolvers_from_config_test() {
+    let config = LabToml {
+        dependencies: None,
+        project: Project {
+            name: String::from("labt"),
+            description: String::new(),
+            version_number: 0,
+            version: String::from("0.0"),
+            package: String::from("com.gitlab.labtool"),
+        },
+        resolvers: Some(HashMap::from([
+            (
+                String::from("local"),
+                ResolverTable {
+                    url: String::from("http://localhost/maven2"),
+                    priority: 99,
+                },
+            ),
+            (
+                String::from("repo1"),
+                ResolverTable {
+                    url: String::from("http://example.com/maven2"),
+                    priority: 2,
+                },
+            ),
+            // ovveride internal resolver
+            (
+                String::from("google"),
+                ResolverTable {
+                    // change the url
+                    url: String::from("https://maven.google.com/new-url"),
+                    // above cache resolver
+                    priority: 11,
+                },
+            ),
+        ])),
+    };
+
+    let resolvers = get_resolvers_from_config(&config).expect("Failed to get resolvers");
+
+    // local should be at top
+    assert_eq!(resolvers[0].get_name(), String::from("local"));
+    // followed by google resolver
+    assert_eq!(resolvers[1].get_name(), String::from("google"));
+    assert_eq!(resolvers[2].get_name(), String::from("cache"));
+    assert_eq!(resolvers[3].get_name(), String::from("repo1"));
+    assert_eq!(resolvers[4].get_name(), String::from("central"));
+
+    // check priorities
+    assert_eq!(
+        resolvers
+            .iter()
+            .map(|res| res.get_priority())
+            .collect::<Vec<i32>>(),
+        vec![99, 11, 10, 2, 1]
+    );
+
+    // TODO check urls since i did not add an easy way of getting back urls from resolves
 }

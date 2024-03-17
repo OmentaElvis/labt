@@ -1,4 +1,7 @@
-use crate::{config::add_dependency_to_config, pom::Project};
+use crate::{
+    config::{add_dependency_to_config, get_resolvers},
+    pom::Project,
+};
 
 use super::{resolve::resolve, Submodule};
 use anyhow::{Context, Result};
@@ -89,8 +92,9 @@ impl Submodule for Add {
             }
         };
         add_dependency_to_config(group_id.clone(), artifact_id.clone(), version.clone())?;
+        let resolvers = get_resolvers().context("Failed to get resolvers from Labt.toml config")?;
         let project = Project::new(group_id.as_str(), artifact_id.as_str(), version.as_str());
-        resolve(vec![project])?;
+        resolve(vec![project], resolvers)?;
 
         // println!("{:?}", project);
 
