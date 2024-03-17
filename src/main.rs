@@ -25,6 +25,8 @@ thread_local! {
     pub static MULTI_PRPGRESS_BAR: RefCell<MultiProgress> = RefCell::new(MultiProgress::new());
 }
 
+pub const LABT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub mod envs {
     pub const LABT_HOME: &str = "LABT_HOME";
     pub const HOME: &str = "HOME";

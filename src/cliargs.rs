@@ -3,11 +3,13 @@ use crate::submodules::build::{Build, BuildArgs};
 use crate::submodules::init::{Init, InitArgs};
 use crate::submodules::resolve::{Resolve, ResolveArgs};
 use crate::submodules::Submodule;
+use crate::LABT_VERSION;
 use clap::{CommandFactory, Parser, Subcommand};
 use console::style;
 use log::error;
 
 #[derive(Parser)]
+#[clap(version = LABT_VERSION)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -62,7 +64,8 @@ pub fn parse_args() {
         None => {
             let mut c = Cli::command();
             let line = style("----------------------------").bold().dim();
-            println!("{line}{}{line}", LOGO);
+            let version = style(LABT_VERSION).bold();
+            println!("{line}{}{:^24}\n{line}", LOGO, version);
             c.print_help().unwrap();
         }
     }
