@@ -54,7 +54,7 @@ pub fn write_properties(project: &ProjectDep) -> anyhow::Result<()> {
     table[GROUP_ID] = value(&project.group_id);
     table[ARTIFACT_ID] = value(&project.artifact_id);
     table[VERSION] = value(&project.version);
-    table[URL] = value(&project.url);
+    table[URL] = value(&project.base_url);
     table[PACKAGING] = value(&project.packaging);
 
     let mut deps_array = toml_edit::Array::new();
@@ -94,7 +94,7 @@ pub fn read_properties(project: &mut ProjectDep) -> anyhow::Result<()> {
         .context(PropertiesError::ParseError)?;
 
     if let Some(url) = toml.get(URL) {
-        project.url = url
+        project.base_url = url
             .as_value()
             .unwrap_or(&toml_edit::Value::from(""))
             .as_str()

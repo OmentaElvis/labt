@@ -75,7 +75,7 @@ pub struct ProjectDep {
     pub version: String,
     pub scope: Scope,
     pub dependencies: Vec<String>,
-    pub url: String,
+    pub base_url: String,
     pub packaging: String,
     pub cache_hit: bool,
 }
@@ -138,6 +138,56 @@ impl From<&Project> for ProjectDep {
                 .collect(),
             ..Default::default()
         }
+    }
+}
+
+impl ProjectDep {
+    /// Gets the root url for this dependency
+    /// e.g. https://maven.example.com/maven2/groupId/artifactId/version/
+    /// This is just ready to append a required file type from the repo
+    pub fn get_root_url(&self) -> String {
+        // check if base url ends with foward slash
+        if self.base_url.ends_with('/') {
+            format!(
+                "{}{}/{}/{}/",
+                self.base_url,
+                self.group_id.replace('.', "/"),
+                self.artifact_id,
+                self.version
+            )
+        } else {
+            format!(
+                "{}/{}/{}/{}/",
+                self.base_url,
+                self.group_id.replace('.', "/"),
+                self.artifact_id,
+                self.version
+            )
+        }
+    }
+    /// Tries to obtain base url from root url
+    /// e.g. https://maven.example.com/maven2/groupId/artifactId/version/
+    /// resolves https://maven.example.com/maven2/
+    /// likely very unstablesince it uses string replace internally
+    pub fn set_base_url_from_root(&mut self, url: String) {
+        let path = if url.ends_with('/') {
+            // include the trailing slash
+            format!(
+                "{}/{}/{}/",
+                self.group_id.replace('.', "/"),
+                self.artifact_id,
+                self.version
+            )
+        } else {
+            format!(
+                "{}/{}/{}",
+                self.group_id.replace('.', "/"),
+                self.artifact_id,
+                self.version
+            )
+        };
+
+        self.base_url = url.replace(path.as_str(), "");
     }
 }
 
@@ -364,7 +414,7 @@ impl BuildTree for ProjectWrapper {
 
         // add this project to list of resolved
         let mut project = ProjectDep::from(&self.project);
-        project.url = url;
+        project.base_url = url;
         project.cache_hit = cache_hit;
         resolved.push(project);
         Ok(())
@@ -481,4 +531,25 @@ pub fn resolve(dependencies: Vec<Project>) -> anyhow::Result<Vec<Project>> {
     write_lock(&mut file, &resolved)?;
     save_dependencies(&resolved).context("Failed downloading saved dependencies")?;
     Ok(resolved_projects)
+}
+
+#[test]
+fn check_base_url_conversion() {
+    let base = String::from("https://maven.example.com/maven2/");
+    let mut dep = ProjectDep {
+        artifact_id: "labt".to_string(),
+        group_id: "com.gitlab.labtool".to_string(),
+        version: "6.9.0".to_string(),
+        base_url: base.clone(),
+        ..Default::default()
+    };
+
+    let expected = String::from("https://maven.example.com/maven2/com/gitlab/labtool/labt/6.9.0/");
+
+    assert_eq!(expected, dep.get_root_url());
+
+    dep.base_url = String::new();
+    dep.set_base_url_from_root(expected);
+
+    assert_eq!(dep.base_url, base);
 }

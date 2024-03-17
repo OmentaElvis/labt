@@ -111,12 +111,13 @@ pub fn load_lock_dependencies_with(file: &mut File) -> anyhow::Result<Vec<Projec
                     );
                 }
                 if let Some(url) = dep.get(URL) {
-                    project.url = url
+                    let url = url
                         .as_value()
                         .unwrap_or(&toml_edit::Value::from(""))
                         .as_str()
                         .unwrap_or("")
                         .to_string();
+                    project.set_base_url_from_root(url);
                 } else {
                     missing_err(URL, position)?;
                 }
@@ -168,7 +169,7 @@ pub fn write_lock(file: &mut File, resolved: &[ProjectDep]) -> anyhow::Result<()
         table.insert(GROUP_ID, value(&dep.group_id));
         table.insert(VERSION, value(&dep.version));
         table.insert(SCOPE, value(&dep.scope));
-        table.insert(URL, value(&dep.url));
+        table.insert(URL, value(&dep.get_root_url()));
         table.insert(PACKAGING, value(&dep.packaging));
         table.insert(DEPENDENCIES, value(deps_array));
         table

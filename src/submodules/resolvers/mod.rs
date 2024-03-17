@@ -128,7 +128,7 @@ impl Resolver for CacheResolver {
         project.set_packaging(project_dep.packaging);
         project.get_dependencies_mut().extend(deps);
 
-        Ok(project_dep.url)
+        Ok(project_dep.base_url)
     }
     fn get_name(&self) -> String {
         String::from("cache")
@@ -225,14 +225,7 @@ impl Resolver for NetResolver {
                 None,
             ));
         }
-        let base_url = format!(
-            "{0}/{1}/{2}/{3}/",
-            self.base_url,
-            project.get_group_id().replace('.', "/"),
-            project.get_artifact_id(),
-            project.get_version(),
-        );
-        Ok(base_url)
+        Ok(self.base_url.clone())
     }
     fn get_name(&self) -> String {
         self.name.clone()

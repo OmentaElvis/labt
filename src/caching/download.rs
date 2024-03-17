@@ -12,7 +12,7 @@ pub fn download(project: &ProjectDep) -> anyhow::Result<u64> {
         .user_agent("Labt/1.0")
         .build()
         .context("Error creating download client")?;
-    let base = Url::parse(&project.url).context("Error parsing repo url")?;
+    let base = Url::parse(&project.get_root_url()).context("Error parsing repo url")?;
     let ext = if project.packaging.is_empty() {
         String::from("jar")
     } else {

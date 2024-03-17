@@ -225,7 +225,7 @@ pub fn save_dependencies(deps: &Vec<ProjectDep>) -> anyhow::Result<()> {
         }
         let size = download(project).context(format!(
             "Failed to download dependency from [{}]",
-            project.url
+            project.get_root_url()
         ))?;
         info!(target: "fetch", "Downloaded {} {}", cache.get_name_from_type(), size);
     }
