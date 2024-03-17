@@ -18,30 +18,30 @@ use super::Submodule;
 #[derive(Args, Clone)]
 pub struct InitArgs {
     /// Project name
-    #[arg(short, long)]
+    #[arg(short, long, required_if_eq("no_interactive", "true"))]
     name: Option<String>,
     /// Java package name
-    #[arg(long)]
+    #[arg(long, required_if_eq("no_interactive", "true"))]
     package: Option<String>,
     /// Run interactive
-    #[arg(long, action)]
-    interactive: bool,
+    #[arg(short = 'I', action)]
+    no_interactive: bool,
     /// Directory to create project in
     path: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, required_if_eq("no_interactive", "true"))]
     /// Internal version number
     version_number: Option<i32>,
-    #[arg(long)]
+    #[arg(long, required_if_eq("no_interactive", "true"))]
     /// External version name visible to users
     version_name: Option<String>,
-    #[arg(long)]
+    #[arg(long, required_if_eq("no_interactive", "true"))]
     /// Application Main activity
     main_activity: Option<String>,
-    #[arg(long, short, action)]
+    #[arg(long, short, action, required_if_eq("no_interactive", "true"))]
     /// Suppress logs
     quiet: bool,
     /// Project description
-    #[arg(long, short)]
+    #[arg(long, short, required_if_eq("no_interactive", "true"))]
     description: Option<String>,
 }
 
@@ -484,7 +484,8 @@ impl Submodule for Init {
             self.args.path = Some(cwd);
             force_use_cwd = true;
         }
-        if self.args.interactive {
+        // if interactive is disabled make all other flags compulsury
+        if !self.args.no_interactive {
             if let Err(err) = self.interactive() {
                 bail!(err);
             }
