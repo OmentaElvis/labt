@@ -15,7 +15,7 @@ _NB: This project is a working progress and currently very unstable_
 Install using cargo
 
 ```bash
-cargo install --git https://gitlab.com/lab-tool/labt
+cargo install labt
 ```
 
 ### Os support
