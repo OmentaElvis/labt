@@ -23,7 +23,7 @@ pub struct InitArgs {
     /// Java package name
     #[arg(long, required_if_eq("no_interactive", "true"))]
     package: Option<String>,
-    /// Run interactive
+    /// Disable interactive mode
     #[arg(short = 'I', action)]
     no_interactive: bool,
     /// Directory to create project in
