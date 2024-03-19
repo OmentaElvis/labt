@@ -43,17 +43,17 @@ pub fn parse_args() {
     match &args.command {
         Some(Commands::Add(args)) => {
             if let Err(e) = Add::new(args).run() {
-                error!(target: "build","{:?}", e);
+                error!(target: "add","{:?}", e);
             }
         }
         Some(Commands::Init(args)) => {
             if let Err(e) = Init::new(args).run() {
-                error!(target: "build","{:?}", e);
+                error!(target: "init","{:?}", e);
             }
         }
         Some(Commands::Resolve(args)) => {
             if let Err(e) = Resolve::new(args).run() {
-                error!(target: "build","{:?}", e);
+                error!(target: "resolve","{:?}", e);
             }
         }
         Some(Commands::Build(args)) => {
