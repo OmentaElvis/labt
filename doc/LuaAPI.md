@@ -1,5 +1,5 @@
 # LABt Lua API Documentation
-
+[TOC]
 ## Introduction
 The LABt Lua API serves as the internally supported interface for 
 developing plugins using Lua scripting language. These plugins are executed
