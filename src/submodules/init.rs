@@ -480,9 +480,16 @@ impl Submodule for Init {
                 self.args.name = cwd
                     .file_name()
                     .map(|n| n.to_str().unwrap_or("").to_string());
+                force_use_cwd = true;
             }
             self.args.path = Some(cwd);
-            force_use_cwd = true;
+        }
+
+        if force_use_cwd && self.args.path.is_some() {
+            // check if directory is not empty
+            if !self.is_dir_empty(self.args.path.clone().unwrap().as_path())? {
+                bail!("The target directory is not empty");
+            }
         }
         // if interactive is disabled make all other flags compulsury
         if !self.args.no_interactive {
