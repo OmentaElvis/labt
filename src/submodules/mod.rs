@@ -9,5 +9,6 @@ pub trait Submodule {
 pub mod add;
 pub mod build;
 pub mod init;
+pub mod plugin;
 pub mod resolve;
 pub mod resolvers;
