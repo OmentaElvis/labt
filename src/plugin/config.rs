@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::submodules::build::Step;
 
 use super::Plugin;
 
-#[derive(Default, Debug, Deserialize)]
+#[derive(Default, Debug, Deserialize, Serialize)]
 pub struct PluginToml {
     /// plugin name
     pub name: String,
@@ -19,7 +19,7 @@ pub struct PluginToml {
     pub path: PathBuf,
 }
 
-#[derive(Default, Debug, Deserialize)]
+#[derive(Default, Debug, Deserialize, Serialize)]
 pub struct Stage {
     /// Pre build state, used in generating code or building external
     /// dependency used in next steps
@@ -37,7 +37,7 @@ pub struct Stage {
     pub post: Option<PluginStage>,
 }
 
-#[derive(Default, Debug, Deserialize)]
+#[derive(Default, Debug, Deserialize, Serialize)]
 pub struct PluginStage {
     /// file containing the entry point
     pub file: PathBuf,

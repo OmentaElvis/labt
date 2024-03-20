@@ -7,7 +7,7 @@ pub mod lock;
 pub mod maven_metadata;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use toml_edit::Document;
+use toml_edit::{Document, TableLike};
 
 use crate::submodules::resolvers::{get_default_resolvers, NetResolver, Resolver};
 
@@ -92,6 +92,8 @@ const LABT_TOML_FILE_NAME: &str = "Labt.toml";
 const VERSION_STRING: &str = "version";
 const GROUP_ID_STRING: &str = "group_id";
 const DEPENDENCIES_STRING: &str = "dependencies";
+const LOCATION_STRING: &str = "location";
+const PLUGINS_STRING: &str = "plugins";
 
 /// Reads Labt.toml from the current working directory, and returns
 /// its contents as string
@@ -224,6 +226,62 @@ pub fn add_dependency_to_config(
     path.push(LABT_TOML_FILE_NAME);
     let mut file = File::create(path)?;
     file.write_all(config.to_string().as_bytes())?;
+
+    Ok(())
+}
+/// Adds this plugin to the project config
+/// Returns an error if underlying IO and parsing operations fail.
+pub fn add_plugin_to_config(name: String, version: String, location: String) -> anyhow::Result<()> {
+    use toml_edit::value;
+    use toml_edit::InlineTable;
+    use toml_edit::Item;
+    use toml_edit::Table;
+
+    let mut config = get_editable_config().context("Failed to get project config")?;
+    let mut inline_table = InlineTable::new();
+    inline_table.insert(VERSION_STRING, version.into());
+    inline_table.insert(LOCATION_STRING, location.into());
+
+    if config.contains_table(PLUGINS_STRING) {
+        config[PLUGINS_STRING][name] = value(inline_table);
+    } else {
+        let mut table = Table::new();
+        table.insert(&name, value(inline_table));
+        config.insert(PLUGINS_STRING, Item::Table(table));
+    }
+
+    let mut path = std::env::current_dir().context("Failed to get current working directory")?;
+    path.push(LABT_TOML_FILE_NAME);
+    let mut file = File::create(path).context(format!(
+        "Failed to create {} config file",
+        LABT_TOML_FILE_NAME
+    ))?;
+    file.write_all(config.to_string().as_bytes())
+        .context(format!("Failed to write to {} file", LABT_TOML_FILE_NAME))?;
+
+    Ok(())
+}
+/// Removes plugin from the project config
+pub fn remove_plugin_from_config(name: String) -> anyhow::Result<()> {
+    let mut config = get_editable_config().context("Failed to get project config")?;
+    // Remove plugin from config
+    if let Some(table) = config.get_mut(PLUGINS_STRING) {
+        if let Some(table) = table.as_table_mut() {
+            // remove this entry
+            table.remove(name.as_str());
+
+            let mut path =
+                std::env::current_dir().context("Failed to get current working directory")?;
+            path.push(LABT_TOML_FILE_NAME);
+            // open config dile
+            let mut file = File::create(path).context(format!(
+                "Failed to create {} config file",
+                LABT_TOML_FILE_NAME
+            ))?;
+            file.write_all(config.to_string().as_bytes())
+                .context(format!("Failed to write to {} file", LABT_TOML_FILE_NAME))?;
+        }
+    }
 
     Ok(())
 }
