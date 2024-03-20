@@ -62,7 +62,8 @@ impl PluginToml {
                     // push the plugin source path to path
                     path.push(s.file.clone());
                     // create a plugin and set its step as $j
-                    let plugin = Plugin::new(self.name.clone(), self.version.clone(), path, $j);
+                    let mut plugin = Plugin::new(self.name.clone(), self.version.clone(), path, $j);
+                    plugin.priority = s.priority;
                     // add the plugin to the list of plugins
                     steps.push(plugin);
                 }

@@ -117,7 +117,7 @@ impl Submodule for Build {
         }
 
         let plugin_list = load_plugins_from_paths(paths).context("Failed to load plugins")?;
-        let map = load_plugins(plugin_list).context("Error loading plugin configurations")?;
+        let mut map = load_plugins(plugin_list).context("Error loading plugin configurations")?;
 
         for step in order {
             // update build step if already provided
@@ -125,7 +125,9 @@ impl Submodule for Build {
                 *s.borrow_mut() = step;
             });
 
-            if let Some(plugins) = map.get(&step) {
+            if let Some(plugins) = map.get_mut(&step) {
+                // sort plugins by priority
+                plugins.sort_by(|a, b| b.priority.partial_cmp(&a.priority).unwrap());
                 for plugin in plugins {
                     // loop through each plugin executing each
                     let exe = plugin.load().context(format!(

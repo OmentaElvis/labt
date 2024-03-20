@@ -18,6 +18,7 @@ pub struct Plugin {
     pub version: String,
     pub path: PathBuf,
     pub step: Step,
+    pub priority: i32,
 }
 
 impl Plugin {
@@ -27,6 +28,7 @@ impl Plugin {
             version,
             path,
             step,
+            priority: 0,
         }
     }
     pub fn load(&self) -> anyhow::Result<ExecutableLua> {
