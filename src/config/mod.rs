@@ -28,6 +28,12 @@ pub struct LabToml {
     /// central = {url= "https://repo1.maven.org/maven2", default= true}
     /// ```
     pub resolvers: Option<HashMap<String, ResolverTable>>,
+    /// Defines a list of plugins to use for this project
+    /// ```toml
+    /// [plugins]
+    /// core-java = {url = "https://gitlab.com/lab-tool/core-java", version="v0.1.0"}
+    /// ```
+    pub plugins: Option<HashMap<String, PluginTable>>,
 }
 
 /// The project details
@@ -70,6 +76,16 @@ pub struct ResolverTable {
     /// for unspecified dependencies
     #[serde(default)]
     pub priority: i32,
+}
+
+/// The plugin toml table,
+/// Either url or path should be provided for valid declaration
+#[derive(Serialize, Deserialize, Debug)]
+pub struct PluginTable {
+    /// The repo url or local path where to fetch the plugin
+    pub location: Option<String>,
+    /// The plugin version to fetch
+    pub version: String,
 }
 
 const LABT_TOML_FILE_NAME: &str = "Labt.toml";
@@ -249,6 +265,7 @@ fn get_resolvers_from_config_test() {
                 },
             ),
         ])),
+        plugins: None,
     };
 
     let resolvers = get_resolvers_from_config(&config).expect("Failed to get resolvers");

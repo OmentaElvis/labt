@@ -441,6 +441,7 @@ impl Init {
                 },
                 dependencies: None,
                 resolvers: None,
+                plugins: None,
             };
             // serialize to toml string
             let toml = toml::to_string(&toml).context("Serializing LabtToml to toml string")?;
