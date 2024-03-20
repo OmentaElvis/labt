@@ -1,5 +1,7 @@
 use std::{
     cell::RefCell,
+    env::current_dir,
+    ffi::OsStr,
     fs::{create_dir, create_dir_all},
     io::Write,
     path::PathBuf,
@@ -51,6 +53,42 @@ pub fn get_home() -> anyhow::Result<PathBuf> {
     }
 
     bail!("No apropriate Labt home directory detected!");
+}
+
+/// Recursively searches for project root folder by checking if
+/// Labt.toml exist from the current working directory going up
+/// the directory tree
+/// uses the current working directory as the start point
+/// Returns an error if listing directory contents fails or Labt.toml
+// is never found
+pub fn get_project_root() -> std::io::Result<PathBuf> {
+    let cwd = current_dir()?;
+    get_project_root_recursive(cwd)
+}
+
+/// Recursively searches for project root folder by checking if
+/// Labt.toml exist from the current working directory going up
+/// the directory tree
+/// Returns an error if listing directory contents fails or Labt.toml
+// is never found
+fn get_project_root_recursive(current_dir: PathBuf) -> std::io::Result<PathBuf> {
+    for entry in (current_dir.read_dir()?).flatten() {
+        let file = entry.path();
+        if file.is_file() && file.file_name() == Some(OsStr::new("Labt.toml")) {
+            // found!
+            return Ok(current_dir);
+        }
+    }
+    // didn't find the file, go up the tree
+    if let Some(path) = current_dir.parent() {
+        get_project_root_recursive(PathBuf::from(path))
+    } else {
+        // no more upsies
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Failed to get project root",
+        ))
+    }
 }
 
 /// Should be executed on labt first run.

@@ -7,7 +7,7 @@ pub mod lock;
 pub mod maven_metadata;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use toml_edit::{Document, TableLike};
+use toml_edit::Document;
 
 use crate::submodules::resolvers::{get_default_resolvers, NetResolver, Resolver};
 
