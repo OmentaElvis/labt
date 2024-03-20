@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 use mlua::IntoLua;
 use mlua::Lua;
@@ -26,6 +28,12 @@ pub fn load_labt_table(lua: &mut Lua) -> Result<()> {
         Ok(lua.to_value(&config))
     })?;
     table.set("get_project_config", get_project_config)?;
+
+    let get_project_root = lua.create_function(move |lua, ()| {
+        let path = get_project_root().map_err(mlua::Error::external)?;
+        Ok(lua.to_value(&path))
+    })?;
+    table.set("get_project_root", get_project_root)?;
 
     // add get_dependencies
     // TODO cache this to reduce uneccessary reading of Labt.lock
@@ -58,6 +66,10 @@ fn get_build_step() -> Step {
 
 fn get_project_config() -> anyhow::Result<LabToml> {
     get_config()
+}
+/// Returns the project root directory
+fn get_project_root() -> anyhow::Result<PathBuf> {
+    Ok(crate::get_project_root()?.clone())
 }
 
 fn get_lock_dependencies() -> anyhow::Result<Vec<ProjectDep>> {

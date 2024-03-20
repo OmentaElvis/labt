@@ -197,3 +197,15 @@ end
 
 ```
 
+***
+### `get_project_root`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: None <br>
+**returns**: string
+***
+
+Returns the project root directory by recursively looking for Labt.toml up the
+directory tree. Returns an error if the project root was not located or labt 
+encountered a file system related error during the search.
+
+
