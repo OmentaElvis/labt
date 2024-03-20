@@ -8,7 +8,7 @@ pub mod download;
 pub mod properties;
 
 use anyhow::Context;
-use indicatif::ProgressBar;
+use indicatif::{HumanBytes, ProgressBar};
 use log::info;
 
 use crate::{get_home, submodules::resolve::ProjectDep, MULTI_PRPGRESS_BAR};
@@ -227,7 +227,7 @@ pub fn save_dependencies(deps: &Vec<ProjectDep>) -> anyhow::Result<()> {
             "Failed to download dependency from [{}]",
             project.get_root_url()
         ))?;
-        info!(target: "fetch", "Downloaded {} {}", cache.get_name_from_type(), size);
+        info!(target: "fetch", "Downloaded {} {}", cache.get_name_from_type(), HumanBytes(size));
     }
 
     Ok(())
