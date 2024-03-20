@@ -9,7 +9,10 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use toml_edit::Document;
 
-use crate::submodules::resolvers::{get_default_resolvers, NetResolver, Resolver};
+use crate::{
+    get_project_root,
+    submodules::resolvers::{get_default_resolvers, NetResolver, Resolver},
+};
 
 /// The entire project toml file,
 /// This contains details about the project configurations,
@@ -102,10 +105,9 @@ const PLUGINS_STRING: &str = "plugins";
 ///
 /// This function will return an error if IO related error is encountered.
 pub fn get_config_string() -> anyhow::Result<String> {
-    let mut path = std::env::current_dir().context(format!(
-        "Failed opening current working directory for {}",
-        LABT_TOML_FILE_NAME
-    ))?;
+    let mut path = get_project_root()
+        .context("Failed opening the project root directory")?
+        .clone();
     path.push(LABT_TOML_FILE_NAME);
 
     let mut file = File::open(&path).context(format!(
@@ -121,7 +123,7 @@ pub fn get_config_string() -> anyhow::Result<String> {
     Ok(toml_string)
 }
 
-/// Serializes Labt.toml in the current directory to a [`LabToml`] object
+/// Serializes Labt.toml in the project root directory to a [`LabToml`] object
 ///
 /// # Errors
 ///
