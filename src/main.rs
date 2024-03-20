@@ -5,6 +5,7 @@ use std::{
     fs::{create_dir, create_dir_all},
     io::Write,
     path::PathBuf,
+    sync::OnceLock,
 };
 
 use anyhow::bail;
@@ -26,6 +27,10 @@ pub mod templating;
 thread_local! {
     pub static MULTI_PRPGRESS_BAR: RefCell<MultiProgress> = RefCell::new(MultiProgress::new());
 }
+/// Initialized by get_project_root. It caches the the
+/// result of the function to prevent extra system calls
+/// DO NOT use directly
+static PROJECT_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 pub const LABT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -61,9 +66,13 @@ pub fn get_home() -> anyhow::Result<PathBuf> {
 /// uses the current working directory as the start point
 /// Returns an error if listing directory contents fails or Labt.toml
 // is never found
-pub fn get_project_root() -> std::io::Result<PathBuf> {
+pub fn get_project_root<'a>() -> std::io::Result<&'a PathBuf> {
+    if let Some(path) = PROJECT_ROOT.get() {
+        return Ok(path);
+    }
     let cwd = current_dir()?;
-    get_project_root_recursive(cwd)
+    let path = get_project_root_recursive(cwd)?;
+    Ok(PROJECT_ROOT.get_or_init(|| path))
 }
 
 /// Recursively searches for project root folder by checking if
