@@ -98,16 +98,43 @@ pub fn load_plugins_config() -> anyhow::Result<Vec<PluginToml>> {
         .context("Plugin config loader worker threads failed")?;
     Ok(plugins)
 }
+pub fn load_plugins_from_paths(paths: Vec<PathBuf>) -> anyhow::Result<Vec<PluginToml>> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("Error creating a tokio runtime")?;
 
-/// Loads the plugins from plugins folder, then proceeds to group them into
+    let plugins = runtime
+        .block_on(async {
+            let mut plugins: Vec<PluginToml> = vec![];
+            let mut handlers = vec![];
+
+            for path in &paths {
+                handlers.push((path, tokio::spawn(load(path.clone()))));
+            }
+
+            for (dir, handler) in handlers {
+                let plugin_result = handler.await?;
+                let plugin =
+                    plugin_result.context(format!("Error parsing plugin config at {:?}", dir))?;
+                plugins.push(plugin);
+            }
+
+            Ok::<Vec<PluginToml>, anyhow::Error>(plugins)
+        })
+        .context("Plugin config loader worker threads failed")?;
+
+    Ok(plugins)
+}
+
+/// Loads the plugins from plugins list provided, then proceeds to group them into
 /// their respective execution steps
 ///
 /// # Errors
 ///
 /// This function will return an error if underlying `load_plugins_config()` errors
-pub fn load_plugins() -> anyhow::Result<HashMap<Step, Vec<Plugin>>> {
+pub fn load_plugins(configs: Vec<PluginToml>) -> anyhow::Result<HashMap<Step, Vec<Plugin>>> {
     let mut plugins: HashMap<Step, Vec<Plugin>> = HashMap::new();
-    let configs: Vec<PluginToml> = load_plugins_config().context("Error loading plugin configs")?;
 
     for config in configs {
         let plugin_steps = config.get_steps();

@@ -1,9 +1,14 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, path::PathBuf};
 
 use anyhow::Context;
 use clap::{Args, ValueEnum};
+use reqwest::Url;
 
-use crate::plugin::load_plugins;
+use crate::{
+    config::get_config,
+    get_home, get_project_root,
+    plugin::{load_plugins, load_plugins_from_paths},
+};
 
 use super::Submodule;
 
@@ -66,8 +71,53 @@ impl Submodule for Build {
                 Step::POST,
             ]
         };
+        let mut home = get_home().context("Failed to load plugin home")?;
+        home.push("plugins");
+        // try loading plugin from config
+        let config = get_config().context("Failed to load plugins list from config")?;
+        // array of plugin locations to be loaded
+        let mut paths: Vec<PathBuf> = vec![];
+        if let Some(plugins) = config.plugins {
+            paths.extend(plugins.iter().map(|(name, plugin)| {
+                // check if plugin has location string
 
-        let map = load_plugins()?;
+                if let Some(location) = &plugin.location {
+                    // if location is a valid url, load from labt home plugins
+                    if Url::parse(location.as_str()).is_ok() {
+                        let mut h = home.clone();
+                        h.push(format!("{}-{}", name.clone(), plugin.version.clone()));
+                        h
+                    } else {
+                        // else use the defined location
+                        PathBuf::from(location)
+                    }
+                } else {
+                    // TODO this branch is really confusing, but maybe in the future it wiil be used to load fro central repo
+                    // anyways load from home
+                    let mut h = home.clone();
+                    h.push(format!("{}-{}", name.clone(), plugin.version.clone()));
+                    h
+                }
+            }));
+        }
+
+        {
+            // include the paths of plugins in the project folder
+            let mut root = get_project_root()
+                .context("Failed to read the project root folder")?
+                .clone();
+            root.push("plugins");
+            if root.exists() {
+                for path in (root.read_dir()?).flatten().map(|entry| entry.path()) {
+                    if path.is_dir() {
+                        paths.push(path);
+                    }
+                }
+            }
+        }
+
+        let plugin_list = load_plugins_from_paths(paths).context("Failed to load plugins")?;
+        let map = load_plugins(plugin_list).context("Error loading plugin configurations")?;
 
         for step in order {
             // update build step if already provided
