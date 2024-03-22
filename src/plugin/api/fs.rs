@@ -47,17 +47,28 @@ fn mkdir_all(_lua: &Lua, path: String) {
 
     Ok(())
 }
-/// Generates labt table and loads all its api functions
+
+/// Returns true if file exists and false if does not exist.
+/// if the file/dir in question cannot be verified to exist or not exist due
+/// to file system related errors, It returns the error instead.
+#[labt_lua]
+fn exists(_lua: &Lua, path: String) {
+    let path = PathBuf::from(path);
+    let exists = path.try_exists().map_err(mlua::Error::external)?;
+    Ok(exists)
+}
+/// Generates fs table and loads all its api functions
 ///
 /// # Errors
 ///
-/// This function will return an error if adding functions to labt function fails
+/// This function will return an error if adding functions to fs table fails
 /// or the underlying lua operations return errors.
 pub fn load_fs_table(lua: &mut Lua) -> anyhow::Result<()> {
     let table = lua.create_table()?;
 
     mkdir(lua, &table)?;
     mkdir_all(lua, &table)?;
+    exists(lua, &table)?;
 
     lua.globals().set("fs", table)?;
 

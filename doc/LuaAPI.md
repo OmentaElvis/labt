@@ -240,3 +240,14 @@ Returns an error if:
 
 - obtaining the project root directory fails
 - creating the directory fails
+
+***
+### `exists`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: None <br>
+**returns**: boolean
+***
+
+Returns true if file exists and false if does not exist.
+if the file/dir in question cannot be verified to exist or not exist due
+to file system related errors, the function errors instead.

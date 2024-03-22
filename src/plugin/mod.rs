@@ -11,7 +11,6 @@ use self::{config::PluginToml, executable::ExecutableLua};
 pub mod api;
 pub mod config;
 pub mod executable;
-pub mod functions;
 
 #[derive(Debug)]
 pub struct Plugin {
