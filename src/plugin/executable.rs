@@ -6,7 +6,8 @@ use mlua::{Chunk, Lua, Table};
 
 use crate::submodules::build::Step;
 
-use super::functions::load_labt_table;
+use super::api::fs::load_fs_table;
+use super::api::labt::load_labt_table;
 
 /// Represents an executable plugin
 pub struct Executable {}
@@ -74,8 +75,9 @@ impl<'lua, 'a> ExecutableLua {
         self.build_step = stage;
     }
     pub fn add_function(&mut self) {}
-    pub fn load_labt_table(&mut self) -> Result<()> {
-        load_labt_table(&mut self.lua)?;
+    pub fn load_api_tables(&mut self) -> Result<()> {
+        load_labt_table(&mut self.lua).context("Failed to add labt table into lua context")?;
+        load_fs_table(&mut self.lua).context("Failed to add fs table into lua context")?;
         Ok(())
     }
 }

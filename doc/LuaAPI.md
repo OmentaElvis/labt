@@ -120,7 +120,7 @@ API.
 A table named labt is injected into the global context of the plugin. This table
 contains utility functions implemented directly in rust and include some of the
 functions used by labt itself internally. The implementation of this functions 
-can be found at [src/plugin/functions.rs](../src/plugin/functions.rs).
+can be found at [src/plugin/api/labt.rs](../src/plugin/api/labt.rs).
 
 ***
 ### `get_project_config`
@@ -208,6 +208,9 @@ Returns the project root directory by recursively looking for Labt.toml up the
 directory tree. Returns an error if the project root was not located or labt 
 encountered a file system related error during the search.
 
+## `fs` table
+A table containing utility functions for working with the file system.
+This functions are implemented in rust at [src/plugin/api/fs.rs](../src/plugin/api/fs.rs).
 
 ***
 ### `mkdir`

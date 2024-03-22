@@ -8,6 +8,7 @@ use crate::{get_home, submodules::build::Step};
 
 use self::{config::PluginToml, executable::ExecutableLua};
 
+pub mod api;
 pub mod config;
 pub mod executable;
 pub mod functions;
@@ -40,8 +41,8 @@ impl Plugin {
     pub fn load(&self) -> anyhow::Result<ExecutableLua> {
         let mut exe = ExecutableLua::new(self.path.clone(), &self.package_paths);
         exe.set_build_step(self.step);
-        exe.load_labt_table()
-            .context("Error injecting labt table into lua context")?;
+        exe.load_api_tables()
+            .context("Error injecting api tables into lua context")?;
         Ok(exe)
     }
 }
