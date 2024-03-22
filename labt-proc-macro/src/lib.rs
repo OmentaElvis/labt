@@ -73,7 +73,6 @@ pub fn labt_lua(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
     .into();
-    println!("{}", output);
 
     output
 }
