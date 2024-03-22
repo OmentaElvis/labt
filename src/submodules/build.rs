@@ -1,4 +1,7 @@
-use std::{cell::RefCell, path::PathBuf};
+use std::{
+    cell::RefCell,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Context;
 use clap::{Args, ValueEnum};
@@ -128,7 +131,24 @@ impl Submodule for Build {
             if let Some(plugins) = map.get_mut(&step) {
                 // sort plugins by priority
                 plugins.sort_by(|a, b| b.priority.partial_cmp(&a.priority).unwrap());
-                for plugin in plugins {
+                '_loop: for plugin in plugins {
+                    // filter for only required plugins
+                    if let Some((inputs, outputs)) = &plugin.dependents {
+                        // iterate on plugin dependents,
+                        // if the output list is empty, then it will skip the iteration and assume first run
+                        for output in outputs {
+                            // for each output, compare to see if to run this plugin stage
+                            // only run plugins which have their dependents changed should be run
+                            let is_stale = inputs
+                                .iter()
+                                .any(|input| is_file_newer(input, output).unwrap_or(false));
+
+                            if !is_stale {
+                                // the plugin outputs are newer so skip it
+                                continue '_loop;
+                            }
+                        }
+                    }
                     // loop through each plugin executing each
                     let exe = plugin.load().context(format!(
                         "Error loading plugin: {}:{} at build step {:?}",
@@ -150,4 +170,40 @@ impl Submodule for Build {
 
         Ok(())
     }
+}
+/// Returns true if file a is newer than file b
+/// If file b does not exist, returns true
+/// if file a does not exist returns false
+/// This function may just break in some platforms
+/// # Errors
+///
+/// Returns an error if we fail to get the metadata of the file
+pub fn is_file_newer(a: &Path, b: &Path) -> std::io::Result<bool> {
+    if !b.exists() {
+        return Ok(true);
+    }
+    if !a.exists() {
+        return Ok(false);
+    }
+    // try to obtain the metadata for comparison
+    let metadata_a = match a.metadata() {
+        Ok(metadata) => metadata,
+        Err(err) => return Err(err),
+    };
+
+    let metadata_b = match b.metadata() {
+        Ok(metadata) => metadata,
+        Err(err) => return Err(err),
+    };
+
+    let modification_a = match metadata_a.modified() {
+        Ok(modified) => modified,
+        Err(err) => return Err(err),
+    };
+    let modification_b = match metadata_b.modified() {
+        Ok(modified) => modified,
+        Err(err) => return Err(err),
+    };
+
+    Ok(modification_a > modification_b)
 }

@@ -1,8 +1,10 @@
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
+use anyhow::Context;
+use glob::glob;
 use serde::{Deserialize, Serialize};
 
-use crate::submodules::build::Step;
+use crate::{get_project_root, submodules::build::Step};
 
 use super::Plugin;
 
@@ -43,10 +45,15 @@ pub struct PluginStage {
     pub file: PathBuf,
     /// plugin priority
     pub priority: i32,
+    /// The input files that we should watch for changes
+    pub inputs: Option<Vec<String>>,
+    /// The output files that we should ensure that it is uptodate
+    pub outputs: Option<Vec<String>>,
 }
 
 impl PluginToml {
-    pub fn get_steps(&self) -> Vec<Plugin> {
+    /// Maps PluginToml stages into their [`Plugin`] representation.
+    pub fn get_steps(&self) -> anyhow::Result<Vec<Plugin>> {
         let mut steps = vec![];
 
         /// because i cant accurately copy & paste these mappings
@@ -64,6 +71,11 @@ impl PluginToml {
                     // create a plugin and set its step as $j
                     let mut plugin = Plugin::new(self.name.clone(), self.version.clone(), path, $j);
                     plugin.priority = s.priority;
+                    if s.inputs.is_some() && s.outputs.is_some() {
+                        // both have items, so add them to the output
+                        plugin.dependents = Some((expand_globs(s.inputs.clone().unwrap()).context("Unable to expand global patterns specified by the inputs dependents")?,
+                                expand_globs(s.outputs.clone().unwrap()).context("Unable to expand global patterns specified by the outputs dependents")?));
+                    }
                     // add the plugin to the list of plugins
                     steps.push(plugin);
                 }
@@ -80,6 +92,32 @@ impl PluginToml {
             post = Step::POST
         ];
 
-        steps
+        Ok(steps)
     }
+}
+
+fn expand_globs(patterns: Vec<String>) -> anyhow::Result<Vec<PathBuf>> {
+    let mut paths: HashSet<PathBuf> = HashSet::new();
+    for pattern in patterns {
+        let path = PathBuf::from(pattern);
+        let path = if path.is_relative() {
+            // if is a relative path, append project root instead
+            let mut root = get_project_root()
+                .context("Failed to get project root directory")?
+                .clone();
+            root.push(path);
+            root
+        } else {
+            path
+        };
+        // get the globs expansions and filter unreadable paths
+        glob(path.to_str().unwrap_or_default())
+            .context("Failed to match glob pattern")?
+            .filter_map(Result::ok)
+            .for_each(|p| {
+                paths.insert(p);
+            });
+    }
+
+    Ok(paths.iter().map(|p| p.to_owned()).collect())
 }

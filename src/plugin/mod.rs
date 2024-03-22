@@ -19,6 +19,8 @@ pub struct Plugin {
     pub path: PathBuf,
     pub step: Step,
     pub priority: i32,
+    /// The files to check for changes during a build step
+    pub dependents: Option<(Vec<PathBuf>, Vec<PathBuf>)>,
 }
 
 impl Plugin {
@@ -29,6 +31,7 @@ impl Plugin {
             path,
             step,
             priority: 0,
+            dependents: None,
         }
     }
     pub fn load(&self) -> anyhow::Result<ExecutableLua> {
@@ -139,7 +142,9 @@ pub fn load_plugins(configs: Vec<PluginToml>) -> anyhow::Result<HashMap<Step, Ve
     let mut plugins: HashMap<Step, Vec<Plugin>> = HashMap::new();
 
     for config in configs {
-        let plugin_steps = config.get_steps();
+        let plugin_steps = config
+            .get_steps()
+            .context("Unable to parse build stages from plugins")?;
         for plugin in plugin_steps {
             if let Some(step_vec) = plugins.get_mut(&plugin.step) {
                 // update the plugin vector
