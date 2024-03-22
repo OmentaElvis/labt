@@ -209,3 +209,31 @@ directory tree. Returns an error if the project root was not located or labt
 encountered a file system related error during the search.
 
 
+***
+### `mkdir`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string <br>
+**returns**: Nil
+***
+
+creates the directory specified. If the path provided is relative, this function
+creates the path relative to the project root.
+Returns an error if:
+
+- obtaining the project root directory fails
+- creating the directory fails
+- directory already exists
+
+***
+### `mkdir_all`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string <br>
+**returns**: Nil
+***
+
+creates the directory specified and all its parent directories if they don't already exist.
+If the path provided is relative, this functioncreates the path relative to the project root.
+Returns an error if: 
+
+- obtaining the project root directory fails
+- creating the directory fails
