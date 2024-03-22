@@ -1,9 +1,11 @@
+use anyhow::Context;
 use labt_proc_macro::labt_lua;
 use mlua::IntoLua;
 use mlua::Lua;
 use mlua::LuaSerdeExt;
 
 use crate::config::get_config;
+use crate::config::get_resolvers_from_config;
 use crate::config::lock::load_lock_dependencies;
 use crate::config::lock::strings::ARTIFACT_ID;
 use crate::config::lock::strings::DEPENDENCIES;
@@ -52,6 +54,36 @@ fn get_lock_dependencies(lua: &Lua) {
 
     Ok(array)
 }
+/// Calls dependency resolution algorithm on dependencies found in
+/// Labt.toml
+/// Returns an error if:
+/// - resolving the dependencies fail
+/// - failed to read project config [`Labt.toml`]
+/// - failed to read and configure resolvers from config
+/// TODO FIXME Mlua is not compatible with anyhow so it looses the useful error context chains
+#[labt_lua]
+fn resolve(_lua: &Lua) {
+    use crate::pom::Project;
+
+    let config = get_config()
+        .context("Failed to get project configuration")
+        .map_err(mlua::Error::external)?;
+
+    if let Some(deps) = &config.dependencies {
+        let dependencies: Vec<Project> = deps
+            .iter()
+            .map(|(artifact_id, table)| Project::new(&table.group_id, artifact_id, &table.version))
+            .collect();
+        let resolvers = get_resolvers_from_config(&config)
+            .context("Failed to get resolvers")
+            .map_err(mlua::Error::external)?;
+
+        crate::submodules::resolve::resolve(dependencies, resolvers)
+            .context("Failed to resolve projects dependencies")
+            .map_err(mlua::Error::external)?;
+    }
+    Ok(())
+}
 
 impl<'lua> IntoLua<'lua> for Step {
     fn into_lua(
@@ -87,6 +119,8 @@ pub fn load_labt_table(lua: &mut Lua) -> anyhow::Result<()> {
 
     // add get_dependencies
     get_lock_dependencies(lua, &table)?;
+
+    resolve(lua, &table)?;
 
     lua.globals().set("labt", table)?;
 

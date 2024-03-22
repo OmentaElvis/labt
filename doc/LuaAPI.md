@@ -208,6 +208,20 @@ Returns the project root directory by recursively looking for Labt.toml up the
 directory tree. Returns an error if the project root was not located or labt 
 encountered a file system related error during the search.
 
+
+***
+### `resolve`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: None <br>
+**returns**: nil
+***
+Calls dependency resolution algorithm on dependencies found in Labt.toml
+Returns an error if:
+
+- resolving the dependencies fail
+- failed to read project config [`Labt.toml`]
+- failed to read and configure resolvers from config
+
 ## `fs` table
 A table containing utility functions for working with the file system.
 This functions are implemented in rust at [src/plugin/api/fs.rs](../src/plugin/api/fs.rs).
