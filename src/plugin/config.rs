@@ -1,4 +1,7 @@
-use std::{collections::HashSet, path::PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Context;
 use glob::glob;
@@ -19,6 +22,8 @@ pub struct PluginToml {
 
     #[serde(skip)]
     pub path: PathBuf,
+    /// Paths to serch for required lua modules
+    pub package_paths: Option<Vec<PathBuf>>,
 }
 
 #[derive(Default, Debug, Deserialize, Serialize)]
@@ -71,6 +76,12 @@ impl PluginToml {
                     // create a plugin and set its step as $j
                     let mut plugin = Plugin::new(self.name.clone(), self.version.clone(), path, $j);
                     plugin.priority = s.priority;
+                    plugin.package_paths = if let Some(package_paths) = &self.package_paths{
+                            load_package_paths(package_paths, &self.path)
+                        }else{
+                            load_package_paths(&[], &self.path)
+                        };
+
                     if s.inputs.is_some() && s.outputs.is_some() {
                         // both have items, so add them to the output
                         plugin.dependents = Some((expand_globs(s.inputs.clone().unwrap()).context("Unable to expand global patterns specified by the inputs dependents")?,
@@ -120,4 +131,30 @@ fn expand_globs(patterns: Vec<String>) -> anyhow::Result<Vec<PathBuf>> {
     }
 
     Ok(paths.iter().map(|p| p.to_owned()).collect())
+}
+/// tries to check is the provided package paths are relative, and adds
+/// the plugin root dir to them to make a valid path
+fn load_package_paths(paths: &[PathBuf], plugin_root: &Path) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = paths
+        .iter()
+        .map(|p| {
+            if p.is_relative() {
+                let mut new = PathBuf::from(plugin_root);
+                new.push(p);
+                new
+            } else {
+                p.to_owned()
+            }
+        })
+        .collect();
+
+    let mut lua_match = PathBuf::from(plugin_root);
+    lua_match.push("?.lua");
+    paths.push(lua_match);
+
+    let mut lua_init_match = PathBuf::from(plugin_root);
+    lua_init_match.push("?/init.lua");
+    paths.push(lua_init_match);
+
+    paths
 }

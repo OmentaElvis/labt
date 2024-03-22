@@ -21,6 +21,8 @@ pub struct Plugin {
     pub priority: i32,
     /// The files to check for changes during a build step
     pub dependents: Option<(Vec<PathBuf>, Vec<PathBuf>)>,
+    /// package paths
+    pub package_paths: Vec<PathBuf>,
 }
 
 impl Plugin {
@@ -32,10 +34,11 @@ impl Plugin {
             step,
             priority: 0,
             dependents: None,
+            package_paths: vec![],
         }
     }
     pub fn load(&self) -> anyhow::Result<ExecutableLua> {
-        let mut exe = ExecutableLua::new(self.path.clone());
+        let mut exe = ExecutableLua::new(self.path.clone(), &self.package_paths);
         exe.set_build_step(self.step);
         exe.load_labt_table()
             .context("Error injecting labt table into lua context")?;
