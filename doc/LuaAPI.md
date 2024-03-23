@@ -289,3 +289,39 @@ local java = fs.glob("app/java/**/*.java")
 -- pass the source files to the java compiler
 
 ```
+
+## `log` table
+Provides log utility functions used by labt internally. This allows for consistency
+and working with labt's progress bars. The Rust internal implementation can be found at
+[src/plugin/api/log.rs](../src/plugin/api/log.rs)
+
+```lua
+log.info("javac", "Compiling N source files")
+log.error("aapt", "Failed to locate ANDROID_HOME")
+log.warn("bundle", "Signing apk with development key")
+```
+
+***
+### `info`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: target, string: message <br>
+**returns**: nil
+***
+
+Logs at the info log level
+
+***
+### `warn`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: target, string: message <br>
+**returns**: nil
+***
+Logs at the warn log level
+
+***
+### `error`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: target, string: message <br>
+**returns**: nil
+***
+Logs at the error log level
