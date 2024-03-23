@@ -57,6 +57,46 @@ fn exists(_lua: &Lua, path: String) {
     let exists = path.try_exists().map_err(mlua::Error::external)?;
     Ok(exists)
 }
+
+/// Returns all files that match a globbing pattern. It returns only files that are
+/// readable (did not return IO errors when trying to list them) and files whose path
+/// string representation is a valid unicode.
+/// Returns an error if:
+/// - failed to parse the globbing pattern;
+/// - Failed to get the project root for relative paths
+/// - Failed to convert project root + glob pattern into unicode
+#[labt_lua]
+fn glob(_lua: &Lua, pattern: String) {
+    use mlua::ErrorContext;
+    // check if path is relative
+    let path: PathBuf = PathBuf::from(&pattern);
+    let pattern = if path.is_relative() {
+        let mut root = crate::get_project_root()
+            .map_err(mlua::Error::external)
+            .context("Failed to get project root directory")?
+            .clone();
+        root.push(path);
+        if let Some(pattern) = root.to_str() {
+            pattern.to_string()
+        } else {
+            return Err(mlua::Error::runtime(
+                "Failed to convert pattern to unicode format",
+            ));
+        }
+    } else {
+        pattern
+    };
+
+    let globals: Vec<String> = glob::glob(pattern.as_str())
+        .map_err(mlua::Error::external)?
+        .filter_map(|p| match p {
+            Ok(path) => path.to_str().map(|n| n.to_string()),
+            Err(_) => None,
+        })
+        .collect();
+    Ok(globals)
+}
+
 /// Generates fs table and loads all its api functions
 ///
 /// # Errors
@@ -69,6 +109,7 @@ pub fn load_fs_table(lua: &mut Lua) -> anyhow::Result<()> {
     mkdir(lua, &table)?;
     mkdir_all(lua, &table)?;
     exists(lua, &table)?;
+    glob(lua, &table)?;
 
     lua.globals().set("fs", table)?;
 

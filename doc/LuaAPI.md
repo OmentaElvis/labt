@@ -265,3 +265,27 @@ Returns an error if:
 Returns true if file exists and false if does not exist.
 if the file/dir in question cannot be verified to exist or not exist due
 to file system related errors, the function errors instead.
+
+
+***
+### `glob`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string - The globbing pattern<br>
+**returns**: table - Array of paths 
+***
+
+Returns all files that match a globbing pattern. It returns only files that are
+readable (did not return IO errors when trying to list them) and files whose path
+string representation is a valid unicode. If you specify a relative path, it is evaluated
+from the root of the project. <br>
+Returns an error if:
+
+- failed to parse the globbing pattern;
+- Failed to get the project root for relative paths
+- Failed to convert project root + glob pattern into unicode
+
+```lua
+local java = fs.glob("app/java/**/*.java")
+-- pass the source files to the java compiler
+
+```
