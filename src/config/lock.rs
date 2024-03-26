@@ -1,5 +1,5 @@
 use std::io::{Read, Seek, Write};
-use std::{env::current_dir, fs::File, io, path::PathBuf};
+use std::{fs::File, io, path::PathBuf};
 
 use anyhow::bail;
 use anyhow::Context;
@@ -11,6 +11,7 @@ use toml_edit::Formatted;
 use toml_edit::Item;
 use toml_edit::Table;
 
+use crate::get_project_root;
 use crate::{pom::Scope, submodules::resolve::ProjectDep};
 
 use self::strings::{
@@ -32,7 +33,9 @@ pub mod strings {
 }
 
 pub fn load_lock_dependencies() -> anyhow::Result<Vec<ProjectDep>> {
-    let mut path: PathBuf = current_dir().context("Unable to open current directory")?;
+    let mut path: PathBuf = get_project_root()
+        .context("Unable to get project root directory.")?
+        .clone();
     path.push(LOCK_FILE);
 
     let mut file = File::open(path).context("Unable to open lock file")?;

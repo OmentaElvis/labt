@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::env::current_dir;
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
@@ -14,7 +13,7 @@ use crate::config::lock::write_lock;
 use crate::config::{get_config, get_resolvers_from_config};
 use crate::pom::Scope;
 use crate::pom::{self, Project};
-use crate::MULTI_PRPGRESS_BAR;
+use crate::{get_project_root, MULTI_PRPGRESS_BAR};
 
 use super::resolvers::Resolver;
 use super::resolvers::ResolverErrorKind;
@@ -473,7 +472,9 @@ pub fn resolve(
     resolvers: Vec<Box<dyn Resolver>>,
 ) -> anyhow::Result<Vec<Project>> {
     // load labt.lock file directory
-    let mut path: PathBuf = current_dir().context("Unable to open current directory")?;
+    let mut path: PathBuf = get_project_root()
+        .context("Failed to get project root directory")?
+        .clone();
     path.push(LOCK_FILE);
 
     // list of resolvers by their order of priority
