@@ -11,6 +11,7 @@ use crate::config::lock::strings::ARTIFACT_ID;
 use crate::config::lock::strings::DEPENDENCIES;
 use crate::config::lock::strings::GROUP_ID;
 use crate::config::lock::strings::VERSION;
+use crate::plugin::api::MluaAnyhowWrapper;
 use crate::submodules::build::Step;
 use crate::submodules::build::BUILD_STEP;
 
@@ -23,7 +24,7 @@ fn get_build_step(_: &Lua) {
 
 #[labt_lua]
 fn get_project_config(lua: &Lua) {
-    let config = get_config().map_err(mlua::Error::external)?;
+    let config = get_config().map_err(MluaAnyhowWrapper::external)?;
     lua.to_value(&config)
 }
 
@@ -31,7 +32,8 @@ fn get_project_config(lua: &Lua) {
 #[labt_lua]
 fn get_project_root(lua: &Lua) {
     let path = crate::get_project_root()
-        .map_err(mlua::Error::external)?
+        .context("Failed to get project root directory")
+        .map_err(MluaAnyhowWrapper::external)?
         .clone();
     Ok(lua.to_value(&path))
 }
@@ -40,7 +42,7 @@ fn get_project_root(lua: &Lua) {
 fn get_lock_dependencies(lua: &Lua) {
     // TODO cache this to reduce uneccessary reading of Labt.lock
 
-    let deps = load_lock_dependencies().map_err(mlua::Error::external)?;
+    let deps = load_lock_dependencies().map_err(MluaAnyhowWrapper::external)?;
     let array = lua.create_table_with_capacity(deps.len(), 0)?;
 
     for dep in deps {
@@ -67,7 +69,7 @@ fn resolve(_lua: &Lua) {
 
     let config = get_config()
         .context("Failed to get project configuration")
-        .map_err(mlua::Error::external)?;
+        .map_err(MluaAnyhowWrapper::external)?;
 
     if let Some(deps) = &config.dependencies {
         let dependencies: Vec<Project> = deps
@@ -76,11 +78,11 @@ fn resolve(_lua: &Lua) {
             .collect();
         let resolvers = get_resolvers_from_config(&config)
             .context("Failed to get resolvers")
-            .map_err(mlua::Error::external)?;
+            .map_err(MluaAnyhowWrapper::external)?;
 
         crate::submodules::resolve::resolve(dependencies, resolvers)
             .context("Failed to resolve projects dependencies")
-            .map_err(mlua::Error::external)?;
+            .map_err(MluaAnyhowWrapper::external)?;
     }
     Ok(())
 }

@@ -2,8 +2,11 @@ use std::fs::create_dir;
 use std::fs::create_dir_all;
 use std::path::PathBuf;
 
+use anyhow::Context;
 use labt_proc_macro::labt_lua;
 use mlua::Lua;
+
+use super::MluaAnyhowWrapper;
 
 /// creates the directory specified
 /// Returns en error if obtaining the project root directory fails or
@@ -14,7 +17,8 @@ fn mkdir(_lua: &Lua, path: String) {
     let path = if path.is_relative() {
         // if path is relative, then build from project root
         let mut root = crate::get_project_root()
-            .map_err(mlua::Error::external)?
+            .context("Failed to get project root directory")
+            .map_err(MluaAnyhowWrapper::external)?
             .clone();
         root.push(path);
         root
@@ -22,7 +26,9 @@ fn mkdir(_lua: &Lua, path: String) {
         path
     };
 
-    create_dir(path).map_err(mlua::Error::external)?;
+    create_dir(&path)
+        .context(format!("Failed to create directory {:?}", path))
+        .map_err(MluaAnyhowWrapper::external)?;
 
     Ok(())
 }
@@ -35,7 +41,8 @@ fn mkdir_all(_lua: &Lua, path: String) {
     let path = if path.is_relative() {
         // if path is relative, then build from project root
         let mut root = crate::get_project_root()
-            .map_err(mlua::Error::external)?
+            .context("Failed to get project root directory")
+            .map_err(MluaAnyhowWrapper::external)?
             .clone();
         root.push(path);
         root
@@ -43,7 +50,9 @@ fn mkdir_all(_lua: &Lua, path: String) {
         path
     };
 
-    create_dir_all(path).map_err(mlua::Error::external)?;
+    create_dir_all(&path)
+        .context(format!("Failed to create directory {:?}", path))
+        .map_err(MluaAnyhowWrapper::external)?;
 
     Ok(())
 }
@@ -54,7 +63,10 @@ fn mkdir_all(_lua: &Lua, path: String) {
 #[labt_lua]
 fn exists(_lua: &Lua, path: String) {
     let path = PathBuf::from(path);
-    let exists = path.try_exists().map_err(mlua::Error::external)?;
+    let exists = path
+        .try_exists()
+        .context("Failed to test if file exists")
+        .map_err(MluaAnyhowWrapper::external)?;
     Ok(exists)
 }
 
@@ -67,13 +79,12 @@ fn exists(_lua: &Lua, path: String) {
 /// - Failed to convert project root + glob pattern into unicode
 #[labt_lua]
 fn glob(_lua: &Lua, pattern: String) {
-    use mlua::ErrorContext;
     // check if path is relative
     let path: PathBuf = PathBuf::from(&pattern);
     let pattern = if path.is_relative() {
         let mut root = crate::get_project_root()
-            .map_err(mlua::Error::external)
-            .context("Failed to get project root directory")?
+            .context("Failed to get project root directory")
+            .map_err(MluaAnyhowWrapper::external)?
             .clone();
         root.push(path);
         if let Some(pattern) = root.to_str() {
@@ -88,7 +99,8 @@ fn glob(_lua: &Lua, pattern: String) {
     };
 
     let globals: Vec<String> = glob::glob(pattern.as_str())
-        .map_err(mlua::Error::external)?
+        .context("Failed to parse glob pattern")
+        .map_err(MluaAnyhowWrapper::external)?
         .filter_map(|p| match p {
             Ok(path) => path.to_str().map(|n| n.to_string()),
             Err(_) => None,
