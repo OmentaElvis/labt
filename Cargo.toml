@@ -1,7 +1,7 @@
 workspace = { members = ["labt-proc-macro"] }
 [package]
 name = "labt"
-version = "0.2.10"
+version = "0.2.12"
 edition = "2021"
 description = "Lab-t Lightweight Android build tool" 
 homepage = "https://gitlab.com/lab-tool/labt"
@@ -34,5 +34,5 @@ tokio-util = { version = "0.7.10", features = ["io"] }
 toml = "0.8.9"
 toml_edit = { version = "0.21.1", features = ["serde"] }
 version-compare = "0.1.1"
-labt-proc-macro = {path = "labt-proc-macro"}
+labt-proc-macro = {path = "labt-proc-macro", version = "0.1.0"}
 glob = "0.3.1"
