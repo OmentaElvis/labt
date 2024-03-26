@@ -10,6 +10,7 @@ use crate::config::lock::load_lock_dependencies;
 use crate::config::lock::strings::ARTIFACT_ID;
 use crate::config::lock::strings::DEPENDENCIES;
 use crate::config::lock::strings::GROUP_ID;
+use crate::config::lock::strings::PACKAGING;
 use crate::config::lock::strings::VERSION;
 use crate::plugin::api::MluaAnyhowWrapper;
 use crate::submodules::build::Step;
@@ -51,6 +52,7 @@ fn get_lock_dependencies(lua: &Lua) {
         dep_table.set(GROUP_ID, dep.group_id)?;
         dep_table.set(VERSION, dep.version)?;
         dep_table.set(DEPENDENCIES, dep.dependencies)?;
+        dep_table.set(PACKAGING, dep.packaging)?;
         array.push(dep_table)?;
     }
 
