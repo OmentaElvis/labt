@@ -2,6 +2,10 @@
 name = "labt-proc-macro"
 version = "0.1.0"
 edition = "2021"
+description = "Proc macros for Labt" 
+homepage = "https://gitlab.com/lab-tool/labt"
+repository = "https://gitlab.com/lab-tool/labt"
+license = "BSD-2-Clause"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
