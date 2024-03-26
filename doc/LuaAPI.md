@@ -222,6 +222,42 @@ Returns an error if:
 - failed to read project config [`Labt.toml`]
 - failed to read and configure resolvers from config
 
+
+***
+### `get_cache_path`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: group_id: string, artifact_id: string, version: string, packaging: string <br>
+**returns**: string
+***
+
+Returns the cache location for this dependency. This does not check if the path
+exists. It constructs a valid cache path according to the labt cache resolver.
+Returns an error if:
+
+- Labt home was not initialized
+- Failed to convert path to its unicode string representation
+
+```lua
+-- Get project dependencies
+local deps = labt.get_lock_dependencies()
+
+-- loop through project dependencies
+for _, dep in ipairs(deps) do
+	local path = labt.get_cache_path(dep.group_id, dep.artifact_id, dep.version, dep.packaging)
+	if dep.packaging == "aar" then
+		-- This dep is an aar.
+		-- Extract it into its res files and jar
+		if fs.exists(path) then
+		-- process the aar
+		else
+			-- ERROR
+		end
+	else
+		-- The rest of deps eg. jar copy them to a libs folder
+	end
+end
+```
+
 ## `fs` table
 A table containing utility functions for working with the file system.
 This functions are implemented in rust at [src/plugin/api/fs.rs](../src/plugin/api/fs.rs).

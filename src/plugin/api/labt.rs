@@ -4,6 +4,7 @@ use mlua::IntoLua;
 use mlua::Lua;
 use mlua::LuaSerdeExt;
 
+use crate::caching::Cache;
 use crate::config::get_config;
 use crate::config::get_resolvers_from_config;
 use crate::config::lock::load_lock_dependencies;
@@ -15,6 +16,7 @@ use crate::config::lock::strings::VERSION;
 use crate::plugin::api::MluaAnyhowWrapper;
 use crate::submodules::build::Step;
 use crate::submodules::build::BUILD_STEP;
+use crate::submodules::resolve::ProjectDep;
 
 /// Returns the current build step the plugin was executed
 #[labt_lua]
@@ -58,6 +60,46 @@ fn get_lock_dependencies(lua: &Lua) {
 
     Ok(array)
 }
+/// Returns the cache location for this dependency. This does not check if the path
+/// exists. It constructs a valid cache path according to the labt cache resolver.
+/// Returns an error if:
+///  - Labt home was not initialized
+///  - Failed to convert path to its unicode string representation
+#[labt_lua]
+fn get_cache_path(
+    _: &Lua,
+    (group_id, artifact_id, version, packaging): (String, String, String, String),
+) {
+    let dep = ProjectDep {
+        group_id: group_id.clone(),
+        artifact_id: artifact_id.clone(),
+        version: version.clone(),
+        packaging: packaging.clone(),
+        ..Default::default()
+    };
+    let mut cache = Cache::from(dep);
+    cache
+        .use_labt_home()
+        .context("Failed to initialize cache path with labt home")
+        .map_err(MluaAnyhowWrapper::external)?;
+
+    let path = cache
+        .get_path()
+        .context(format!(
+            "Failed to get cache path for {}:{}:{}",
+            group_id, artifact_id, version
+        ))
+        .map_err(MluaAnyhowWrapper::external)?;
+
+    let path_str = path
+        .to_str()
+        .context("Failed to convert path to string")
+        .map_err(MluaAnyhowWrapper::external)?
+        .to_string();
+
+    Ok(path_str)
+}
+
 /// Calls dependency resolution algorithm on dependencies found in
 /// Labt.toml
 /// Returns an error if:
@@ -122,6 +164,8 @@ pub fn load_labt_table(lua: &mut Lua) -> anyhow::Result<()> {
 
     // add get_dependencies
     get_lock_dependencies(lua, &table)?;
+
+    get_cache_path(lua, &table)?;
 
     resolve(lua, &table)?;
 
