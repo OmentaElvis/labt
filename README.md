@@ -56,10 +56,12 @@ Commands:
   init     Initializes a new project
   resolve  Fetches the project dependencies
   build    Builds the project
+  plugin   Manage plugins
   help     Print this message or the help of the given subcommand(s)
 
 Options:
-  -h, --help  Print help
+  -h, --help     Print help
+  -V, --version  Print version
 
 ```
 
