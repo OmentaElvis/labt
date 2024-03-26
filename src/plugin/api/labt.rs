@@ -62,7 +62,6 @@ fn get_lock_dependencies(lua: &Lua) {
 /// - resolving the dependencies fail
 /// - failed to read project config [`Labt.toml`]
 /// - failed to read and configure resolvers from config
-/// TODO FIXME Mlua is not compatible with anyhow so it looses the useful error context chains
 #[labt_lua]
 fn resolve(_lua: &Lua) {
     use crate::pom::Project;
