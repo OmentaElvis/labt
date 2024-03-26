@@ -7,7 +7,7 @@ use std::{
 pub mod download;
 pub mod properties;
 
-use anyhow::Context;
+use anyhow::{bail, Context};
 use indicatif::{HumanBytes, ProgressBar};
 use log::info;
 
@@ -114,6 +114,24 @@ impl Cache {
         } else {
             false
         }
+    }
+    /// Returns the expected path representation of this cache entry.
+    /// This is not the actual location of an existing file but rather where
+    /// it is expected to be if it exists.
+    /// # Errors
+    /// Returns an error if the base cache directory was not initialized before
+    /// calling this function
+    pub fn get_path(&self) -> anyhow::Result<PathBuf> {
+        if self.path.is_none() {
+            bail!("Cache base dir not specified.");
+        }
+        let mut path = self.path.clone().unwrap();
+        path.push(&self.group_id);
+        path.push(&self.artifact_id);
+        path.push(&self.version);
+        path.push(self.get_name_from_type());
+
+        Ok(path)
     }
 }
 
