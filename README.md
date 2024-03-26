@@ -46,6 +46,19 @@ You can also fetch the dependencies manually by running.
 labt resolve
 ```
 
+Labt on its own just manages your projects and its dependencies. To do a build of your app, 
+you will need a plugin. Choose a plugin of your choice from any git compatible repository
+and `use` it for your build proccess. For example, use [labt-java](https://gitlab.com/lab-tool/plugins/labt-java)
+to build a java application.
+
+```
+labt plugin use labt-java v0.1.0 https://gitlab.com/lab-tool/plugins/labt-java
+```
+
+Now you can run `labt build` and the plugin will build the application for you. If you have special 
+requirements to build your application check the [LABt Lua API documentation](doc/LuaAPI.md) on how to
+create a custom plugin.
+
 for more information you could try `labt help`
 
 ```bash
@@ -75,3 +88,5 @@ For more information on plugin system check the [LABt Lua API documentation](doc
 - [ ] Add a FFI capability for plugins
 - [ ] Support for windows file system
 - [ ] Add a configurable template system
+- [ ] Stabilize the plugin api and interpret versions of plugins
+- [ ] Shorten the plugin use command
