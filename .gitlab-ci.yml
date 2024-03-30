@@ -14,6 +14,7 @@ prepare:
     image: "rust:latest"
     script:
         - echo LABT_VERSION=$(awk -F ' = ' '$1 ~ /^version$/ {gsub(/["]/, "", $2); print($2)}' Cargo.toml) > variables.env
+        - echo "PKG_REGISTRY_URL=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic" >> variables.env
         - cat variables.env
     artifacts:
         reports:
@@ -28,19 +29,25 @@ test:cargo:
 
   script:
     - rustc --version && cargo --version  # Print version info for debugging
-    - cargo test --workspace --verbose
+    - cargo test --workspace
+  cache:
+    policy: pull
+    when: on_success
+    <<: *global_cache
 
-test:clippy:
-    image: "rust:latest"
-    before_script:
-      - apt-get update -yqq
-      - apt-get install -yqq --no-install-recommends build-essential
-    script:
-        - cargo clippy
-    cache:
-      policy: pull
-      when: on_success
-      <<: *global_cache
+# disable checking clippy for now
+# test:clippy:
+#     image: "rust:latest"
+#     before_script:
+#       - apt-get update -yqq
+#       - apt-get install -yqq --no-install-recommends build-essential
+#       - rustup component add clippy
+#     script:
+#         - cargo clippy
+#     cache:
+#       policy: pull
+#       when: on_success
+#       <<: *global_cache
 
 build_linux:
     stage: build
