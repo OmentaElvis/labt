@@ -1,0 +1,109 @@
+cache: &global_cache
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+        - .cargo/bin
+        - .cargo/registry/index
+        - .cargo/registry/home
+        - target
+    policy: pull-push
+variables:
+  CACHE_HOME: ${CI_PROJECT_DIR}/.cargo
+
+prepare:
+    stage: .pre
+    image: "rust:latest"
+    script:
+        - echo LABT_VERSION=$(awk -F ' = ' '$1 ~ /^version$/ {gsub(/["]/, "", $2); print($2)}' Cargo.toml) > variables.env
+        - cat variables.env
+    artifacts:
+        reports:
+          dotenv: variables.env
+
+# Use cargo to test the project
+test:cargo:
+  image: "rust:latest"
+  before_script:
+   - apt-get update -yqq
+   - apt-get install -yqq --no-install-recommends build-essential
+
+  script:
+    - rustc --version && cargo --version  # Print version info for debugging
+    - cargo test --workspace --verbose
+
+test:clippy:
+    image: "rust:latest"
+    before_script:
+      - apt-get update -yqq
+      - apt-get install -yqq --no-install-recommends build-essential
+    script:
+        - cargo clippy
+    cache:
+      policy: pull
+      when: on_success
+      <<: *global_cache
+
+build_linux:
+    stage: build
+    image: "rust:latest"
+    before_script:
+      - apt-get update -yqq
+      - apt-get install -yqq --no-install-recommends build-essential
+    rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    script:
+        - echo "=== BUILDING FOR x86_64 linux gnu ==="
+        - rustup target add x86_64-unknown-linux-gnu
+        - cargo build --target=x86_64-unknown-linux-gnu --release
+        - mkdir bin
+        - mv target/release/labt bin/labt_v${LABT_VERSION}_x86_64
+    artifacts:
+      paths:
+        - bin/
+    cache:
+        policy: pull-push
+        << : *global_cache
+
+
+release_job:
+  stage: deploy
+  needs:
+      - job: prepare
+        artifacts: true
+      - job: build_linux
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  script: echo "=== CREATING RELEASE ==="
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  release:
+    tag_name: "v${LABT_VERSION}"
+    description: "Lightweight Android Build tool (LABt) v${LABT_VERSION}"
+    ref: $CI_COMMIT_SHA
+    assets:
+      links:
+        - name: v$LABT_VERSION
+          url: "${PKG_REGISTRY_URL}/x86_64-unknown-linux-gnu/v${LABT_VERSION}/labt"
+
+upload_job:
+  stage: deploy
+  image: curlimages/curl:latest
+  needs:
+    - job: prepare
+      artifacts: true
+    - job: build_linux
+      artifacts: true
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - echo "=== UPLOADING ==="
+    - ls -la bin/
+    - 'curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file bin/labt_v${LABT_VERSION}_x86_64 ${PKG_REGISTRY_URL}/x86_64-unknown-linux-gnu/v${LABT_VERSION}/labt'
+
+
+
+    
