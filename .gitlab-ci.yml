@@ -1,3 +1,9 @@
+stages:
+  - prepare
+  - cargo_tests
+  - platform_build
+  - deploy
+
 cache: &global_cache
     key: ${CI_COMMIT_REF_SLUG}
     paths:
@@ -10,7 +16,7 @@ variables:
   CACHE_HOME: ${CI_PROJECT_DIR}/.cargo
 
 prepare:
-    stage: .pre
+    stage: prepare
     image: "rust:latest"
     script:
         - echo LABT_VERSION=$(awk -F ' = ' '$1 ~ /^version$/ {gsub(/["]/, "", $2); print($2)}' Cargo.toml) > variables.env
@@ -21,7 +27,8 @@ prepare:
           dotenv: variables.env
 
 # Use cargo to test the project
-test:cargo:
+cargo_test:
+  stage: cargo_tests
   image: "rust:latest"
   before_script:
    - apt-get update -yqq
@@ -50,7 +57,7 @@ test:cargo:
 #       <<: *global_cache
 
 build_linux:
-    stage: build
+    stage: platform_build
     image: "rust:latest"
     before_script:
       - apt-get update -yqq
