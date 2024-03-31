@@ -82,6 +82,31 @@ build_linux:
         << : *global_cache
 
 
+build_windows:
+    stage: platform_build
+    image: "rust:latest"
+    before_script:
+      - apt-get update -yqq
+      - apt-get install -yqq --no-install-recommends build-essential gcc-mingw-w64 
+    rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    script:
+        - echo "=== BUILDING FOR x86_64 linux gnu ==="
+        - rustup target add x86_64-pc-windows-gnu
+        - cargo build --target=x86_64-pc-windows-gnu --release
+        - mkdir bin
+        - ls -a
+        - ls -a target
+        - mv target/x86_64-pc-windows-gnu/release/labt.exe bin/labt_v${LABT_VERSION}_x86_64-windows.exe
+    artifacts:
+      paths:
+        - bin/
+    cache:
+        policy: pull-push
+        << : *global_cache
+
 release_job:
   stage: deploy
   needs:
@@ -100,8 +125,10 @@ release_job:
     ref: $CI_COMMIT_SHA
     assets:
       links:
-        - name: v$LABT_VERSION
+        - name: labt_v$LABT_VERSION_x86_64_linux
           url: "${PKG_REGISTRY_URL}/x86_64-unknown-linux-gnu/v${LABT_VERSION}/labt"
+        - name: labt_v$LABT_VERSION_x86_64_windows.exe
+          url: "${PKG_REGISTRY_URL}/x86_64-pc-windows-gnu/v${LABT_VERSION}/labt.exe"
 
 upload_job:
   stage: deploy
@@ -119,6 +146,7 @@ upload_job:
     - echo "=== UPLOADING ==="
     - ls -la bin/
     - 'curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file bin/labt_v${LABT_VERSION}_x86_64 ${PKG_REGISTRY_URL}/x86_64-unknown-linux-gnu/v${LABT_VERSION}/labt'
+    - 'curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file bin/labt_v${LABT_VERSION}_x86_64-windows.exe ${PKG_REGISTRY_URL}/x86_64-pc-windows-gnu/v${LABT_VERSION}/labt.exe'
 
 
 
