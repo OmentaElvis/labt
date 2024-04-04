@@ -1,6 +1,8 @@
 [![Labt Logo](assets/logo_400x200.png)](https://gitlab.com/lab-tool/labt)
 [![Crates.io Version](https://img.shields.io/crates/v/labt?logo=rust)](https://crates.io/crates/labt)
 ![GitLab License](https://img.shields.io/gitlab/license/lab-tool%2Flabt)
+[![GitLab pipeline](https://gitlab.com/lab-tool/labt/badges/main/pipeline.svg)](https://gitlab.com/lab-tool/labt/-/pipelines)
+
 # Lightweight Android Build tool (LABt)
 **LABt** is a command line interface tool written in Rust for building your android projects
 on the terminal. It provides dependency management tools to easily add and 
