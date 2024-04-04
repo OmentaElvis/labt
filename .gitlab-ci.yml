@@ -18,6 +18,8 @@ variables:
 prepare:
     stage: prepare
     image: "rust:latest"
+    rules:
+      - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     script:
         - echo LABT_VERSION=$(awk -F ' = ' '$1 ~ /^version$/ {gsub(/["]/, "", $2); print($2)}' Cargo.toml) > variables.env
         - echo "PKG_REGISTRY_URL=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic" >> variables.env
@@ -30,6 +32,8 @@ prepare:
 cargo_test:
   stage: cargo_tests
   image: "rust:latest"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   before_script:
    - apt-get update -yqq
    - apt-get install -yqq --no-install-recommends build-essential
@@ -88,9 +92,12 @@ build_windows:
     before_script:
       - apt-get update -yqq
       - apt-get install -yqq --no-install-recommends build-essential gcc-mingw-w64 
+      - apt-get install -yqq --no-install-recommends nsis zip
+      - wget https://nsis.sourceforge.io/mediawiki/images/7/7f/EnVar_plugin.zip
+      - unzip -j EnVar_plugin.zip  Plugins/x86-unicode/EnVar.dll -d plugins
+      - rm EnVar_plugin.zip
     rules:
     - if: $CI_COMMIT_TAG
-      when: never
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     script:
         - echo "=== BUILDING FOR x86_64 linux gnu ==="
@@ -99,7 +106,10 @@ build_windows:
         - mkdir bin
         - ls -a
         - ls -a target
-        - mv target/x86_64-pc-windows-gnu/release/labt.exe bin/labt_v${LABT_VERSION}_x86_64-windows.exe
+        - mv target/x86_64-pc-windows-gnu/release/labt.exe labt.exe
+        - makensis -DVERSION=${LABT_VERSION} windows-installer.nsi
+        - mv labt.exe bin/labt_v${LABT_VERSION}_x86_64-windows.exe
+        - mv labt-v${LABT_VERSION}_x86_64_windows-installer.exe bin/
     artifacts:
       paths:
         - bin/
@@ -118,7 +128,6 @@ release_job:
   script: echo "=== CREATING RELEASE ==="
   rules:
     - if: $CI_COMMIT_TAG
-      when: never
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   release:
     tag_name: "v${LABT_VERSION}"
@@ -130,6 +139,8 @@ release_job:
           url: "${PKG_REGISTRY_URL}/x86_64-unknown-linux-gnu/v${LABT_VERSION}/labt"
         - name: "labt_v${LABT_VERSION}_x86_64_windows.exe"
           url: "${PKG_REGISTRY_URL}/x86_64-pc-windows-gnu/v${LABT_VERSION}/labt.exe"
+        - name: "labt_v${LABT_VERSION}_x86_64_windows-installer.exe"
+          url: "${PKG_REGISTRY_URL}/x86_64-pc-windows-gnu/v${LABT_VERSION}/labt-installer.exe"
 
 upload_job:
   stage: deploy
@@ -143,13 +154,13 @@ upload_job:
       artifacts: true
   rules:
     - if: $CI_COMMIT_TAG
-      when: never
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   script:
     - echo "=== UPLOADING ==="
-    - ls -la bin/
+    - ls -a bin/
     - 'curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file bin/labt_v${LABT_VERSION}_x86_64 ${PKG_REGISTRY_URL}/x86_64-unknown-linux-gnu/v${LABT_VERSION}/labt'
     - 'curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file bin/labt_v${LABT_VERSION}_x86_64-windows.exe ${PKG_REGISTRY_URL}/x86_64-pc-windows-gnu/v${LABT_VERSION}/labt.exe'
+    - 'curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file bin/labt-v${LABT_VERSION}_x86_64_windows-installer.exe  ${PKG_REGISTRY_URL}/x86_64-pc-windows-gnu/v${LABT_VERSION}/labt-installer.exe'
 
 
 
