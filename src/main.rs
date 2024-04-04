@@ -14,8 +14,10 @@ use console::style;
 use env_logger::Env;
 use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
+use log::warn;
 
 use crate::envs::HOME;
+use crate::envs::LOCALAPPDATA;
 pub mod caching;
 pub mod cliargs;
 pub mod config;
@@ -37,8 +39,18 @@ pub const LABT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod envs {
     pub const LABT_HOME: &str = "LABT_HOME";
     pub const HOME: &str = "HOME";
+    pub const LOCALAPPDATA: &str = "LOCALAPPDATA";
 }
 
+/// Returns the location of Labt home, this is where Labt stores its
+/// configurations files, plugins and cache. It first checks if LABT_HOME
+/// was set. If not set, falls back to $HOME/.labt on linux, or %LOCALAPPDATA%/.labt on
+/// windows.
+///
+/// # Errors
+///
+/// This function will return an error if no suitable path is found for labt home.
+#[cfg(not(target_os = "windows"))]
 pub fn get_home() -> anyhow::Result<PathBuf> {
     if let Ok(path) = std::env::var(envs::LABT_HOME) {
         return Ok(PathBuf::from(path));
@@ -53,6 +65,36 @@ pub fn get_home() -> anyhow::Result<PathBuf> {
             bail!(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 ".labt folder does not exist on $HOME",
+            ));
+        }
+    }
+
+    bail!("No apropriate Labt home directory detected!");
+}
+
+/// Returns the location of Labt home, this is where Labt stores its
+/// configurations files, plugins and cache. It first checks if LABT_HOME
+/// was set. If not set, falls back to $HOME/.labt on linux, or %LOCALAPPDATA%/.labt on
+/// windows.
+///
+/// # Errors
+///
+/// This function will return an error if no suitable path is found for labt home.
+#[cfg(target_os = "windows")]
+pub fn get_home() -> anyhow::Result<PathBuf> {
+    if let Ok(path) = std::env::var(envs::LABT_HOME) {
+        return Ok(PathBuf::from(path));
+    }
+
+    if let Ok(path) = std::env::var(envs::LOCALAPPDATA) {
+        let mut path = PathBuf::from(path);
+        path.push(".labt");
+        if path.exists() {
+            return Ok(path);
+        } else {
+            bail!(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                ".labt folder does not exist on %LOCALAPPDATA%",
             ));
         }
     }
@@ -122,11 +164,21 @@ fn first_run(path: &mut PathBuf) -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     // create home dir
     if get_home().is_err() {
-        if let Ok(home) = std::env::var(HOME) {
+        if cfg!(windows) {
+            // windows initialize at LOCALAPPDATA
+            if let Ok(home) = std::env::var(LOCALAPPDATA) {
+                println!("Initializing LABt configs on home directory at {}.", home);
+                // try creating on the home path
+                let mut path = PathBuf::from(home);
+                first_run(&mut path)?;
+            }
+        } else if let Ok(home) = std::env::var(HOME) {
             println!("Initializing LABt configs on home directory.");
             // try creating on the home path
             let mut path = PathBuf::from(home);
             first_run(&mut path)?;
+        } else {
+            warn!(target: "labt", "Failed to initialize labt home, please set LABT_HOME environmental variable pointing to where you want LABt to store its files.");
         }
     };
 
