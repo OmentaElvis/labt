@@ -1,6 +1,6 @@
 !include "MUI2.nsh"
 !include "nsDialogs.nsh"
-!addplugindir  "envar/Plugins/x86-unicode/"
+!addplugindir  "plugins/"
 
 Name "LABt v${VERSION}"
 OutFile "labt-v${VERSION}_x86_64_windows-installer.exe"
