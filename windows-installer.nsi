@@ -12,7 +12,7 @@ RequestExecutionLevel admin
 InstallDirRegKey HKLM "Software\LABt" "Install_Dir"
 
 ; Installer icon
-!define MUI_ICON "icon.ico"
+!define MUI_ICON "assets/icon.ico"
 
 !define MUI_LICENSEPAGE_CHECKBOX
 !insertmacro MUI_PAGE_LICENSE "LICENSE"
