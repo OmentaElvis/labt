@@ -71,7 +71,7 @@ Section "labt (required)"
 
 
     SetOutPath "$INSTDIR\bin\"
-    File "labt.bat"
+    File "labt.exe"
 
     ${If} $Checkbox_State == ${BST_CHECKED}
 		EnVar::SetHKCU
