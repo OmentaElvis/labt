@@ -6,6 +6,8 @@ use anyhow::Context;
 use labt_proc_macro::labt_lua;
 use mlua::Lua;
 
+use crate::submodules::build::is_file_newer;
+
 use super::MluaAnyhowWrapper;
 
 /// creates the directory specified
@@ -109,6 +111,28 @@ fn glob(_lua: &Lua, pattern: String) {
     Ok(globals)
 }
 
+/// Returns true if:
+///   - file a is newer than file b
+///   - file b does not exist
+///
+/// Returns false if:
+///   - file a does not exist (Technically b should be nwer if a is missing)
+///
+/// # Errors
+///
+/// Returns an error if we fail to get the metadata of the file
+#[labt_lua]
+fn is_newer(_lua: &Lua, (a, b): (String, String)) {
+    let path_a = PathBuf::from(a);
+    let path_b = PathBuf::from(b);
+
+    let result = is_file_newer(&path_a, &path_b)
+        .context("Failed to compare files a and b")
+        .map_err(MluaAnyhowWrapper::external)?;
+
+    Ok(result)
+}
+
 /// Generates fs table and loads all its api functions
 ///
 /// # Errors
@@ -122,6 +146,7 @@ pub fn load_fs_table(lua: &mut Lua) -> anyhow::Result<()> {
     mkdir_all(lua, &table)?;
     exists(lua, &table)?;
     glob(lua, &table)?;
+    is_newer(lua, &table)?;
 
     lua.globals().set("fs", table)?;
 

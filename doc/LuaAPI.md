@@ -294,7 +294,7 @@ Returns an error if:
 ***
 ### `exists`
 **stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
-**arguments**: None <br>
+**arguments**: string - path <br>
 **returns**: boolean
 ***
 
@@ -302,6 +302,25 @@ Returns true if file exists and false if does not exist.
 if the file/dir in question cannot be verified to exist or not exist due
 to file system related errors, the function errors instead.
 
+***
+### `is_newer`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string - path a, string path b <br>
+**returns**: boolean
+***
+
+Returns true if:
+- file a is newer than file b
+- file b does not exist
+
+Returns false if:
+- file a does not exist (Technically b should be nwer if a is missing)
+
+Note: if a folder is provided, it just checks the modification time of the folder,
+therefore it would not pick changes made to internal files/folders. If you want to check
+if files change in a folder, then select required files using `fs.glob` and scan through them.
+
+Returns an error if we fail to get the metadata of the file
 
 ***
 ### `glob`
