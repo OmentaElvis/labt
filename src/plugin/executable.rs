@@ -9,6 +9,7 @@ use crate::submodules::build::Step;
 use super::api::fs::load_fs_table;
 use super::api::labt::load_labt_table;
 use super::api::log::load_log_table;
+use super::api::zip::load_zip_table;
 
 /// Represents an executable plugin
 pub struct Executable {}
@@ -80,6 +81,7 @@ impl<'lua, 'a> ExecutableLua {
         load_labt_table(&mut self.lua).context("Failed to add labt table into lua context")?;
         load_fs_table(&mut self.lua).context("Failed to add fs table into lua context")?;
         load_log_table(&mut self.lua).context("Failed to add log table into lua context")?;
+        load_zip_table(&mut self.lua).context("Failed to add zip table into lua context")?;
         Ok(())
     }
 }

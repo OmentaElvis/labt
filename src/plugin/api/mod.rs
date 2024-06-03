@@ -5,6 +5,7 @@ use std::{
 pub mod fs;
 pub mod labt;
 pub mod log;
+pub mod zip;
 
 /// Wraps anyhow Error so as to allow useful anyhow error chain to be
 /// passed back into the lua executer for tracing
