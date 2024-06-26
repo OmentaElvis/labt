@@ -247,7 +247,7 @@ impl Resolver for NetResolver {
 impl NetResolver {
     pub fn init(name: &str, base_url: &str) -> anyhow::Result<Self> {
         let client = reqwest::blocking::Client::builder()
-            .user_agent("Labt/1.1")
+            .user_agent(crate::USER_AGENT)
             .build()
             .context("Failed to initialize Net resolver client")?;
 

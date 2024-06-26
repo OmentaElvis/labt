@@ -18,7 +18,7 @@ use super::Submodule;
 // temporary, will remove if a cleaner way of passing the current step
 // to plugins is achieved
 thread_local! {
-    pub static BUILD_STEP: RefCell<Step> = RefCell::new(Step::PRE);
+    pub static BUILD_STEP: RefCell<Step> = const { RefCell::new(Step::PRE) };
 }
 
 #[derive(Clone, Args)]

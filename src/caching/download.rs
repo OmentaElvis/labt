@@ -9,7 +9,7 @@ use super::Cache;
 
 pub fn download(project: &ProjectDep) -> anyhow::Result<u64> {
     let client = reqwest::blocking::ClientBuilder::new()
-        .user_agent("Labt/1.0")
+        .user_agent(crate::USER_AGENT)
         .build()
         .context("Error creating download client")?;
     let base = Url::parse(&project.get_root_url()).context("Error parsing repo url")?;
