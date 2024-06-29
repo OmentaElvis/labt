@@ -2,7 +2,10 @@
 // https://android.googlesource.com/platform/tools/base/+/refs/heads/main/sdklib/src/main/java/com/android/sdklib/repository/sdk-repository-11.xsd
 use std::{
     collections::HashMap,
+    error::Error,
+    fmt::Display,
     io::{BufReader, Read},
+    num::ParseIntError,
 };
 
 use anyhow::{bail, Context};
@@ -27,6 +30,7 @@ mod tags {
     pub const MINOR: &[u8] = b"minor";
     pub const MICRO: &[u8] = b"micro";
     pub const PREVIEW: &[u8] = b"preview";
+    pub const LICENSE: &[u8] = b"license";
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +94,8 @@ pub enum BitSizeType {
 pub struct RepositoryXml {
     channels: HashMap<String, ChannelType>,
     remote_packages: Vec<RemotePackage>,
+    /// List of licenses
+    licenses: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +150,9 @@ impl RemotePackage {
     pub fn set_license(&mut self, license_ref: String) {
         self.uses_license = license_ref;
     }
+    pub fn set_revision(&mut self, revision: Revision) {
+        self.revision = revision;
+    }
 
     pub fn get_path(&self) -> &String {
         &self.path
@@ -159,6 +168,12 @@ impl RemotePackage {
     }
     pub fn get_revision(&self) -> &Revision {
         &self.revision
+    }
+    pub fn get_archives(&self) -> &Vec<Archive> {
+        &self.archives
+    }
+    pub fn get_uses_license(&self) -> &String {
+        &self.uses_license
     }
     /// Adds am archive entry
     pub fn add_archive(&mut self, archive: Archive) {
@@ -211,10 +226,23 @@ impl RepositoryXml {
         Self {
             channels: HashMap::new(),
             remote_packages: Vec::new(),
+            licenses: HashMap::new(),
         }
     }
     pub fn add_remote_package(&mut self, package: RemotePackage) {
         self.remote_packages.push(package);
+    }
+    pub fn get_remote_packages(&self) -> &Vec<RemotePackage> {
+        &self.remote_packages
+    }
+    pub fn get_channels(&self) -> &HashMap<String, ChannelType> {
+        &self.channels
+    }
+    pub fn add_license(&mut self, id: String, license: String) {
+        self.licenses.insert(id, license);
+    }
+    pub fn get_licenses(&self) -> &HashMap<String, String> {
+        &self.licenses
     }
 }
 
@@ -232,6 +260,8 @@ enum ParserState {
     Channel,
     /// <remotePackage>
     RemotePackage(RemotePackageState),
+    /// <license></license>
+    License,
 }
 #[derive(Clone, Copy)]
 enum RemotePackageState {
@@ -261,7 +291,7 @@ enum RevisionState {
 }
 /// A full revision, with a major.minor.micro and an
 /// optional preview number. The major number is mandatory.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Revision {
     pub major: u32,
     pub minor: u32,
@@ -275,6 +305,95 @@ impl Revision {
             major,
             ..Default::default()
         }
+    }
+}
+
+impl Display for Revision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}.{}.{}.{}",
+            self.major, self.minor, self.micro, self.preview
+        )
+    }
+}
+#[derive(Debug)]
+pub struct RevisionParseError {
+    pub kind: RevisionParseErrorKind,
+}
+
+impl RevisionParseError {
+    pub fn new(kind: RevisionParseErrorKind) -> Self {
+        Self { kind }
+    }
+}
+
+impl Display for RevisionParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.kind {
+            RevisionParseErrorKind::Empty => {
+                write!(f, "The provided string is empty")
+            }
+            RevisionParseErrorKind::MissingMajor => {
+                write!(f, "Missing major version int which is required")
+            }
+            RevisionParseErrorKind::InvalidUnsignedInt(err) => {
+                write!(f, "failed to parse unsigned int: {}", err)
+            }
+        }
+    }
+}
+
+impl Error for RevisionParseError {}
+
+#[derive(Debug)]
+pub enum RevisionParseErrorKind {
+    /// An empty string was provided
+    Empty,
+    /// Major version was not provided
+    MissingMajor,
+    /// Int parse error
+    InvalidUnsignedInt(ParseIntError),
+}
+
+impl TryFrom<&str> for Revision {
+    type Error = RevisionParseError;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let mut iter = value.splitn(4, '.');
+        let major: u32 = if let Some(major) = iter.next() {
+            major.trim().parse().map_err(|err| {
+                RevisionParseError::new(RevisionParseErrorKind::InvalidUnsignedInt(err))
+            })?
+        } else {
+            return Err(RevisionParseError::new(
+                RevisionParseErrorKind::MissingMajor,
+            ));
+        };
+
+        let mut revision = Revision::new(major);
+        if let Some(minor) = iter.next() {
+            revision.minor = minor.parse().map_err(|err| {
+                RevisionParseError::new(RevisionParseErrorKind::InvalidUnsignedInt(err))
+            })?;
+        } else {
+            return Ok(revision);
+        }
+        if let Some(micro) = iter.next() {
+            revision.micro = micro.parse().map_err(|err| {
+                RevisionParseError::new(RevisionParseErrorKind::InvalidUnsignedInt(err))
+            })?;
+        } else {
+            return Ok(revision);
+        }
+        if let Some(preview) = iter.next() {
+            revision.preview = preview.parse().map_err(|err| {
+                RevisionParseError::new(RevisionParseErrorKind::InvalidUnsignedInt(err))
+            })?;
+        } else {
+            return Ok(revision);
+        }
+
+        Ok(revision)
     }
 }
 
@@ -295,18 +414,23 @@ pub struct RepositoryXmlParser {
 
     /// The current revision we are working with
     current_revision: Revision,
+
+    current_license_id: Option<String>,
 }
 
 impl RepositoryXmlParser {
     pub fn new() -> Self {
         Self {
-            repo: RepositoryXml::new(),
+            repo: RepositoryXml::default(),
             state: ParserState::SdkRepository,
             current_channel_id: None,
             current_channel_type: None,
+            current_license_id: None,
             current_package: RemotePackage::default(),
-            current_archive: Archive::default(),
             current_revision: Revision::default(),
+            current_archive: Archive::default(),
+            // for some unknown reason, this Default thingy causes SIGSEGV
+            // ..Default::default()
         }
     }
     fn parse_revision(
@@ -614,6 +738,16 @@ impl RepositoryXmlParser {
 
                             ParserState::RemotePackage(RemotePackageState::RemotePackage)
                         }
+                        // <license id=""></license>
+                        tags::LICENSE => {
+                            if let Some(attr) = tag.try_get_attribute("id")? {
+                                self.current_license_id =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                            } else {
+                                bail!("Missing id parameter for license attribute");
+                            }
+                            ParserState::License
+                        }
                         _ => ParserState::SdkRepository,
                     },
                     _ => ParserState::SdkRepository,
@@ -652,6 +786,20 @@ impl RepositoryXmlParser {
                 }
                 _ => self.process_remote_package(state, event)?,
             },
+            ParserState::License => match event {
+                Event::End(tag) if tag.local_name().into_inner() == tags::LICENSE => {
+                    self.current_license_id = None;
+                    ParserState::SdkRepository
+                }
+                Event::Text(text) => {
+                    if let Some(id) = &self.current_license_id {
+                        self.repo
+                            .add_license(id.to_string(), text.unescape()?.to_string());
+                    }
+                    ParserState::License
+                }
+                _ => ParserState::License,
+            },
         };
         Ok(())
     }
@@ -675,7 +823,7 @@ where
     const BUFFER_SIZE: usize = 4096;
     let mut buf = Vec::with_capacity(BUFFER_SIZE);
 
-    let mut parser = RepositoryXmlParser::new();
+    let mut parser = RepositoryXmlParser::default();
 
     loop {
         match reader

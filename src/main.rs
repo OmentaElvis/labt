@@ -25,6 +25,7 @@ pub mod plugin;
 pub mod pom;
 pub mod submodules;
 pub mod templating;
+pub mod tui;
 
 thread_local! {
     pub static MULTI_PRPGRESS_BAR: RefCell<MultiProgress> = RefCell::new(MultiProgress::new());
