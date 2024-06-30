@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::str::FromStr;
 
 use anyhow::Context;
 
@@ -12,7 +13,7 @@ const INSTALLED_LIST: &str = "installed.list";
 const INSTALLED_LIST_OPEN_ERR: &str = "Failed to open sdk installed.list";
 pub const SDK_PATH_ERR_STRING: &str = "Failed to get android sdk path";
 
-#[derive(PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct InstalledPackage {
     pub path: String,
     pub version: Revision,
@@ -23,18 +24,19 @@ impl InstalledPackage {
     }
 }
 
-impl TryFrom<&str> for InstalledPackage {
-    type Error = anyhow::Error;
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+impl FromStr for InstalledPackage {
+    type Err = anyhow::Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         let mut iter = value.splitn(2, ',');
         let path = iter.next().context("Missing path entry")?;
         let version = iter.next().context("Missing version entry")?;
         let revision: Revision = version
+            .trim()
             .parse()
             .context(format!("Failed to parse revision from string {}", version))?;
 
         Ok(InstalledPackage {
-            path: path.to_string(),
+            path: path.trim().to_string(),
             version: revision,
         })
     }
@@ -71,7 +73,7 @@ pub fn read_installed_list() -> anyhow::Result<HashSet<InstalledPackage>> {
         }
         line_number = line_number.saturating_add(1);
 
-        let package: InstalledPackage = line.as_str().try_into().context(format!(
+        let package: InstalledPackage = line.trim().parse().context(format!(
             "Failed to parse installed package on line {}",
             line_number
         ))?;
@@ -97,4 +99,35 @@ pub fn write_installed_list(list: HashSet<InstalledPackage>) -> anyhow::Result<(
     }
 
     Ok(())
+}
+
+#[test]
+fn installed_package_from_str() {
+    let line = "platforms;android-33,1.0.0.0";
+    let package: InstalledPackage = line.parse().unwrap();
+
+    assert_eq!(
+        package,
+        InstalledPackage {
+            path: String::from("platforms;android-33"),
+            version: Revision {
+                major: 1,
+                ..Default::default()
+            }
+        }
+    );
+
+    let line = "platforms;android-33 , 1.0.0.0";
+    let package: InstalledPackage = line.parse().unwrap();
+
+    assert_eq!(
+        package,
+        InstalledPackage {
+            path: String::from("platforms;android-33"),
+            version: Revision {
+                major: 1,
+                ..Default::default()
+            }
+        }
+    );
 }
