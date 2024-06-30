@@ -1,14 +1,13 @@
 use std::{
     collections::HashSet,
-    fmt::Display,
     fs::{create_dir, create_dir_all, File},
-    io::{self, BufRead, BufReader, BufWriter, Read, Write},
+    io::{self, BufReader, Read, Write},
     path::{Path, PathBuf},
     rc::Rc,
 };
 
 use anyhow::{bail, Context};
-use clap::Args;
+use clap::{Args, Subcommand};
 use log::info;
 use reqwest::Url;
 use toml_edit::{value, Document};
@@ -20,13 +19,14 @@ use crate::{
 };
 
 // consts
-const INSTALLED_LIST: &str = "installed.list";
 const DEFAULT_RESOURCES_URL: &str = "https://dl.google.com/android/repository/repository2-1.xml";
-const SDK_PATH_ERR_STRING: &str = "Failed to get android sdk path";
-const INSTALLED_LIST_OPEN_ERR: &str = "Failed to open sdk installed.list";
 const SDKMANAGER_TARGET: &str = "sdkmanager";
 
+use super::sdkmanager::filters::FilteredPackages;
+use super::sdkmanager::read_installed_list;
 use super::Submodule;
+
+pub use super::sdkmanager::InstalledPackage;
 
 #[derive(Clone, Args)]
 pub struct SdkArgs {
@@ -93,7 +93,7 @@ mod toml_strings {
 impl Submodule for Sdk {
     fn run(&mut self) -> anyhow::Result<()> {
         // check for sdk folder
-        let sdk = get_sdk_path().context(SDK_PATH_ERR_STRING)?;
+        let sdk = get_sdk_path().context(super::sdkmanager::installed_list::SDK_PATH_ERR_STRING)?;
 
         let url = Url::parse(&self.url).context("Failed to parse repository url")?;
 
@@ -133,36 +133,10 @@ impl Submodule for Sdk {
         Ok(())
     }
 }
-#[derive(PartialEq, Eq, Hash)]
-pub struct InstalledPackage {
-    pub path: String,
-    pub version: Revision,
-}
-impl InstalledPackage {
-    pub fn new(path: String, version: Revision) -> Self {
-        Self { path, version }
-    }
-}
 
-impl TryFrom<&str> for InstalledPackage {
-    type Error = anyhow::Error;
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let mut iter = value.splitn(2, ',');
-        let path = iter.next().context("Missing path entry")?;
-        let version = iter.next().context("Missing version entry")?;
-        let revision: Revision = version
-            .parse()
-            .context(format!("Failed to parse revision from string {}", version))?;
+                self.list_packages(args, repo, list)
 
-        Ok(InstalledPackage {
-            path: path.to_string(),
-            version: revision,
-        })
-    }
-}
-impl Display for InstalledPackage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{},{}", self.path, self.version)
+        Ok(())
     }
 }
 
@@ -177,60 +151,6 @@ pub fn get_sdk_path() -> anyhow::Result<PathBuf> {
     }
 
     Ok(sdk)
-}
-
-/// Reads installed.list file from sdkfolder. If the file does not exist it returns
-/// an empty hashset
-pub fn read_installed_list() -> anyhow::Result<HashSet<InstalledPackage>> {
-    let mut sdk = get_sdk_path().context(SDK_PATH_ERR_STRING)?;
-    sdk.push(INSTALLED_LIST);
-
-    if !sdk.exists() {
-        return Ok(HashSet::new());
-    }
-
-    let file = File::open(sdk).context(INSTALLED_LIST_OPEN_ERR)?;
-    let mut reader = BufReader::new(file);
-    let mut installed: HashSet<InstalledPackage> = HashSet::new();
-
-    let mut line_number: usize = 0;
-    // parse the lines
-    loop {
-        let mut line = String::new();
-        let count = reader
-            .read_line(&mut line)
-            .context("Failed to read line from file")?;
-        if count == 0 {
-            break;
-        }
-        line_number = line_number.saturating_add(1);
-
-        let package: InstalledPackage = line.as_str().try_into().context(format!(
-            "Failed to parse installed package on line {}",
-            line_number
-        ))?;
-
-        installed.insert(package);
-    }
-
-    Ok(installed)
-}
-/// Writes the provided hashset to a installed.list file in sdk folder
-/// Order is not guaranteed as it is a hashmap
-pub fn write_installed_list(list: HashSet<InstalledPackage>) -> anyhow::Result<()> {
-    let mut sdk = get_sdk_path().context(SDK_PATH_ERR_STRING)?;
-    sdk.push(INSTALLED_LIST);
-
-    let file = File::create(sdk).context(INSTALLED_LIST_OPEN_ERR)?;
-    let mut writer = BufWriter::new(file);
-
-    for package in list {
-        writer
-            .write_all(package.to_string().as_bytes())
-            .context(format!("Failed to write line to {INSTALLED_LIST}"))?;
-    }
-
-    Ok(())
 }
 
 pub fn write_repository_config(repo: &RepositoryXml) -> anyhow::Result<()> {
