@@ -13,3 +13,4 @@ pub mod plugin;
 pub mod resolve;
 pub mod resolvers;
 pub mod sdk;
+pub mod sdkmanager;
