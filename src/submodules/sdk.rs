@@ -151,7 +151,7 @@ impl TryFrom<&str> for InstalledPackage {
         let path = iter.next().context("Missing path entry")?;
         let version = iter.next().context("Missing version entry")?;
         let revision: Revision = version
-            .try_into()
+            .parse()
             .context(format!("Failed to parse revision from string {}", version))?;
 
         Ok(InstalledPackage {
@@ -359,7 +359,8 @@ pub fn parse_repository_toml(path: &Path) -> anyhow::Result<RepositoryXml> {
                 // Parse version
                 if let Some(version) = p.get(VERSION) {
                     let version = version.as_str().unwrap();
-                    let revision: Revision = Revision::try_from(version)
+                    let revision: Revision = version
+                        .parse()
                         .context(format!("Failed to parse version string: {}", version))?;
 
                     package.set_revision(revision);

@@ -6,6 +6,7 @@ use std::{
     fmt::Display,
     io::{BufReader, Read},
     num::ParseIntError,
+    str::FromStr,
 };
 
 use anyhow::{bail, Context};
@@ -356,9 +357,9 @@ pub enum RevisionParseErrorKind {
     InvalidUnsignedInt(ParseIntError),
 }
 
-impl TryFrom<&str> for Revision {
-    type Error = RevisionParseError;
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+impl FromStr for Revision {
+    type Err = RevisionParseError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         let mut iter = value.splitn(4, '.');
         let major: u32 = if let Some(major) = iter.next() {
             major.trim().parse().map_err(|err| {
@@ -841,4 +842,76 @@ where
     let repo = parser.get_repository();
 
     Ok(repo)
+}
+
+#[test]
+fn test_revision_from_string() {
+    let version = "1.0.0.0";
+    let revision: Revision = version.parse().unwrap();
+
+    assert_eq!(
+        revision,
+        Revision {
+            major: 1,
+            minor: 0,
+            micro: 0,
+            preview: 0
+        }
+    );
+
+    let version = "1";
+    let revision: Revision = version.parse().unwrap();
+    assert_eq!(
+        revision,
+        Revision {
+            major: 1,
+            minor: 0,
+            micro: 0,
+            preview: 0,
+        }
+    );
+
+    let version = "1.69";
+    let revision: Revision = version.parse().unwrap();
+    assert_eq!(
+        revision,
+        Revision {
+            major: 1,
+            minor: 69,
+            micro: 0,
+            preview: 0,
+        }
+    );
+
+    let version = "0.1.22";
+    let revision: Revision = version.parse().unwrap();
+    assert_eq!(
+        revision,
+        Revision {
+            major: 0,
+            minor: 1,
+            micro: 22,
+            preview: 0,
+        }
+    );
+    let version = "invalid";
+    let revision: Result<Revision, RevisionParseError> = version.parse();
+    assert!(revision.is_err());
+}
+
+#[test]
+fn revision_to_string() {
+    let revision = Revision {
+        major: 6,
+        minor: 78,
+        ..Default::default()
+    };
+    assert_eq!(revision.to_string(), String::from("6.78.0.0"));
+    let revision = Revision::default();
+    assert_eq!(revision.to_string(), String::from("0.0.0.0"));
+    let revision = Revision {
+        preview: 9999999,
+        ..Default::default()
+    };
+    assert_eq!(revision.to_string(), String::from("0.0.0.9999999"));
 }
