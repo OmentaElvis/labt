@@ -382,11 +382,27 @@ impl StatefulWidget for &DetailsWidget {
         ])
         .render(layout[2], buf);
 
-        Line::from(vec![
-            Span::styled("installed: ", Style::new().fg(Color::DarkGray)),
-            Span::styled("yes", Style::new().fg(Color::Green)),
-        ])
-        .render(layout[3], buf);
+        if state
+            .filtered_packages
+            .installed
+            .get(&crate::submodules::sdk::InstalledPackage {
+                path: package.get_path().clone(),
+                version: package.get_revision().clone(),
+            })
+            .is_some()
+        {
+            Line::from(vec![
+                Span::styled("installed: ", Style::new().fg(Color::DarkGray)),
+                Span::styled("yes", Style::new().fg(Color::Green)),
+            ])
+            .render(layout[3], buf);
+        } else {
+            Line::from(vec![
+                Span::styled("installed: ", Style::new().fg(Color::DarkGray)),
+                Span::styled("no", Style::new().fg(Color::Red)),
+            ])
+            .render(layout[3], buf);
+        }
 
         // Archive list
         let archive_header = ["host os", "size", "url"]
