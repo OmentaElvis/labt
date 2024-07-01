@@ -273,11 +273,7 @@ fn extract(_lua: &Lua, (table_self, output, extract_all): (Table, String, Option
 
     let output_path = Path::new(output.as_str());
 
-    let should_extract_all = if let Some(should_extract_all) = extract_all {
-        should_extract_all
-    } else {
-        false
-    };
+    let should_extract_all = extract_all.unwrap_or_default();
 
     if should_extract_all {
         zip.extract(output_path)
