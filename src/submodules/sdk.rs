@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{bail, Context};
 use clap::{Args, Subcommand};
+use console::style;
 use log::info;
 use reqwest::Url;
 use toml_edit::{value, Document};
@@ -36,11 +37,46 @@ pub struct SdkArgs {
     /// Force updates the android repository xml
     #[arg(long, action)]
     update_repository_list: bool,
+
+    #[command(subcommand)]
+    subcommands: Option<SdkSubcommands>,
+}
+
+#[derive(Subcommand, Clone)]
+pub enum SdkSubcommands {
+    /// Install a package
+    Install(InstallArgs),
+    /// List packages
+    List(ListArgs),
+}
+
+#[derive(Clone, Args)]
+pub struct ListArgs {
+    /// Show only installed packages
+    #[arg(long, action)]
+    installed: bool,
+    /// Include obsolete packages on package list
+    #[arg(long, action)]
+    show_obsolete: bool,
+    /// Do not show interactive Terminal user interface
+    #[arg(long, action)]
+    no_interactive: bool,
+}
+
+#[derive(Clone, Args)]
+pub struct InstallArgs {
+    /// The package path name to install
+    #[arg(long)]
+    path: String,
+    /// The package version to install
+    #[arg(long)]
+    version: Revision,
 }
 
 pub struct Sdk {
     url: String,
     update: bool,
+    args: SdkArgs,
 }
 
 impl Sdk {
@@ -53,18 +89,53 @@ impl Sdk {
         Self {
             url,
             update: args.update_repository_list,
+            args: args.clone(),
         }
     }
-    pub fn start_tui(
-        &self,
-        repo: RepositoryXml,
-        list: HashSet<InstalledPackage>,
-    ) -> io::Result<()> {
+    pub fn start_tui(&self, packages: FilteredPackages) -> io::Result<()> {
         let mut terminal: Tui = tui::init()?;
         terminal.clear()?;
-        SdkManager::new(Rc::new(repo), Rc::new(list)).run(&mut terminal)?;
+        SdkManager::new(packages).run(&mut terminal)?;
         tui::restore()?;
 
+        Ok(())
+    }
+    /// Lists the available and installed packages
+    pub fn list_packages(
+        &self,
+        args: &ListArgs,
+        repo: RepositoryXml,
+        installed: HashSet<InstalledPackage>,
+    ) -> anyhow::Result<()> {
+        let mut filtered = FilteredPackages::new(Rc::new(repo), Rc::new(installed));
+        if args.installed {
+            filtered.insert_singleton_filter(super::sdkmanager::filters::SdkFilters::Installed);
+        }
+        // if show obsolete is not set, add a default flag to filter all obsolete packages
+        if !args.show_obsolete {
+            filtered
+                .insert_singleton_filter(super::sdkmanager::filters::SdkFilters::Obsolete(false));
+        }
+        filtered.apply();
+        if !args.no_interactive {
+            self.start_tui(filtered)?;
+        } else {
+            // println!(
+            //     "{}|{}|{}",
+            //     style("Path").underlined(),
+            //     style("Version").underlined(),
+            //     style("Description").underlined()
+            // );
+            let pipe = style("|").dim();
+            for package in filtered.get_packages() {
+                println!(
+                    "{}{pipe}{}{pipe}{}",
+                    style(package.get_path()).blue(),
+                    package.get_revision(),
+                    package.get_display_name(),
+                );
+            }
+        }
         Ok(())
     }
     pub fn get_url(&self) -> &String {
@@ -129,12 +200,14 @@ impl Submodule for Sdk {
 
         let list = read_installed_list().context("Failed reading installed packages list")?;
 
-        self.start_tui(repo, list)?;
-        Ok(())
-    }
-}
-
+        match &self.args.subcommands {
+            Some(SdkSubcommands::Install(_args)) => {}
+            Some(SdkSubcommands::List(args)) => {
                 self.list_packages(args, repo, list)
+                    .context("Failed to list packages")?;
+            }
+            None => {}
+        }
 
         Ok(())
     }
@@ -364,6 +437,11 @@ pub fn parse_repository_toml(path: &Path) -> anyhow::Result<RepositoryXml> {
 
                         package.add_archive(archive);
                     }
+                }
+
+                // parse obsolete
+                if let Some(obsolete) = p.get(OBSOLETE) {
+                    package.set_obsolete(obsolete.as_bool().unwrap());
                 }
                 repo.add_remote_package(package);
             }

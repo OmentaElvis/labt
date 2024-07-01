@@ -1,8 +1,7 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs::File,
     io::{self, Read},
-    rc::Rc,
 };
 
 use anyhow::{bail, Context};
@@ -20,12 +19,9 @@ use ratatui::{
 };
 
 use crate::{
-    config::repository::{RemotePackage, RepositoryXml},
+    config::repository::RemotePackage,
     get_home,
-    submodules::{
-        sdk::InstalledPackage,
-        sdkmanager::filters::{FilteredPackages, SdkFilters},
-    },
+    submodules::sdkmanager::filters::{FilteredPackages, SdkFilters},
 };
 
 use super::Tui;
@@ -459,8 +455,7 @@ struct AppState {
 }
 
 impl AppState {
-    pub fn new(repo: Rc<RepositoryXml>, installed: Rc<HashSet<InstalledPackage>>) -> Self {
-        let filtered = FilteredPackages::new(repo, installed);
+    pub fn new(packages: FilteredPackages) -> Self {
         Self {
             selected_package: 0,
             license_scroll_position: 0,
@@ -468,7 +463,7 @@ impl AppState {
             filter_input: String::new(),
             current_mode: Modes::Normal,
             filter_input_index: 0,
-            filtered_packages: filtered,
+            filtered_packages: packages,
             licenses: HashMap::new(),
         }
     }
@@ -631,8 +626,8 @@ pub struct SdkManager {
 }
 
 impl SdkManager {
-    pub fn new(repo: Rc<RepositoryXml>, installed: Rc<HashSet<InstalledPackage>>) -> Self {
-        let state = AppState::new(repo, installed);
+    pub fn new(packages: FilteredPackages) -> Self {
+        let state = AppState::new(packages);
         SdkManager {
             exit: false,
             current_page: Pages::MainList,
