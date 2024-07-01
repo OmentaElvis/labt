@@ -71,7 +71,7 @@ impl FilteredPackages {
     /// references
     /// returns the number of entries collected
     pub fn apply(&mut self) -> usize {
-        if self.filters.is_empty() {
+        if self.filters.is_empty() && self.single_filters.is_empty() {
             // return the count to the original array
             self.repo.get_remote_packages().len()
         } else {
@@ -87,7 +87,7 @@ impl FilteredPackages {
                                 if self
                                     .installed
                                     .get(&InstalledPackage::new(
-                                        p.get_display_name().clone(),
+                                        p.get_path().clone(),
                                         p.get_revision().clone(),
                                     ))
                                     .is_none()
@@ -144,7 +144,7 @@ impl FilteredPackages {
     /// package list is returned, otherwise returns the "applied" filtering.
     /// Note that it does not apply filters set so you must call `apply` before reading this
     pub fn get_packages(&self) -> &Vec<RemotePackage> {
-        if !self.filters.is_empty() {
+        if !self.filters.is_empty() || !self.single_filters.is_empty() {
             &self.packages
         } else {
             self.repo.get_remote_packages()
