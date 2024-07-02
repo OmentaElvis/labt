@@ -418,7 +418,7 @@ impl StatefulWidget for &DetailsWidget {
         }
 
         // Archive list
-        let archive_header = ["host os", "size", "url"]
+        let archive_header = ["host os", "bit", "size", "url"]
             .into_iter()
             .map(Cell::from)
             .collect::<Row>()
@@ -430,11 +430,16 @@ impl StatefulWidget for &DetailsWidget {
             .iter()
             .map(|archive| {
                 let platform_cell = Cell::new(archive.get_host_os().as_str());
+                let bit_cell = Cell::new(match archive.get_host_bits() {
+                    crate::config::repository::BitSizeType::Bit64 => "64",
+                    crate::config::repository::BitSizeType::Bit32 => "32",
+                    crate::config::repository::BitSizeType::Unset => " - ",
+                });
                 let name_cell = Cell::new(archive.get_url().as_str());
 
                 let size_cell = Cell::new(HumanBytes(archive.get_size() as u64).to_string());
 
-                Row::new([platform_cell, size_cell, name_cell])
+                Row::new([platform_cell, bit_cell, size_cell, name_cell])
             })
             .collect::<Vec<Row>>();
 
@@ -445,6 +450,7 @@ impl StatefulWidget for &DetailsWidget {
                 archive_rows,
                 [
                     Constraint::Length(10),
+                    Constraint::Length(3),
                     Constraint::Max(12),
                     Constraint::Fill(1),
                 ],
