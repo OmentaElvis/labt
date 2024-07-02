@@ -14,7 +14,9 @@ use reqwest::Url;
 use toml_edit::{value, Document};
 
 use crate::{
-    config::repository::{parse_repository_xml, Archive, RemotePackage, RepositoryXml, Revision},
+    config::repository::{
+        parse_repository_xml, Archive, ChannelType, RemotePackage, RepositoryXml, Revision,
+    },
     get_home,
     tui::{self, sdkmanager::SdkManager, Tui},
 };

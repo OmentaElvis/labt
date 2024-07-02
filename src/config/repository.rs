@@ -34,7 +34,7 @@ mod tags {
     pub const LICENSE: &[u8] = b"license";
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ChannelType {
     Stable,
     Beta,
@@ -61,6 +61,17 @@ impl From<String> for ChannelType {
             "dev" => ChannelType::Dev,
             "canary" => ChannelType::Canary,
             _ => ChannelType::Unknown(value),
+        }
+    }
+}
+impl Display for ChannelType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stable => write!(f, "stable"),
+            Self::Beta => write!(f, "beta"),
+            Self::Dev => write!(f, "dev"),
+            Self::Canary => write!(f, "canary"),
+            Self::Unknown(unknown) => write!(f, "{}", unknown),
         }
     }
 }
@@ -238,6 +249,9 @@ impl RepositoryXml {
     }
     pub fn get_channels(&self) -> &HashMap<String, ChannelType> {
         &self.channels
+    }
+    pub fn add_channel(&mut self, id: &str, channel: ChannelType) -> Option<ChannelType> {
+        self.channels.insert(id.to_string(), channel)
     }
     pub fn add_license(&mut self, id: String, license: String) {
         self.licenses.insert(id, license);

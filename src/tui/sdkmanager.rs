@@ -12,8 +12,8 @@ use ratatui::{
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, Clear, Padding, Paragraph, Row, StatefulWidget, Table, TableState,
-        Widget, Wrap,
+        Block, Borders, Cell, Clear, List, ListState, Padding, Paragraph, Row, StatefulWidget,
+        Table, TableState, Widget, Wrap,
     },
     Frame,
 };
@@ -353,6 +353,7 @@ impl StatefulWidget for &DetailsWidget {
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
+                Constraint::Length(1),
                 Constraint::Fill(1),
             ],
         )
@@ -381,6 +382,18 @@ impl StatefulWidget for &DetailsWidget {
             Span::from(package.get_path().as_str()),
         ])
         .render(layout[2], buf);
+        if let Some(channel) = state
+            .filtered_packages
+            .repo
+            .get_channels()
+            .get(package.get_channel_ref())
+        {
+            Line::from(vec![
+                Span::styled("channel  : ", Style::new().fg(Color::DarkGray)),
+                Span::from(channel.to_string()),
+            ])
+            .render(layout[3], buf);
+        }
 
         if state
             .filtered_packages
@@ -395,13 +408,13 @@ impl StatefulWidget for &DetailsWidget {
                 Span::styled("installed: ", Style::new().fg(Color::DarkGray)),
                 Span::styled("yes", Style::new().fg(Color::Green)),
             ])
-            .render(layout[3], buf);
+            .render(layout[4], buf);
         } else {
             Line::from(vec![
                 Span::styled("installed: ", Style::new().fg(Color::DarkGray)),
                 Span::styled("no", Style::new().fg(Color::Red)),
             ])
-            .render(layout[3], buf);
+            .render(layout[4], buf);
         }
 
         // Archive list
@@ -439,7 +452,7 @@ impl StatefulWidget for &DetailsWidget {
             .header(archive_header)
             .block(Block::new().padding(Padding::vertical(1)))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
-            layout[4],
+            layout[5],
             buf,
             &mut state,
         );
@@ -639,17 +652,33 @@ pub struct SdkManager {
     show_help: bool,
 
     help_popup: HelpPopoup,
+    show_channel_list: bool,
+
+    channels: Vec<String>,
+    channels_list_state: ListState,
 }
 
 impl SdkManager {
     pub fn new(packages: FilteredPackages) -> Self {
+        let mut channels: Vec<String> = packages
+            .repo
+            .get_channels()
+            .keys()
+            .map(|k| k.to_string())
+            .collect();
+        channels.push("ALL".to_string());
+
         let state = AppState::new(packages);
+
         SdkManager {
             exit: false,
             current_page: Pages::MainList,
             state,
             show_help: false,
             help_popup: HelpPopoup::new(80, 80),
+            show_channel_list: false,
+            channels,
+            channels_list_state: ListState::default(),
         }
     }
     pub fn run(&mut self, terminal: &mut Tui) -> io::Result<()> {
@@ -672,6 +701,9 @@ impl SdkManager {
                 HelpEntry::new("Up/Down", "Scroll entries"),
                 HelpEntry::new("L", "License"),
                 HelpEntry::new("I", "Install"),
+                HelpEntry::new("i", "Toggle installed"),
+                HelpEntry::new("o", "Toggle obsolete"),
+                HelpEntry::new("c", "Select Channel"),
             ],
         );
         self.help_popup.set_help(
@@ -728,6 +760,36 @@ impl SdkManager {
         if self.show_help {
             self.help_popup.draw(frame);
         }
+
+        if self.show_channel_list {
+            // render channel list
+            let count = self.channels.len();
+            let area = Rect::new(
+                layout[2].x,
+                layout[2].y.saturating_sub((count + 2) as u16),
+                20,
+                (count + 2) as u16,
+            );
+            frame.render_widget(Clear, area);
+
+            let list: List = self
+                .channels
+                .iter()
+                .map(|f| {
+                    if let Some(c) = self.state.filtered_packages.repo.get_channels().get(f) {
+                        format!("{}", c)
+                    } else {
+                        f.to_string()
+                    }
+                })
+                .collect();
+            let list = list
+                .block(Block::bordered())
+                .highlight_symbol(">")
+                .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
+
+            frame.render_stateful_widget(list, area, &mut self.channels_list_state);
+        }
     }
     fn handle_events(&mut self) -> io::Result<()> {
         // if event::poll(Duration::from_millis(16))? {
@@ -745,6 +807,59 @@ impl SdkManager {
                         }
                         KeyCode::Char('q') | KeyCode::Char('?') | KeyCode::Esc => {
                             self.show_help = false;
+                        }
+                        _ => {}
+                    },
+                    Modes::Normal if self.show_channel_list => match key.code {
+                        KeyCode::Up => {
+                            if let Some(index) = self.channels_list_state.selected() {
+                                if index == 0 {
+                                    self.channels_list_state
+                                        .select(Some(self.channels.len().saturating_sub(1)));
+                                } else {
+                                    self.channels_list_state
+                                        .select(Some(index.saturating_sub(1)))
+                                }
+                            } else if !self.channels.is_empty() {
+                                self.channels_list_state
+                                    .select(Some(self.channels.len().saturating_sub(1)));
+                            }
+                        }
+                        KeyCode::Down => {
+                            if let Some(index) = self.channels_list_state.selected() {
+                                if index.saturating_add(1) == self.channels.len() {
+                                    self.channels_list_state.select(Some(0));
+                                } else {
+                                    self.channels_list_state
+                                        .select(Some(index.saturating_add(1)));
+                                }
+                            } else if !self.channels.is_empty() {
+                                self.channels_list_state.select(Some(0));
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if let Some(index) = self.channels_list_state.selected() {
+                                if let Some(channel) = self.channels.get(index) {
+                                    if channel == "ALL" {
+                                        // clear the channel flags
+                                        self.state.filtered_packages.set_channel(None);
+                                    } else {
+                                        self.state.filtered_packages.set_channel(
+                                            self.state
+                                                .filtered_packages
+                                                .repo
+                                                .get_channels()
+                                                .get(channel)
+                                                .map(|c| c.to_owned()),
+                                        );
+                                    }
+                                }
+                            }
+                            self.state.filtered_packages.apply();
+                            self.show_channel_list = false;
+                        }
+                        KeyCode::Char('c') | KeyCode::Esc => {
+                            self.show_channel_list = false;
                         }
                         _ => {}
                     },
@@ -794,6 +909,43 @@ impl SdkManager {
                         // Install
                         KeyCode::Char('I') => {
                             self.state.install_current();
+                        }
+                        // Filter by installed
+                        KeyCode::Char('i') => {
+                            if self
+                                .state
+                                .filtered_packages
+                                .single_filters
+                                .contains(&SdkFilters::Installed)
+                            {
+                                self.state
+                                    .filtered_packages
+                                    .remove_singleton_filter(&SdkFilters::Installed);
+                            } else {
+                                self.state
+                                    .filtered_packages
+                                    .insert_singleton_filter(SdkFilters::Installed);
+                            }
+                            self.state.filtered_packages.apply();
+                        }
+                        KeyCode::Char('o') => {
+                            if self
+                                .state
+                                .filtered_packages
+                                .single_filters
+                                .contains(&SdkFilters::Obsolete(false))
+                            {
+                                self.state
+                                    .filtered_packages
+                                    .remove_singleton_filter(&SdkFilters::Obsolete(false));
+                            } else {
+                                self.state
+                                    .filtered_packages
+                                    .insert_singleton_filter(SdkFilters::Obsolete(false));
+                            }
+                        }
+                        KeyCode::Char('c') => {
+                            self.show_channel_list = true;
                         }
                         _ => {}
                     },

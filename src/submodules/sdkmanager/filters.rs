@@ -3,6 +3,7 @@ use std::rc::Rc;
 
 use fuzzy_matcher::clangd::fuzzy_match;
 
+use crate::config::repository::ChannelType;
 use crate::config::repository::RemotePackage;
 use crate::config::repository::RepositoryXml;
 use crate::submodules::sdk::InstalledPackage;
@@ -34,6 +35,8 @@ pub struct FilteredPackages {
     pub single_filters: HashSet<SdkFilters>,
 
     pub installed: Rc<HashSet<InstalledPackage>>,
+    /// The channel to show packages for. If set to None all channels are shown
+    pub channel: Option<ChannelType>,
 }
 
 impl FilteredPackages {
@@ -44,12 +47,29 @@ impl FilteredPackages {
             packages: Vec::new(),
             filters: Vec::new(),
             single_filters: HashSet::new(),
+            channel: None,
         }
     }
     /// Adds filter to the list of availabke filters
     pub fn push_filter(&mut self, filter: SdkFilters) {
         self.filters.push(filter);
     }
+    // /// Enables a particular filter. Returns true if operation was successful
+    // pub fn enable_filter(&mut self, index: usize) -> bool {
+    //     if let Some(filter) = self.filters.get_mut(index) {
+    //         filter.0 = true;
+    //         return true;
+    //     }
+    //     false
+    // }
+    // /// Disables a particular filter. Returns true if operation was successful
+    // pub fn disable_filter(&mut self, index: usize) -> bool {
+    //     if let Some(filter) = self.filters.get_mut(index) {
+    //         filter.0 = false;
+    //         return true;
+    //     }
+    //     false
+    // }
     /// Adds a singleton filter. Singleton filters are "AND"ed together
     pub fn insert_singleton_filter(&mut self, filter: SdkFilters) {
         self.single_filters.insert(filter);
@@ -61,6 +81,10 @@ impl FilteredPackages {
     /// removes and reteurns the last filter
     pub fn pop_filter(&mut self) -> Option<SdkFilters> {
         self.filters.pop()
+    }
+
+    pub fn set_channel(&mut self, channel: Option<ChannelType>) {
+        self.channel = channel;
     }
     /// Returns true if there are filters available
     pub fn has_filters(&self) -> bool {
@@ -104,6 +128,17 @@ impl FilteredPackages {
                             _ => {}
                         }
                     }
+                    // apply channel filters
+                    if let Some(channel) = &self.channel {
+                        if let Some(c) = self.repo.get_channels().get(p.get_channel_ref()) {
+                            if channel != c {
+                                return false;
+                            }
+                        } else {
+                            return false;
+                        }
+                    }
+
                     true
                 })
                 .filter_map(|p| {
