@@ -63,6 +63,9 @@ pub struct ListArgs {
     /// Do not show interactive Terminal user interface
     #[arg(long, action)]
     no_interactive: bool,
+    /// Filter by channel name e.g. stable, beta, dev, canary etc.
+    #[arg(long)]
+    channel: Option<ChannelType>,
 }
 
 #[derive(Clone, Args)]
@@ -118,6 +121,7 @@ impl Sdk {
             filtered
                 .insert_singleton_filter(super::sdkmanager::filters::SdkFilters::Obsolete(false));
         }
+        filtered.set_channel(args.channel.clone());
         filtered.apply();
         if !args.no_interactive {
             self.start_tui(filtered)?;

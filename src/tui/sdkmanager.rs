@@ -666,12 +666,30 @@ pub struct SdkManager {
 
 impl SdkManager {
     pub fn new(packages: FilteredPackages) -> Self {
-        let mut channels: Vec<String> = packages
-            .repo
-            .get_channels()
-            .keys()
-            .map(|k| k.to_string())
-            .collect();
+        let mut channel_state = ListState::default();
+        let mut channels: Vec<String> = if let Some(channel) = &packages.channel {
+            packages
+                .repo
+                .get_channels()
+                .iter()
+                .enumerate()
+                .map(|(i, k)| {
+                    if k.1 == channel {
+                        channel_state.select(Some(i));
+                    }
+                    k.0.to_string()
+                })
+                .collect()
+        } else {
+            let p: Vec<String> = packages
+                .repo
+                .get_channels()
+                .keys()
+                .map(|k| k.to_string())
+                .collect();
+            channel_state.select(Some(p.len()));
+            p
+        };
         channels.push("ALL".to_string());
 
         let state = AppState::new(packages);
@@ -684,7 +702,7 @@ impl SdkManager {
             help_popup: HelpPopoup::new(80, 80),
             show_channel_list: false,
             channels,
-            channels_list_state: ListState::default(),
+            channels_list_state: channel_state,
         }
     }
     pub fn run(&mut self, terminal: &mut Tui) -> io::Result<()> {
