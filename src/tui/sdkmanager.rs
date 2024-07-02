@@ -189,7 +189,15 @@ impl StatefulWidget for &MainListPage {
         )
         .split(area);
         // page title
-        Paragraph::new("Available packages").render(layout[0], buf);
+        if state
+            .filtered_packages
+            .single_filters
+            .contains(&SdkFilters::Installed)
+        {
+            Paragraph::new("Installed packages").render(layout[0], buf);
+        } else {
+            Paragraph::new("Available packages").render(layout[0], buf);
+        }
 
         let header_style = Style::new().fg(Color::DarkGray);
         let header = ["Name", "Version", "Path"]
