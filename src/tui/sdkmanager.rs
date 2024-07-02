@@ -666,7 +666,7 @@ impl SdkManager {
         self.help_popup.set_help(
             help_pages::MAIN.to_string(),
             vec![
-                HelpEntry::new("/", "Filter"),
+                HelpEntry::new("/", "Search"),
                 HelpEntry::new("?", "Help"),
                 HelpEntry::new("Enter", "Select Entry"),
                 HelpEntry::new("Up/Down", "Scroll entries"),
