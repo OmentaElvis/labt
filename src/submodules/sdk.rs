@@ -149,6 +149,7 @@ mod toml_strings {
     pub const DISPLAY_NAME: &str = "display_name";
     pub const LICENSE: &str = "license";
     pub const CHANNEL: &str = "channel";
+    pub const CHANNELS: &str = "channels";
     pub const URL: &str = "url";
     pub const CHECKSUM: &str = "checksum";
     pub const SIZE: &str = "size";
@@ -229,7 +230,7 @@ pub fn get_sdk_path() -> anyhow::Result<PathBuf> {
 pub fn write_repository_config(repo: &RepositoryXml) -> anyhow::Result<()> {
     use toml_strings::*;
     // Check for sdk folder
-    let sdk = get_sdk_path().context("Failed to get android sdk path")?;
+    let sdk = get_sdk_path().context(super::sdkmanager::installed_list::SDK_PATH_ERR_STRING)?;
 
     // Create licenses page
     let mut licenses = sdk.clone();
@@ -289,6 +290,13 @@ pub fn write_repository_config(repo: &RepositoryXml) -> anyhow::Result<()> {
         remotes.push(table);
     }
     doc[REMOTE_PACKAGE] = toml_edit::Item::ArrayOfTables(remotes);
+
+    // write channels ref
+    let mut channels = toml_edit::Table::new();
+    for channel in repo.get_channels() {
+        channels.insert(channel.0, value(channel.1.to_string()));
+    }
+    doc[CHANNELS] = toml_edit::Item::Table(channels);
 
     let mut repository = sdk.clone();
     repository.push("repository.toml");
@@ -444,6 +452,14 @@ pub fn parse_repository_toml(path: &Path) -> anyhow::Result<RepositoryXml> {
                     package.set_obsolete(obsolete.as_bool().unwrap());
                 }
                 repo.add_remote_package(package);
+            }
+        }
+    }
+    if toml.contains_table(CHANNELS) {
+        if let Some(channels) = toml[CHANNELS].as_table() {
+            for c in channels {
+                let channel: ChannelType = c.1.as_str().unwrap().into();
+                repo.add_channel(c.0, channel);
             }
         }
     }
