@@ -34,13 +34,15 @@ mod tags {
     pub const LICENSE: &[u8] = b"license";
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub enum ChannelType {
     Stable,
     Beta,
     Dev,
     Canary,
     Unknown(String),
+    #[default]
+    Unset,
 }
 impl From<&str> for ChannelType {
     fn from(value: &str) -> Self {
@@ -49,6 +51,7 @@ impl From<&str> for ChannelType {
             "beta" => ChannelType::Beta,
             "dev" => ChannelType::Dev,
             "canary" => ChannelType::Canary,
+            "" => ChannelType::Unset,
             _ => ChannelType::Unknown(value.to_string()),
         }
     }
@@ -60,6 +63,7 @@ impl From<String> for ChannelType {
             "beta" => ChannelType::Beta,
             "dev" => ChannelType::Dev,
             "canary" => ChannelType::Canary,
+            "" => ChannelType::Unset,
             _ => ChannelType::Unknown(value),
         }
     }
@@ -71,6 +75,7 @@ impl Display for ChannelType {
             Self::Beta => write!(f, "beta"),
             Self::Dev => write!(f, "dev"),
             Self::Canary => write!(f, "canary"),
+            Self::Unset => write!(f, ""),
             Self::Unknown(unknown) => write!(f, "{}", unknown),
         }
     }

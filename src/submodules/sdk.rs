@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     fs::{create_dir, create_dir_all, File},
     io::{self, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -110,7 +110,7 @@ impl Sdk {
         &self,
         args: &ListArgs,
         repo: RepositoryXml,
-        installed: HashSet<InstalledPackage>,
+        installed: HashMap<String, InstalledPackage>,
     ) -> anyhow::Result<()> {
         let mut filtered = FilteredPackages::new(Rc::new(repo), Rc::new(installed));
         if args.installed {
@@ -149,7 +149,7 @@ impl Sdk {
     }
 }
 
-mod toml_strings {
+pub mod toml_strings {
     pub const PATH: &str = "path";
     pub const VERSION: &str = "version";
     pub const DISPLAY_NAME: &str = "display_name";
@@ -165,6 +165,7 @@ mod toml_strings {
     pub const OBSOLETE: &str = "obsolete";
     pub const REMOTE_PACKAGE: &str = "remote_package";
     pub const CONFIG_FILE: &str = "repository.toml";
+    pub const DIRECTORY: &str = "directory";
 }
 
 // Entry point

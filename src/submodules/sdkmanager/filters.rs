@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -34,13 +35,13 @@ pub struct FilteredPackages {
     /// These are singleton filters applied to all entries
     pub single_filters: HashSet<SdkFilters>,
 
-    pub installed: Rc<HashSet<InstalledPackage>>,
+    pub installed: Rc<HashMap<String, InstalledPackage>>,
     /// The channel to show packages for. If set to None all channels are shown
     pub channel: Option<ChannelType>,
 }
 
 impl FilteredPackages {
-    pub fn new(repo: Rc<RepositoryXml>, installed: Rc<HashSet<InstalledPackage>>) -> Self {
+    pub fn new(repo: Rc<RepositoryXml>, installed: Rc<HashMap<String, InstalledPackage>>) -> Self {
         Self {
             repo,
             installed,
@@ -107,15 +108,25 @@ impl FilteredPackages {
                     for filter in self.single_filters.iter() {
                         match filter {
                             SdkFilters::Installed => {
-                                // short circuit for installed
-                                if self
-                                    .installed
-                                    .get(&InstalledPackage::new(
-                                        p.get_path().clone(),
-                                        p.get_revision().clone(),
-                                    ))
-                                    .is_none()
+                                if let Some(channel) =
+                                    self.repo.get_channels().get(p.get_channel_ref())
                                 {
+                                    // short circuit for installed
+                                    if self
+                                        .installed
+                                        .get(
+                                            &InstalledPackage::new(
+                                                p.get_path().clone(),
+                                                p.get_revision().clone(),
+                                                channel.clone(),
+                                            )
+                                            .to_id(),
+                                        )
+                                        .is_none()
+                                    {
+                                        return false;
+                                    }
+                                } else {
                                     return false;
                                 }
                             }

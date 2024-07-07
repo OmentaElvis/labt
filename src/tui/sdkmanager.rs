@@ -21,7 +21,10 @@ use ratatui::{
 use crate::{
     config::repository::RemotePackage,
     get_home,
-    submodules::sdkmanager::filters::{FilteredPackages, SdkFilters},
+    submodules::{
+        sdk::InstalledPackage,
+        sdkmanager::filters::{FilteredPackages, SdkFilters},
+    },
 };
 
 use super::Tui;
@@ -390,12 +393,13 @@ impl StatefulWidget for &DetailsWidget {
             Span::from(package.get_path().as_str()),
         ])
         .render(layout[2], buf);
-        if let Some(channel) = state
+        let channel = state
             .filtered_packages
             .repo
             .get_channels()
-            .get(package.get_channel_ref())
-        {
+            .get(package.get_channel_ref());
+
+        if let Some(channel) = channel {
             Line::from(vec![
                 Span::styled("channel  : ", Style::new().fg(Color::DarkGray)),
                 Span::from(channel.to_string()),
@@ -403,12 +407,18 @@ impl StatefulWidget for &DetailsWidget {
             .render(layout[3], buf);
         }
 
-        if state
-            .filtered_packages
-            .installed
-            .get(&crate::submodules::sdk::InstalledPackage {
-                path: package.get_path().clone(),
-                version: package.get_revision().clone(),
+        // Check if a package is installed
+        if channel
+            .and_then(|c| {
+                // channel type enum is needed for this to construct the id
+                state.filtered_packages.installed.get(
+                    &InstalledPackage::new(
+                        package.get_path().clone(),
+                        package.get_revision().clone(),
+                        c.clone(),
+                    )
+                    .to_id(),
+                )
             })
             .is_some()
         {
@@ -713,6 +723,10 @@ impl SdkManager {
             channels_list_state: channel_state,
         }
     }
+    /// ===============
+    ///  Entry point
+    /// ===============
+    /// Starts rendering sdkmanager tui and listening for key events
     pub fn run(&mut self, terminal: &mut Tui) -> io::Result<()> {
         self.load_help();
         while !self.exit {
@@ -723,6 +737,7 @@ impl SdkManager {
         }
         Ok(())
     }
+    /// Loads help popup with common help messages
     pub fn load_help(&mut self) {
         self.help_popup.set_help(
             help_pages::MAIN.to_string(),
@@ -755,6 +770,7 @@ impl SdkManager {
             ],
         );
     }
+    /// Call draw for current frame
     fn render_frame(&mut self, frame: &mut Frame) {
         // frame.render_widget(self, frame.size());
         let layout = Layout::new(
@@ -823,6 +839,7 @@ impl SdkManager {
             frame.render_stateful_widget(list, area, &mut self.channels_list_state);
         }
     }
+    /// Blocks to read for any input event to the console.
     fn handle_events(&mut self) -> io::Result<()> {
         // if event::poll(Duration::from_millis(16))? {
         if let Event::Key(key) = event::read()? {
