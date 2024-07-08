@@ -35,6 +35,7 @@ enum Pages {
     #[default]
     MainList,
     License,
+    Details,
     // Installed,
 }
 
@@ -254,7 +255,6 @@ impl StatefulWidget for &MainListPage {
             buf,
             &mut state.table_state.clone(),
         );
-
         let details = DetailsWidget::default();
         let inner = layout[2].inner(&ratatui::layout::Margin {
             horizontal: 1,
@@ -505,6 +505,9 @@ struct AppState {
 
     // caches licenses from sdk path
     licenses: HashMap<String, String>,
+
+    /// Render full details
+    pub show_full_details: bool,
 }
 
 impl AppState {
@@ -518,6 +521,7 @@ impl AppState {
             filter_input_index: 0,
             filtered_packages: packages,
             licenses: HashMap::new(),
+            show_full_details: false,
         }
     }
     /// Selects the next package. Wraps around if the end is reached
@@ -664,6 +668,7 @@ mod help_pages {
     pub const MAIN: &str = "main list";
     pub const LICENSE: &str = "license page";
     pub const HELP: &str = "help page";
+    pub const DETAILS: &str = "package details";
 }
 
 #[derive(Default)]
@@ -769,6 +774,15 @@ impl SdkManager {
                 HelpEntry::new("Esc/q/?", "Close this menu"),
             ],
         );
+        self.help_popup.set_help(
+            help_pages::DETAILS.to_string(),
+            vec![
+                HelpEntry::new("Up/Down", "Scroll"),
+                HelpEntry::new("Esc", "Back/Cancel"),
+                HelpEntry::new("L", "License"),
+                HelpEntry::new("I", "Install"),
+            ],
+        );
     }
     /// Call draw for current frame
     fn render_frame(&mut self, frame: &mut Frame) {
@@ -793,6 +807,12 @@ impl SdkManager {
             Pages::License => {
                 frame.render_stateful_widget(&LicensePage::default(), layout[0], &mut self.state);
                 if let Some(help) = self.help_popup.help.get_mut(help_pages::LICENSE) {
+                    frame.render_stateful_widget(HelpFooter::default(), layout[1], help);
+                }
+            }
+            Pages::Details => {
+                frame.render_stateful_widget(&DetailsWidget::default(), layout[0], &mut self.state);
+                if let Some(help) = self.help_popup.help.get_mut(help_pages::DETAILS) {
                     frame.render_stateful_widget(HelpFooter::default(), layout[1], help);
                 }
             }
@@ -913,13 +933,19 @@ impl SdkManager {
                         _ => {}
                     },
                     Modes::Normal => match key.code {
+                        // open details page
+                        KeyCode::Enter => {
+                            self.state.show_full_details = true;
+                            self.current_page = Pages::Details;
+                        }
                         // Up scroll movements
                         KeyCode::Up => match self.current_page {
                             Pages::MainList => self.state.previous_package(),
                             Pages::License => {
                                 self.state.license_scroll_position =
                                     self.state.license_scroll_position.saturating_sub(2);
-                            } // _ => {}
+                            }
+                            _ => {}
                         },
 
                         // Down scroll movements
@@ -928,7 +954,8 @@ impl SdkManager {
                             Pages::License => {
                                 self.state.license_scroll_position =
                                     self.state.license_scroll_position.saturating_add(2);
-                            } // _ => {}
+                            }
+                            _ => {}
                         },
                         // Help
                         KeyCode::Char('?') => {
@@ -937,15 +964,25 @@ impl SdkManager {
 
                         // Quit
                         KeyCode::Char('q') => self.exit = true,
-                        KeyCode::Char('L') if matches!(self.current_page, Pages::MainList) => {
+                        KeyCode::Char('L')
+                            if matches!(self.current_page, Pages::MainList | Pages::Details) =>
+                        {
                             self.current_page = Pages::License;
-                        }
-                        KeyCode::Esc if matches!(self.current_page, Pages::License) => {
-                            self.current_page = Pages::MainList;
                         }
                         KeyCode::Esc if self.show_help => {
                             self.show_help = false;
                         }
+                        KeyCode::Esc => match self.current_page {
+                            Pages::Details => {
+                                self.current_page = Pages::MainList;
+                                self.state.show_full_details = false;
+                            }
+                            Pages::License if self.state.show_full_details => {
+                                self.current_page = Pages::Details;
+                            }
+                            Pages::License => self.current_page = Pages::MainList,
+                            _ => {}
+                        },
                         KeyCode::Char('/') if matches!(self.current_page, Pages::MainList) => {
                             self.state.current_mode = Modes::FilterInput;
                             if !self.state.filtered_packages.has_filters() {
