@@ -174,7 +174,7 @@ impl RemotePackage {
     pub fn get_path(&self) -> &String {
         &self.path
     }
-    pub fn get_obsolete(&self) -> bool {
+    pub fn is_obsolete(&self) -> bool {
         self.obsolete
     }
     pub fn get_display_name(&self) -> &String {

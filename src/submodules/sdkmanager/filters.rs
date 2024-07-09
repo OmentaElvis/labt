@@ -132,7 +132,7 @@ impl FilteredPackages {
                             }
                             SdkFilters::Obsolete(obsolete) => {
                                 // short circuit for obsolete
-                                if p.get_obsolete() != *obsolete {
+                                if p.is_obsolete() != *obsolete {
                                     return false;
                                 }
                             }

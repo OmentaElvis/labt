@@ -378,9 +378,20 @@ impl StatefulWidget for &DetailsWidget {
 
         let version_string = package.get_revision().to_string();
 
-        Paragraph::new(package.get_display_name().as_str())
-            .fg(Color::Blue)
+        if package.is_obsolete() {
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    package.get_display_name().as_str(),
+                    Style::new().fg(Color::Blue),
+                ),
+                Span::styled(" (obsolete)", Style::new().fg(Color::Yellow)),
+            ]))
             .render(layout[0], buf);
+        } else {
+            Paragraph::new(package.get_display_name().as_str())
+                .fg(Color::Blue)
+                .render(layout[0], buf);
+        }
 
         Line::from(vec![
             Span::styled("version  : ", Style::new().fg(Color::DarkGray)),
