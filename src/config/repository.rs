@@ -99,12 +99,24 @@ impl From<&str> for OsType {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum BitSizeType {
     Bit64,
     Bit32,
     #[default]
     Unset,
+}
+
+impl FromStr for BitSizeType {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "32" => Ok(Self::Bit32),
+            "64" => Ok(Self::Bit64),
+            "" => Ok(Self::Unset),
+            _ => Err(anyhow::anyhow!("Unknown bit width or unsupported: {}", s)),
+        }
+    }
 }
 
 #[derive(Debug)]

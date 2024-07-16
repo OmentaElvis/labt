@@ -1,29 +1,37 @@
 use std::{
     collections::HashMap,
-    fs::{create_dir, create_dir_all, File},
-    io::{self, BufReader, Read, Write},
+    env,
+    fs::{self, create_dir, create_dir_all, remove_file, File},
+    io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
+    process,
     rc::Rc,
 };
 
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail, Context};
 use clap::{Args, Subcommand};
 use console::style;
-use log::info;
+use indicatif::{HumanBytes, ProgressStyle};
+use log::{info, warn};
 use reqwest::Url;
 use toml_edit::{value, Document};
+use zip::ZipArchive;
 
 use crate::{
     config::repository::{
-        parse_repository_xml, Archive, ChannelType, RemotePackage, RepositoryXml, Revision,
+        parse_repository_xml, Archive, BitSizeType, ChannelType, RemotePackage, RepositoryXml,
+        Revision,
     },
     get_home,
     tui::{self, sdkmanager::SdkManager, Tui},
 };
 
 // consts
+const DEFAULT_URL: &str = "https://dl.google.com/android/repository/";
+const TEST_URL: &str = "http://localhost:8080/";
 const DEFAULT_RESOURCES_URL: &str = "https://dl.google.com/android/repository/repository2-1.xml";
 const SDKMANAGER_TARGET: &str = "sdkmanager";
+const LOCK_FILE: &str = ".lock";
 
 use super::sdkmanager::filters::FilteredPackages;
 use super::sdkmanager::read_installed_list;
@@ -76,6 +84,18 @@ pub struct InstallArgs {
     /// The package version to install
     #[arg(long)]
     version: Revision,
+    /// The package channel to install
+    #[arg(long)]
+    channel: Option<ChannelType>,
+    /// The display name. Use this only to further disambiguate packages with same path and version.
+    #[arg(long)]
+    display_name: Option<String>,
+    /// Accept license if available
+    #[arg(long, action)]
+    accept: bool,
+    #[arg(long)]
+    /// The host platform to select. Format: <Os[;bit]> e.g. linux;64. Defaults to native os.
+    host_os: Option<String>,
 }
 
 pub struct Sdk {
@@ -144,6 +164,173 @@ impl Sdk {
         }
         Ok(())
     }
+    /// Looks for a lock file on target directory and tries to delete it if its process id matches the current process.
+    /// Setting force to true will disregard if process id matches and deletes the lock file anyway.
+    pub fn release_lock_file(&self, path: &Path, force: bool, my_pid: &u32) -> anyhow::Result<()> {
+        let lock = path.join(LOCK_FILE);
+
+        if !lock.exists() {
+            return Ok(());
+        }
+
+        if force {
+            remove_file(lock).context(format!("Failed to remove lock file at {:?}", path))?;
+            return Ok(());
+        }
+
+        let pid = fs::read_to_string(&lock)
+            .context(format!("Failed reading pid from lock file ({:?})", path))?;
+
+        if !my_pid.to_string().eq(&pid) {
+            return Err(anyhow!("Mismatched PID on lock file. lock has {} and current PID is {}. This lock file at ({:?}) may not be owned by current process.", pid, my_pid, lock));
+        }
+
+        remove_file(lock).context(format!("Failed to remove lock file at {:?}", path))?;
+
+        Ok(())
+    }
+    /// Creates a lock file for the current process id
+    /// It creates all parent directories to the target .lock file destination if missing
+    pub fn create_lock_file(&self, path: &Path, pid: &u32) -> anyhow::Result<()> {
+        create_dir_all(path).context(format!(
+            "Failed to create lock file target directory: {}",
+            path.to_string_lossy()
+        ))?;
+
+        let lock_file = path.join(LOCK_FILE);
+
+        if lock_file.exists() {
+            let mut file = File::open(&lock_file).context(format!(
+                "Failed to open .lock file at {}",
+                lock_file.to_string_lossy()
+            ))?;
+            let mut pid = String::new();
+            file.read_to_string(&mut pid)?;
+            return Err(anyhow!("Unable to obtain lock at {}. This may be caused by a previous installation attempt that crashed or terminated unexpectedly, or another LABt process is currently operating on the directory and is locking it to prevent corruption. Try removing the lock file or waiting for the other process ({}) to finish.", lock_file.to_string_lossy(), pid));
+        }
+
+        let mut file = File::create(&lock_file).context(format!(
+            "Failed to create {} file at {}.",
+            LOCK_FILE,
+            lock_file.to_string_lossy()
+        ))?;
+        file.write(format!("{}", pid).as_bytes()).context(format!(
+            "Failed to write process id to {} file {}",
+            LOCK_FILE,
+            lock_file.to_string_lossy()
+        ))?;
+
+        Ok(())
+    }
+    /// Tries to install the package provided
+    pub fn install_package(
+        &self,
+        args: &InstallArgs,
+        repo: RepositoryXml,
+        _installed: HashMap<String, InstalledPackage>,
+    ) -> anyhow::Result<()> {
+        let channel = if let Some(channel) = &args.channel {
+            repo.get_channels().iter().find(|p| p.1 == channel)
+        } else {
+            None
+        };
+
+        let package = repo.get_remote_packages().iter().find(|p| {
+            if !&args.path.eq(p.get_path()) {
+                return false;
+            }
+
+            if !args.version.eq(p.get_revision()) {
+                return false;
+            }
+
+            if let Some(name) = &args.display_name {
+                if !name.eq(p.get_display_name()) {
+                    return false;
+                }
+            }
+
+            if let Some((ref_id, _)) = channel {
+                if !ref_id.eq(p.get_channel_ref()) {
+                    return false;
+                }
+            } else {
+                //the channel was not found
+                if args.channel.is_some() {
+                    return false;
+                }
+            }
+
+            true
+        });
+
+        let package = if let Some(p) = package {
+            info!(target: SDKMANAGER_TARGET, "Found sdk package: {}, {} v{}-{}",p.get_display_name(), p.get_path(), p.get_revision(), repo.get_channels().get(p.get_channel_ref()).unwrap_or(&ChannelType::Unknown("unknown".to_string())));
+
+            if p.is_obsolete() {
+                // is obsolete
+                warn!(target: SDKMANAGER_TARGET, "Package {} is obsolete", p.get_display_name());
+            }
+            p
+        } else {
+            let err = format!(
+                "Package {} v{}-{} not found",
+                args.path,
+                args.version,
+                channel.map_or("unknown".to_string(), |c| c.1.to_string())
+            );
+            warn!(target: SDKMANAGER_TARGET, "{}", err);
+            return Err(anyhow!(io::Error::new(io::ErrorKind::NotFound, err)));
+        };
+        // if you are debugging the sdkmanager, please check this section as it may be a source of bugs
+        let mut bits = if cfg!(target_pointer_width = "64") {
+            BitSizeType::Bit64
+        } else {
+            BitSizeType::Bit32
+        };
+        // I think android repo only supports linux, macos, windows
+        let host_os = if let Some(host) = &args.host_os {
+            if let Some((os, bit)) = host.split_once(';') {
+                bits = bit
+                    .parse()
+                    .context("Failed to parse bits from --host-os arg")?;
+                os.to_string()
+            } else {
+                host.clone()
+            }
+        } else {
+            match env::consts::FAMILY {
+                "unix" if env::consts::OS.eq("macos") => "macos",
+                "unix" => "linux",
+                _ => "windows",
+            }
+            .to_string()
+        };
+
+        // obtain the installation directory
+
+        let path = package.get_path();
+        let dir: PathBuf = path.split(';').collect();
+        let sdk = get_sdk_path().context(super::sdkmanager::installed_list::SDK_PATH_ERR_STRING)?;
+        let target = sdk.join(dir);
+
+        // create a lock file to protect directory
+        let pid = process::id();
+        self.create_lock_file(&target, &pid)?;
+
+        let result = install_package(package, host_os, bits, &target);
+
+        if let Err(err) = self.release_lock_file(&target, false, &pid) {
+            if result.is_ok() {
+                return Err(err);
+            } else {
+                // log this error to make sure that the main install process result above is returned for processing and not this err
+                log::error!(target: SDKMANAGER_TARGET, "{}", err);
+            }
+        }
+
+        result
+    }
     pub fn get_url(&self) -> &String {
         &self.url
     }
@@ -209,7 +396,10 @@ impl Submodule for Sdk {
         let list = read_installed_list().context("Failed reading installed packages list")?;
 
         match &self.args.subcommands {
-            Some(SdkSubcommands::Install(_args)) => {}
+            Some(SdkSubcommands::Install(args)) => {
+                self.install_package(args, repo, list)
+                    .context("Failed to install package")?;
+            }
             Some(SdkSubcommands::List(args)) => {
                 self.list_packages(args, repo, list)
                     .context("Failed to list packages")?;
@@ -291,7 +481,7 @@ pub fn write_repository_config(repo: &RepositoryXml) -> anyhow::Result<()> {
             archive_entries.push(archive_table);
         }
         table[ARCHIVE] = toml_edit::Item::ArrayOfTables(archive_entries);
-        if package.get_obsolete() {
+        if package.is_obsolete() {
             table.insert(OBSOLETE, value(true));
         }
         remotes.push(table);
@@ -472,4 +662,221 @@ pub fn parse_repository_toml(path: &Path) -> anyhow::Result<RepositoryXml> {
     }
 
     Ok(repo)
+}
+
+/// Starts the installation process
+pub fn install_package(
+    package: &RemotePackage,
+    host_os: String,
+    bits: BitSizeType,
+    target_path: &Path,
+) -> anyhow::Result<()> {
+    const NO_TARGET_ERR: &str = "No target to install";
+    // select the appropriate archive
+    let archives = package.get_archives();
+    if archives.is_empty() {
+        bail!(NO_TARGET_ERR);
+    }
+
+    let archives: Vec<&Archive> = archives
+        .iter()
+        .filter(|p| {
+            if p.get_host_os().is_empty() {
+                // os not set so include this
+                true
+            } else {
+                p.get_host_os().eq(&host_os)
+            }
+        })
+        .filter(|p| {
+            let b = p.get_host_bits();
+            if b == BitSizeType::Unset {
+                true
+            } else {
+                b == bits
+            }
+        })
+        .collect();
+
+    let archive = archives.first().context(NO_TARGET_ERR)?;
+    info!(target: SDKMANAGER_TARGET, "Downloading {} from {} with size {}", archive.get_url(), DEFAULT_URL, HumanBytes(archive.get_size() as u64));
+
+    let client = reqwest::blocking::ClientBuilder::new()
+        .user_agent(crate::USER_AGENT)
+        .build()?;
+
+    let url = Url::parse(TEST_URL).context("Failed to parse download url.")?;
+    let url = url.join(archive.get_url())?;
+
+    let req = client.get(url);
+    let res = req.send().context("Failed to complete request")?;
+
+    let mut output = target_path.to_path_buf();
+    output.push("package.tmp");
+    let file = File::create(&output).context("Failed to create download tmp file")?;
+    let mut writer = BufWriter::new(file);
+
+    let mut reader = BufReader::new(res);
+
+    let prog = indicatif::ProgressBar::new(archive.get_size() as u64).with_style(
+        ProgressStyle::with_template(
+            "{spinner}[{percent}%] {bar:40} {binary_bytes_per_sec} {duration}",
+        )
+        .unwrap(),
+    );
+    const BUFFER_LENGTH: usize = 8 * 1024;
+    let mut buf: [u8; BUFFER_LENGTH] = [0; BUFFER_LENGTH];
+    loop {
+        let read = reader.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+
+        let written = writer.write(&buf[0..read])?;
+        if written != read {
+            return Err(anyhow!("Failed to copy all bytes from the network stream to a local file: read {}, written: {}", read, written));
+        }
+
+        prog.inc(read as u64);
+    }
+
+    prog.finish_and_clear();
+    drop(writer);
+    drop(reader);
+
+    // unzip
+    let file = File::open(&output).context("Failed to open download tmp file")?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    extract_with_progress(&mut archive, target_path).context(format!(
+        "Failed to unzip package archive to ({:?})",
+        target_path
+    ))?;
+    info!(target: SDKMANAGER_TARGET, "Extracted {} entries to ({:?}).", archive.len(), target_path);
+
+    log::trace!(target: SDKMANAGER_TARGET, "Removing download temp file ({:?})", output);
+    remove_file(&output).context(format!(
+        "Failed to remove download temp file at ({:?})",
+        output
+    ))?;
+
+    Ok(())
+}
+
+pub fn extract_with_progress<P: AsRef<Path>>(
+    archive: &mut ZipArchive<File>,
+    directory: P,
+) -> anyhow::Result<()> {
+    let prog = indicatif::ProgressBar::new(archive.len() as u64)
+        .with_style(
+            ProgressStyle::with_template(
+                "{spinner} {msg} [{percent}%] {bar:40} {pos}/{len} {duration}",
+            )
+            .unwrap(),
+        )
+        .with_message("Extracting");
+
+    let make_writable_dir_all = |outpath: &dyn AsRef<Path>| -> Result<(), zip::result::ZipError> {
+        create_dir_all(outpath.as_ref())?;
+        #[cfg(unix)]
+        {
+            // Dirs must be writable until all normal files are extracted
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                outpath.as_ref(),
+                std::fs::Permissions::from_mode(
+                    0o700 | std::fs::metadata(outpath.as_ref())?.permissions().mode(),
+                ),
+            )?;
+        }
+        Ok(())
+    };
+
+    // Patched from ZipArchive::extract function
+    // The MIT License (MIT)
+    // Copyright (C) 2014 Mathijs van de Nes
+    use std::fs;
+    #[cfg(unix)]
+    let mut files_by_unix_mode = Vec::new();
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        prog.inc(1);
+        let filepath = file
+            .enclosed_name()
+            .ok_or(zip::result::ZipError::InvalidArchive("Invalid file path"))?;
+
+        let outpath = directory.as_ref().join(filepath);
+
+        if file.is_dir() {
+            make_writable_dir_all(&outpath)?;
+            continue;
+        }
+        let symlink_target = if file.is_symlink() && (cfg!(unix) || cfg!(windows)) {
+            let mut target = Vec::with_capacity(file.size() as usize);
+            file.read_exact(&mut target)?;
+            Some(target)
+        } else {
+            None
+        };
+        drop(file);
+        if let Some(p) = outpath.parent() {
+            make_writable_dir_all(&p)?;
+        }
+        if let Some(target) = symlink_target {
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStringExt;
+                let target = std::ffi::OsString::from_vec(target);
+                let target_path = directory.as_ref().join(target);
+                std::os::unix::fs::symlink(target_path, outpath.as_path())?;
+            }
+            #[cfg(windows)]
+            {
+                let Ok(target) = String::from_utf8(target) else {
+                    return Err(ZipError::InvalidArchive("Invalid UTF-8 as symlink target"));
+                };
+                let target = target.into_boxed_str();
+                let target_is_dir_from_archive =
+                    archive.shared.files.contains_key(&target) && is_dir(&target);
+                let target_path = directory.as_ref().join(OsString::from(target.to_string()));
+                let target_is_dir = if target_is_dir_from_archive {
+                    true
+                } else if let Ok(meta) = std::fs::metadata(&target_path) {
+                    meta.is_dir()
+                } else {
+                    false
+                };
+                if target_is_dir {
+                    std::os::windows::fs::symlink_dir(target_path, outpath.as_path())?;
+                } else {
+                    std::os::windows::fs::symlink_file(target_path, outpath.as_path())?;
+                }
+            }
+            continue;
+        }
+        let mut file = archive.by_index(i)?;
+        let mut outfile = fs::File::create(&outpath)?;
+        io::copy(&mut file, &mut outfile)?;
+        #[cfg(unix)]
+        {
+            // Check for real permissions, which we'll set in a second pass
+            if let Some(mode) = file.unix_mode() {
+                files_by_unix_mode.push((outpath.clone(), mode));
+            }
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::cmp::Reverse;
+        use std::os::unix::fs::PermissionsExt;
+
+        if files_by_unix_mode.len() > 1 {
+            // Ensure we update children's permissions before making a parent unwritable
+            files_by_unix_mode.sort_by_key(|(path, _)| Reverse(path.clone()));
+        }
+        for (path, mode) in files_by_unix_mode.into_iter() {
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
+        }
+    }
+    prog.finish_and_clear();
+    Ok(())
 }

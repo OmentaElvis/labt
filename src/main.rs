@@ -37,6 +37,7 @@ static PROJECT_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 pub const LABT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const USER_AGENT: &str = concat!("Labt/", env!("CARGO_PKG_VERSION"));
+pub const TARGET: &str = env!("TARGET");
 
 pub mod envs {
     pub const LABT_HOME: &str = "LABT_HOME";
