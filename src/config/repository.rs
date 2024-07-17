@@ -34,6 +34,14 @@ mod tags {
     pub const LICENSE: &[u8] = b"license";
 }
 
+mod channel_strings {
+
+    pub const STABLE: &str = "stable";
+    pub const BETA: &str = "beta";
+    pub const DEV: &str = "dev";
+    pub const CANARY: &str = "canary";
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub enum ChannelType {
     Stable,
@@ -41,41 +49,52 @@ pub enum ChannelType {
     Dev,
     Canary,
     Unknown(String),
+    /// A ref used to reference key channel tables
+    Ref(String),
     #[default]
     Unset,
 }
 impl From<&str> for ChannelType {
     fn from(value: &str) -> Self {
-        match value {
-            "stable" => ChannelType::Stable,
-            "beta" => ChannelType::Beta,
-            "dev" => ChannelType::Dev,
-            "canary" => ChannelType::Canary,
-            "" => ChannelType::Unset,
-            _ => ChannelType::Unknown(value.to_string()),
+        if let Some(reference) = value.strip_prefix('@') {
+            ChannelType::Ref(reference.to_string())
+        } else {
+            match value {
+                channel_strings::STABLE => ChannelType::Stable,
+                channel_strings::BETA => ChannelType::Beta,
+                channel_strings::DEV => ChannelType::Dev,
+                channel_strings::CANARY => ChannelType::Canary,
+                "" => ChannelType::Unset,
+                _ => ChannelType::Unknown(value.to_string()),
+            }
         }
     }
 }
 impl From<String> for ChannelType {
     fn from(value: String) -> Self {
-        match value.as_str() {
-            "stable" => ChannelType::Stable,
-            "beta" => ChannelType::Beta,
-            "dev" => ChannelType::Dev,
-            "canary" => ChannelType::Canary,
-            "" => ChannelType::Unset,
-            _ => ChannelType::Unknown(value),
+        if let Some(reference) = value.strip_prefix('@') {
+            ChannelType::Ref(reference.to_string())
+        } else {
+            match value.as_str() {
+                channel_strings::STABLE => ChannelType::Stable,
+                channel_strings::BETA => ChannelType::Beta,
+                channel_strings::DEV => ChannelType::Dev,
+                channel_strings::CANARY => ChannelType::Canary,
+                "" => ChannelType::Unset,
+                _ => ChannelType::Unknown(value),
+            }
         }
     }
 }
 impl Display for ChannelType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Stable => write!(f, "stable"),
-            Self::Beta => write!(f, "beta"),
-            Self::Dev => write!(f, "dev"),
-            Self::Canary => write!(f, "canary"),
+            Self::Stable => write!(f, "{}", channel_strings::STABLE),
+            Self::Beta => write!(f, "{}", channel_strings::BETA),
+            Self::Dev => write!(f, "{}", channel_strings::DEV),
+            Self::Canary => write!(f, "{}", channel_strings::CANARY),
             Self::Unset => write!(f, ""),
+            Self::Ref(refrence) => write!(f, "@{}", refrence),
             Self::Unknown(unknown) => write!(f, "{}", unknown),
         }
     }

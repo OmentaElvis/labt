@@ -422,14 +422,14 @@ impl StatefulWidget for &DetailsWidget {
         if channel
             .and_then(|c| {
                 // channel type enum is needed for this to construct the id
-                state.filtered_packages.installed.get(
-                    &InstalledPackage::new(
+                state
+                    .filtered_packages
+                    .installed
+                    .contains_id(&InstalledPackage::new(
                         package.get_path().clone(),
                         package.get_revision().clone(),
                         c.clone(),
-                    )
-                    .to_id(),
-                )
+                    ))
             })
             .is_some()
         {

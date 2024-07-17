@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     env,
     fs::{self, create_dir, create_dir_all, remove_file, File},
     io::{self, BufReader, BufWriter, Read, Write},
@@ -34,7 +33,7 @@ const SDKMANAGER_TARGET: &str = "sdkmanager";
 const LOCK_FILE: &str = ".lock";
 
 use super::sdkmanager::filters::FilteredPackages;
-use super::sdkmanager::read_installed_list;
+use super::sdkmanager::installed_list::InstalledList;
 use super::Submodule;
 
 pub use super::sdkmanager::InstalledPackage;
@@ -130,9 +129,9 @@ impl Sdk {
         &self,
         args: &ListArgs,
         repo: RepositoryXml,
-        installed: HashMap<String, InstalledPackage>,
+        installed: InstalledList,
     ) -> anyhow::Result<()> {
-        let mut filtered = FilteredPackages::new(Rc::new(repo), Rc::new(installed));
+        let mut filtered = FilteredPackages::new(Rc::new(repo), installed);
         if args.installed {
             filtered.insert_singleton_filter(super::sdkmanager::filters::SdkFilters::Installed);
         }
@@ -227,8 +226,9 @@ impl Sdk {
         &self,
         args: &InstallArgs,
         repo: RepositoryXml,
-        _installed: HashMap<String, InstalledPackage>,
-    ) -> anyhow::Result<()> {
+        installed: InstalledList,
+    ) -> anyhow::Result<InstalledPackage> {
+        let mut installed = installed;
         let channel = if let Some(channel) = &args.channel {
             repo.get_channels().iter().find(|p| p.1 == channel)
         } else {
@@ -316,9 +316,23 @@ impl Sdk {
 
         // create a lock file to protect directory
         let pid = process::id();
-        self.create_lock_file(&target, &pid)?;
+        // self.create_lock_file(&target, &pid)?;
 
         let result = install_package(package, host_os, bits, &target);
+
+        if let Ok(package) = &result {
+            let mut package = package.to_owned();
+            if let ChannelType::Ref(reference) = &package.channel {
+                package.channel = repo
+                    .get_channels()
+                    .get(reference)
+                    .unwrap_or(&ChannelType::Unset)
+                    .clone();
+            }
+
+            installed.insert_installed_package(package.to_owned());
+            installed.save_to_file()?;
+        }
 
         if let Err(err) = self.release_lock_file(&target, false, &pid) {
             if result.is_ok() {
@@ -393,7 +407,8 @@ impl Submodule for Sdk {
             parse_repository_toml(&toml).context("Failed to parse android repository config from cache. try --update-repository-list to force update config.")?
         };
 
-        let list = read_installed_list().context("Failed reading installed packages list")?;
+        let list =
+            InstalledList::parse_from_sdk().context("Failed reading installed packages list")?;
 
         match &self.args.subcommands {
             Some(SdkSubcommands::Install(args)) => {
@@ -670,7 +685,7 @@ pub fn install_package(
     host_os: String,
     bits: BitSizeType,
     target_path: &Path,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<InstalledPackage> {
     const NO_TARGET_ERR: &str = "No target to install";
     // select the appropriate archive
     let archives = package.get_archives();
@@ -708,7 +723,7 @@ pub fn install_package(
     let url = Url::parse(TEST_URL).context("Failed to parse download url.")?;
     let url = url.join(archive.get_url())?;
 
-    let req = client.get(url);
+    let req = client.get(url.clone());
     let res = req.send().context("Failed to complete request")?;
 
     let mut output = target_path.to_path_buf();
@@ -759,7 +774,13 @@ pub fn install_package(
         output
     ))?;
 
-    Ok(())
+    Ok(InstalledPackage {
+        path: package.get_path().to_owned(),
+        version: package.get_revision().to_owned(),
+        url: url.to_string(),
+        directory: Some(target_path.to_path_buf()),
+        channel: ChannelType::Ref(package.get_channel_ref().to_owned()),
+    })
 }
 
 pub fn extract_with_progress<P: AsRef<Path>>(

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -8,6 +7,8 @@ use crate::config::repository::ChannelType;
 use crate::config::repository::RemotePackage;
 use crate::config::repository::RepositoryXml;
 use crate::submodules::sdk::InstalledPackage;
+
+use super::installed_list::InstalledList;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub enum SdkFilters {
@@ -35,13 +36,13 @@ pub struct FilteredPackages {
     /// These are singleton filters applied to all entries
     pub single_filters: HashSet<SdkFilters>,
 
-    pub installed: Rc<HashMap<String, InstalledPackage>>,
+    pub installed: InstalledList,
     /// The channel to show packages for. If set to None all channels are shown
     pub channel: Option<ChannelType>,
 }
 
 impl FilteredPackages {
-    pub fn new(repo: Rc<RepositoryXml>, installed: Rc<HashMap<String, InstalledPackage>>) -> Self {
+    pub fn new(repo: Rc<RepositoryXml>, installed: InstalledList) -> Self {
         Self {
             repo,
             installed,
@@ -100,6 +101,7 @@ impl FilteredPackages {
             // return the count to the original array
             self.repo.get_remote_packages().len()
         } else {
+            let installed_hash = self.installed.get_hash_map();
             let mut ranked: Vec<(i64, &RemotePackage)> = self
                 .repo
                 .get_remote_packages()
@@ -112,18 +114,14 @@ impl FilteredPackages {
                                     self.repo.get_channels().get(p.get_channel_ref())
                                 {
                                     // short circuit for installed
-                                    if self
-                                        .installed
-                                        .get(
-                                            &InstalledPackage::new(
-                                                p.get_path().clone(),
-                                                p.get_revision().clone(),
-                                                channel.clone(),
-                                            )
-                                            .to_id(),
+                                    if !installed_hash.contains_key(
+                                        &InstalledPackage::new(
+                                            p.get_path().clone(),
+                                            p.get_revision().clone(),
+                                            channel.clone(),
                                         )
-                                        .is_none()
-                                    {
+                                        .to_id(),
+                                    ) {
                                         return false;
                                     }
                                 } else {
