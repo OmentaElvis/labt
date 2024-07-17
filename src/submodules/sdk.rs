@@ -262,64 +262,6 @@ impl Sdk {
         }
         Ok(())
     }
-    /// Looks for a lock file on target directory and tries to delete it if its process id matches the current process.
-    /// Setting force to true will disregard if process id matches and deletes the lock file anyway.
-    pub fn release_lock_file(&self, path: &Path, force: bool, my_pid: &u32) -> anyhow::Result<()> {
-        let lock = path.join(LOCK_FILE);
-
-        if !lock.exists() {
-            return Ok(());
-        }
-
-        if force {
-            remove_file(lock).context(format!("Failed to remove lock file at {:?}", path))?;
-            return Ok(());
-        }
-
-        let pid = fs::read_to_string(&lock)
-            .context(format!("Failed reading pid from lock file ({:?})", path))?;
-
-        if !my_pid.to_string().eq(&pid) {
-            return Err(anyhow!("Mismatched PID on lock file. lock has {} and current PID is {}. This lock file at ({:?}) may not be owned by current process.", pid, my_pid, lock));
-        }
-
-        remove_file(lock).context(format!("Failed to remove lock file at {:?}", path))?;
-
-        Ok(())
-    }
-    /// Creates a lock file for the current process id
-    /// It creates all parent directories to the target .lock file destination if missing
-    pub fn create_lock_file(&self, path: &Path, pid: &u32) -> anyhow::Result<()> {
-        create_dir_all(path).context(format!(
-            "Failed to create lock file target directory: {}",
-            path.to_string_lossy()
-        ))?;
-
-        let lock_file = path.join(LOCK_FILE);
-
-        if lock_file.exists() {
-            let mut file = File::open(&lock_file).context(format!(
-                "Failed to open .lock file at {}",
-                lock_file.to_string_lossy()
-            ))?;
-            let mut pid = String::new();
-            file.read_to_string(&mut pid)?;
-            return Err(anyhow!("Unable to obtain lock at {}. This may be caused by a previous installation attempt that crashed or terminated unexpectedly, or another LABt process is currently operating on the directory and is locking it to prevent corruption. Try removing the lock file or waiting for the other process ({}) to finish.", lock_file.to_string_lossy(), pid));
-        }
-
-        let mut file = File::create(&lock_file).context(format!(
-            "Failed to create {} file at {}.",
-            LOCK_FILE,
-            lock_file.to_string_lossy()
-        ))?;
-        file.write(format!("{}", pid).as_bytes()).context(format!(
-            "Failed to write process id to {} file {}",
-            LOCK_FILE,
-            lock_file.to_string_lossy()
-        ))?;
-
-        Ok(())
-    }
     /// Tries to install the package provided
     pub fn install_package(
         &self,
