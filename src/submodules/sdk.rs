@@ -1,3 +1,4 @@
+use core::panic;
 use std::{
     env,
     fs::{self, create_dir, create_dir_all, remove_file, File},
@@ -101,6 +102,104 @@ pub struct Sdk {
     url: String,
     update: bool,
     args: SdkArgs,
+}
+
+/// Locks the target directory so that other LABt processes do not interfere with it
+/// The lock is released once it goes out of scope and dropped
+/// Please note that this is a heavy drop since it involves reading and deleating of lock files
+pub struct SdkLock {
+    path: PathBuf,
+    /// How should we handle release error behaviour
+    release_err_behaviour: SdkLockReleaseErrorBehaviour,
+    /// Current process id
+    pid: u32,
+}
+#[derive(Default)]
+pub enum SdkLockReleaseErrorBehaviour {
+    /// Log and ignore
+    Log,
+    /// Panic
+    Panic,
+    /// Log and panic.
+    #[default]
+    LogPanic,
+    /// Silently ignore lock release errors
+    Ignore,
+}
+
+impl SdkLock {
+    pub fn obtain(path: &Path, pid: u32) -> io::Result<Self> {
+        create_dir_all(path)?;
+
+        let lock_file = path.join(LOCK_FILE);
+
+        if lock_file.exists() {
+            let other_pid = fs::read_to_string(&lock_file)?;
+            if !pid.to_string().eq(&other_pid) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Unable to obtain lock at {}. This may be caused by a previous installation attempt that crashed or terminated unexpectedly, or another LABt process is currently operating on the directory and is locking it to prevent corruption. Try removing the lock file or waiting for the other process ({}) to finish.", lock_file.to_string_lossy(), pid)));
+            }
+        } else {
+            fs::write(&lock_file, pid.to_string().as_bytes())?;
+        }
+
+        Ok(Self {
+            path: lock_file,
+            pid,
+            release_err_behaviour: SdkLockReleaseErrorBehaviour::LogPanic,
+        })
+    }
+    /// Looks for a lock file on target directory and tries to delete it if its process id matches the current process.
+    /// Takes ownership to prevent double releases
+    pub fn release(self) {
+        // self.released = true;
+        drop(self);
+    }
+    /// Meant to be called by drop();
+    fn internal_release(&self) -> anyhow::Result<()> {
+        if !self.path.exists() {
+            return Ok(());
+        }
+
+        // /// Setting force to true will disregard if process id matches and deletes the lock file anyway.
+        // if force {
+        //     remove_file(&self.path)
+        //         .context(format!("Failed to remove lock file at {:?}", self.path))?;
+        //     return Ok(());
+        // }
+
+        let pid = fs::read_to_string(&self.path).context(format!(
+            "Failed reading pid from lock file ({:?})",
+            self.path
+        ))?;
+
+        if !self.pid.to_string().eq(&pid) {
+            return Err(anyhow!("Mismatched PID on lock file. lock has {} and current PID is {}. This lock file at ({:?}) may not be owned by current process.", pid, self.pid, self.path));
+        }
+
+        remove_file(&self.path)
+            .context(format!("Failed to remove lock file at {:?}", self.path))?;
+
+        Ok(())
+    }
+}
+
+impl Drop for SdkLock {
+    fn drop(&mut self) {
+        let result = self.internal_release();
+        if let Err(err) = &result {
+            match self.release_err_behaviour {
+                SdkLockReleaseErrorBehaviour::Log => {
+                    log::error!(target: SDKMANAGER_TARGET, "{}", err)
+                }
+                SdkLockReleaseErrorBehaviour::Panic => result.unwrap(),
+                SdkLockReleaseErrorBehaviour::Ignore => {} //no op
+                SdkLockReleaseErrorBehaviour::LogPanic => {
+                    log::error!(target: SDKMANAGER_TARGET, "{}", err);
+                    panic!("Failed to release lock! Please delete lock file manually.");
+                }
+            }
+        }
+    }
 }
 
 impl Sdk {
@@ -316,6 +415,8 @@ impl Sdk {
 
         // create a lock file to protect directory
         let pid = process::id();
+        // lock will be released if it goes out of scope
+        let _lock = SdkLock::obtain(&target, pid)?;
         // self.create_lock_file(&target, &pid)?;
 
         let result = install_package(package, host_os, bits, &target);
@@ -332,15 +433,6 @@ impl Sdk {
 
             installed.insert_installed_package(package.to_owned());
             installed.save_to_file()?;
-        }
-
-        if let Err(err) = self.release_lock_file(&target, false, &pid) {
-            if result.is_ok() {
-                return Err(err);
-            } else {
-                // log this error to make sure that the main install process result above is returned for processing and not this err
-                log::error!(target: SDKMANAGER_TARGET, "{}", err);
-            }
         }
 
         result
