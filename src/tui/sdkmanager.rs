@@ -724,6 +724,7 @@ impl SdkManager {
             channel_state.select(Some(p.len()));
             p
         };
+        channels.sort_unstable();
         channels.push("ALL".to_string());
 
         let state = AppState::new(packages);
