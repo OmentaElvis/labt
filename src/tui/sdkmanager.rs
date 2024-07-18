@@ -336,6 +336,20 @@ impl StatefulWidget for &FooterWidget {
         match state.current_mode {
             Modes::Normal => {
                 Line::styled("NORMAL", text_style).render(status_layout[0], buf);
+                let mut filter_list: Vec<String> = Vec::new();
+                for filter in &state.filtered_packages.filters {
+                    match filter {
+                        SdkFilters::Name(name) if !name.is_empty() => {
+                            filter_list.push(format!("/{}", name));
+                        }
+                        SdkFilters::Version(version) => {
+                            filter_list.push(format!("v{}", version));
+                        }
+                        _ => {}
+                    }
+                }
+                Line::styled(filter_list.join(" & "), text_style.fg(Color::Gray))
+                    .render(layout[1], buf);
             }
             Modes::FilterInput => {
                 Line::styled("FILTER", text_style).render(status_layout[0], buf);
@@ -343,6 +357,46 @@ impl StatefulWidget for &FooterWidget {
                     .render(layout[1], buf);
             }
         }
+
+        let mut filters: Line = Line::default();
+
+        if let Some(channel) = &state.filtered_packages.get_channel() {
+            filters.push_span(Span::styled(
+                format!("{} | ", channel.to_string().to_uppercase()),
+                text_style,
+            ));
+        } else {
+            filters.push_span(Span::styled("AC | ", text_style));
+        }
+
+        if state
+            .filtered_packages
+            .single_filters
+            .contains(&SdkFilters::Installed)
+        {
+            filters.push_span(Span::styled("IN | ", text_style))
+        }
+
+        if state
+            .filtered_packages
+            .single_filters
+            .contains(&SdkFilters::Obsolete(false))
+        {
+            filters.push_span(Span::styled("HO | ", text_style))
+        } else {
+            filters.push_span(Span::styled("SO | ", text_style))
+        }
+
+        filters.push_span(Span::styled(
+            format!(
+                "{}/{}",
+                state.selected_package.saturating_add(1),
+                state.filtered_packages.get_packages().len()
+            ),
+            text_style,
+        ));
+
+        filters.right_aligned().render(status_layout[1], buf);
     }
 }
 

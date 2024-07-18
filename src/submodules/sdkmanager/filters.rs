@@ -88,6 +88,9 @@ impl FilteredPackages {
     pub fn set_channel(&mut self, channel: Option<ChannelType>) {
         self.channel = channel;
     }
+    pub fn get_channel(&self) -> &Option<ChannelType> {
+        &self.channel
+    }
     /// Returns true if there are filters available
     pub fn has_filters(&self) -> bool {
         !self.filters.is_empty()
