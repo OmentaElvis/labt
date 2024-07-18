@@ -28,7 +28,6 @@ use crate::{
 
 // consts
 const DEFAULT_URL: &str = "https://dl.google.com/android/repository/";
-const TEST_URL: &str = "http://localhost:8080/";
 const DEFAULT_RESOURCES_URL: &str = "https://dl.google.com/android/repository/repository2-1.xml";
 const SDKMANAGER_TARGET: &str = "sdkmanager";
 const LOCK_FILE: &str = ".lock";
@@ -96,6 +95,9 @@ pub struct InstallArgs {
     #[arg(long)]
     /// The host platform to select. Format: <Os[;bit]> e.g. linux;64. Defaults to native os.
     host_os: Option<String>,
+    /// The base url to download this package from. The target archive file path is appended to the end of this.
+    #[arg(long)]
+    url: Option<Url>,
 }
 
 pub struct Sdk {
@@ -348,6 +350,11 @@ impl Sdk {
             .to_string()
         };
 
+        let url = if let Some(url) = &args.url {
+            url.to_owned()
+        } else {
+            Url::parse(DEFAULT_URL).context("Failed to parse default URL")?
+        };
         // obtain the installation directory
 
         let path = package.get_path();
@@ -361,7 +368,7 @@ impl Sdk {
         let _lock = SdkLock::obtain(&target, pid)?;
         // self.create_lock_file(&target, &pid)?;
 
-        let result = install_package(package, host_os, bits, &target);
+        let result = install_package(package, host_os, bits, &target, &url);
 
         if let Ok(package) = &result {
             let mut package = package.to_owned();
@@ -719,6 +726,7 @@ pub fn install_package(
     host_os: String,
     bits: BitSizeType,
     target_path: &Path,
+    download_url: &Url,
 ) -> anyhow::Result<InstalledPackage> {
     const NO_TARGET_ERR: &str = "No target to install";
     // select the appropriate archive
@@ -754,8 +762,7 @@ pub fn install_package(
         .user_agent(crate::USER_AGENT)
         .build()?;
 
-    let url = Url::parse(TEST_URL).context("Failed to parse download url.")?;
-    let url = url.join(archive.get_url())?;
+    let url = download_url.join(archive.get_url())?;
 
     let req = client.get(url.clone());
     let res = req.send().context("Failed to complete request")?;
