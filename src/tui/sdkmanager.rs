@@ -12,14 +12,14 @@ use ratatui::{
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, Clear, List, ListState, Padding, Paragraph, Row, StatefulWidget,
-        Table, TableState, Widget, Wrap,
+        Block, Borders, Cell, Clear, List, ListState, Padding, Paragraph, Row, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, StatefulWidget, Table, TableState, Widget, Wrap,
     },
     Frame,
 };
 
 use crate::{
-    config::repository::RemotePackage,
+    config::repository::{ChannelType, RemotePackage},
     get_home,
     submodules::{
         sdk::InstalledPackage,
@@ -192,6 +192,9 @@ impl StatefulWidget for &MainListPage {
             ],
         )
         .split(area);
+
+        let list_layout =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(1)]).split(layout[1]);
         // page title
         if state
             .filtered_packages
@@ -203,63 +206,90 @@ impl StatefulWidget for &MainListPage {
             Paragraph::new("Available packages").render(layout[0], buf);
         }
 
-        let header_style = Style::new().fg(Color::DarkGray);
-        let header = ["Name", "Version", "Path"]
+        let header_style = Style::new().fg(Color::DarkGray).underlined();
+        let header = ["", "Name", "Version", "Path"]
             .into_iter()
             .map(Cell::from)
             .collect::<Row>()
             .style(header_style)
             .height(1);
         let mut longest_version_string = 7; // default value equal to "version".len()
+        let packages = state.get_remote_packages();
+        let packages_count = packages.len();
+        let scroll = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .track_symbol(None)
+            .begin_symbol(None)
+            .thumb_symbol(ratatui::symbols::block::HALF)
+            .end_symbol(None);
+        let mut scroll_state = ScrollbarState::new(packages_count)
+            .position(state.selected_package.clamp(0, packages_count));
 
-        let selected_style = Style::default()
-            .add_modifier(Modifier::REVERSED)
-            .bg(Color::Black);
-
-        let rows: Vec<Row> = state
-            .get_remote_packages()
+        let rows: Vec<Row> = packages
             .iter()
             .map(|package| {
-                let name_cell = Cell::new(package.get_display_name().as_str())
-                    .style(Style::new().fg(Color::Blue));
+                let name_cell = Cell::new(package.get_display_name().as_str()).style(Style::new());
 
                 let revision = package.get_revision();
-                let version_string = format!(
-                    "{}.{}.{}.{}",
-                    revision.major, revision.minor, revision.micro, revision.preview
-                );
+                let version_string = revision.to_string();
                 if version_string.len() > longest_version_string {
                     longest_version_string = version_string.len();
                 }
                 let version_cell = Cell::new(version_string);
                 let path = Cell::new(package.get_path().as_str());
 
-                Row::new(vec![name_cell, version_cell, path])
+                if let Some(action) = state.pending_actions.get(package) {
+                    let mut cells = vec![
+                        Cell::new(ratatui::symbols::DOT).bold(),
+                        name_cell,
+                        version_cell,
+                        path,
+                    ];
+                    match action {
+                        PendingAction::Install => Row::new(cells).fg(Color::Green),
+                        PendingAction::Uninstall => Row::new(cells).fg(Color::LightRed),
+                        _ => {
+                            cells[0] = Cell::new("");
+                            cells[1] = cells[1].clone().fg(Color::Cyan);
+                            cells[2] = cells[2].clone().fg(Color::DarkGray);
+                            Row::new(cells)
+                        }
+                    }
+                } else {
+                    Row::new(vec![
+                        Cell::new(""),
+                        name_cell.fg(Color::Cyan),
+                        version_cell.fg(Color::DarkGray),
+                        path,
+                    ])
+                }
             })
             .collect();
 
         let table = Table::new(
             rows,
             [
+                Constraint::Length(1),
                 Constraint::Fill(2),
                 Constraint::Length(longest_version_string as u16),
                 Constraint::Fill(2),
             ],
         )
         .header(header)
-        .highlight_style(selected_style)
+        .highlight_symbol(">")
         .column_spacing(1);
         ratatui::widgets::StatefulWidget::render(
             table,
-            layout[1],
+            list_layout[0],
             buf,
             &mut state.table_state.clone(),
         );
+        ratatui::widgets::StatefulWidget::render(scroll, list_layout[1], buf, &mut scroll_state);
         let details = DetailsWidget::default();
         let inner = layout[2].inner(&ratatui::layout::Margin {
-            horizontal: 1,
+            horizontal: 3,
             vertical: 1,
         });
+
         let block = Block::new().borders(Borders::TOP);
         block.render(layout[2], buf);
         StatefulWidget::render(&details, inner, buf, state);
@@ -548,6 +578,17 @@ impl StatefulWidget for &DetailsWidget {
     }
 }
 
+#[derive(Debug, Default)]
+pub enum PendingAction {
+    #[default]
+    /// Dont do anything
+    Noop,
+    /// Install package
+    Install,
+    /// Uninstall package
+    Uninstall,
+}
+
 #[derive(Default)]
 struct AppState {
     /// The selected package
@@ -573,6 +614,8 @@ struct AppState {
 
     /// Render full details
     pub show_full_details: bool,
+    /// The pending actions to perform
+    pub pending_actions: HashMap<RemotePackage, PendingAction>,
 }
 
 impl AppState {
@@ -587,6 +630,7 @@ impl AppState {
             filtered_packages: packages,
             licenses: HashMap::new(),
             show_full_details: false,
+            pending_actions: HashMap::new(),
         }
     }
     /// Selects the next package. Wraps around if the end is reached
@@ -717,15 +761,59 @@ impl AppState {
 
         Ok(self.licenses.get(id))
     }
-
-    /// Tries to install the selected package
-    fn install_current(&mut self) {
-        let _package = if let Some(p) = self.get_selected_package() {
-            p
-        } else {
+    /// Sets a pending action for a particular package
+    pub fn set_action(&mut self, package: RemotePackage, action: PendingAction) {
+        self.pending_actions.insert(package, action);
+    }
+    /// Toggles the action to be performed on select package.
+    /// If package is installed sets action to uninstall
+    /// If package is not installed it sets the action to install
+    /// Repeating the action sets it to Noop
+    /// Does nothing if there is no action set
+    pub fn toggle_action(&mut self) {
+        let Some(package) = self.get_selected_package() else {
             return;
         };
-        // TODO call install logic
+
+        let installed = InstalledPackage::new(
+            package.get_path().to_string(),
+            package.get_revision().to_owned(),
+            self.filtered_packages
+                .repo
+                .get_channels()
+                .get(package.get_channel_ref())
+                .cloned()
+                .unwrap_or(ChannelType::Unset),
+        );
+
+        if self
+            .filtered_packages
+            .installed
+            .contains_id(&installed)
+            .is_some()
+        {
+            // it is installed
+            let package = package.clone();
+            if let Some(action) = self.pending_actions.get_mut(&package) {
+                match action {
+                    PendingAction::Noop => *action = PendingAction::Uninstall,
+                    _ => *action = PendingAction::Noop,
+                }
+            } else {
+                self.set_action(package, PendingAction::Uninstall);
+            }
+        } else {
+            // not installed
+            let package = package.clone();
+            if let Some(action) = self.pending_actions.get_mut(&package) {
+                match action {
+                    PendingAction::Noop => *action = PendingAction::Install,
+                    _ => *action = PendingAction::Noop,
+                }
+            } else {
+                self.set_action(package, PendingAction::Install);
+            }
+        }
     }
 }
 
@@ -736,7 +824,6 @@ mod help_pages {
     pub const DETAILS: &str = "package details";
 }
 
-#[derive(Default)]
 pub struct SdkManager {
     exit: bool,
 
@@ -798,7 +885,7 @@ impl SdkManager {
     ///  Entry point
     /// ===============
     /// Starts rendering sdkmanager tui and listening for key events
-    pub fn run(&mut self, terminal: &mut Tui) -> io::Result<()> {
+    pub fn run(mut self, terminal: &mut Tui) -> io::Result<HashMap<RemotePackage, PendingAction>> {
         self.load_help();
         while !self.exit {
             terminal.draw(|frame| {
@@ -806,7 +893,7 @@ impl SdkManager {
             })?;
             self.handle_events()?;
         }
-        Ok(())
+        Ok(self.state.pending_actions)
     }
     /// Loads help popup with common help messages
     pub fn load_help(&mut self) {
@@ -815,12 +902,12 @@ impl SdkManager {
             vec![
                 HelpEntry::new("/", "Search"),
                 HelpEntry::new("?", "Help"),
-                HelpEntry::new("Enter", "Select Entry"),
+                HelpEntry::new("Space", "Select for (un)install"),
+                HelpEntry::new("Enter", "Save changes"),
                 HelpEntry::new("Up/Down", "Scroll entries"),
                 HelpEntry::new("L", "License"),
-                HelpEntry::new("I", "Install"),
-                HelpEntry::new("i", "Toggle installed"),
-                HelpEntry::new("o", "Toggle obsolete"),
+                HelpEntry::new("i", "Show installed"),
+                HelpEntry::new("o", "Show obsolete"),
                 HelpEntry::new("c", "Select Channel"),
             ],
         );
@@ -846,7 +933,6 @@ impl SdkManager {
                 HelpEntry::new("Up/Down", "Scroll"),
                 HelpEntry::new("Esc", "Back/Cancel"),
                 HelpEntry::new("L", "License"),
-                HelpEntry::new("I", "Install"),
             ],
         );
     }
@@ -866,9 +952,21 @@ impl SdkManager {
         match self.current_page {
             Pages::MainList => {
                 frame.render_stateful_widget(&MainListPage::default(), layout[0], &mut self.state);
-                if let Some(help) = self.help_popup.help.get_mut(help_pages::MAIN) {
-                    frame.render_stateful_widget(HelpFooter::default(), layout[1], help);
-                }
+                let spans: Vec<Span> = vec![
+                    "Press ".into(),
+                    "[Space]".fg(Color::DarkGray),
+                    " to mark packages for install/uninstall. Press ".into(),
+                    "[Enter] ".fg(Color::DarkGray),
+                    "to save changes. ".into(),
+                    "[?]".fg(Color::DarkGray),
+                    " for more help. ".into(),
+                    "[q]".fg(Color::DarkGray),
+                    " to quit.".into(),
+                ];
+                frame.render_widget(
+                    Paragraph::new(Line::from(spans)).wrap(Wrap { trim: true }),
+                    layout[1],
+                );
             }
             Pages::License => {
                 frame.render_stateful_widget(&LicensePage::default(), layout[0], &mut self.state);
@@ -1001,8 +1099,7 @@ impl SdkManager {
                     Modes::Normal => match key.code {
                         // open details page
                         KeyCode::Enter => {
-                            self.state.show_full_details = true;
-                            self.current_page = Pages::Details;
+                            self.exit = true;
                         }
                         // Up scroll movements
                         KeyCode::Up => match self.current_page {
@@ -1029,7 +1126,10 @@ impl SdkManager {
                         }
 
                         // Quit
-                        KeyCode::Char('q') => self.exit = true,
+                        KeyCode::Char('q') => {
+                            self.state.pending_actions.clear();
+                            self.exit = true;
+                        }
                         KeyCode::Char('L')
                             if matches!(self.current_page, Pages::MainList | Pages::Details) =>
                         {
@@ -1057,10 +1157,6 @@ impl SdkManager {
                                     .push_filter(SdkFilters::Name(String::new()));
                                 // self.state.filtered_packages.apply();
                             }
-                        }
-                        // Install
-                        KeyCode::Char('I') => {
-                            self.state.install_current();
                         }
                         // Filter by installed
                         KeyCode::Char('i') => {
@@ -1098,6 +1194,9 @@ impl SdkManager {
                         }
                         KeyCode::Char('c') => {
                             self.show_channel_list = true;
+                        }
+                        KeyCode::Char(' ') => {
+                            self.state.toggle_action();
                         }
                         _ => {}
                     },

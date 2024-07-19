@@ -1,5 +1,6 @@
 use core::panic;
 use std::{
+    collections::HashMap,
     env,
     fs::{self, create_dir, create_dir_all, remove_file, File},
     io::{self, BufReader, BufWriter, Read, Write},
@@ -11,6 +12,7 @@ use std::{
 use anyhow::{anyhow, bail, Context};
 use clap::{Args, Subcommand};
 use console::style;
+use crossterm::style::Stylize;
 use indicatif::{HumanBytes, ProgressStyle};
 use log::{info, warn};
 use reqwest::Url;
@@ -23,7 +25,11 @@ use crate::{
         Revision,
     },
     get_home,
-    tui::{self, sdkmanager::SdkManager, Tui},
+    tui::{
+        self,
+        sdkmanager::{PendingAction, SdkManager},
+        Tui,
+    },
 };
 
 // consts
@@ -217,13 +223,35 @@ impl Sdk {
             args: args.clone(),
         }
     }
-    pub fn start_tui(&self, packages: FilteredPackages) -> io::Result<()> {
+    pub fn start_tui(
+        &self,
+        packages: FilteredPackages,
+    ) -> io::Result<HashMap<RemotePackage, PendingAction>> {
         let mut terminal: Tui = tui::init()?;
         terminal.clear()?;
-        SdkManager::new(packages).run(&mut terminal)?;
+        let actions = SdkManager::new(packages).run(&mut terminal)?;
         tui::restore()?;
+        for (key, action) in actions.iter() {
+            match action {
+                tui::sdkmanager::PendingAction::Install => println!(
+                    "{} {} {} [v{}]",
+                    "+".green(),
+                    key.get_display_name().clone().green(),
+                    key.get_path(),
+                    key.get_revision()
+                ),
+                tui::sdkmanager::PendingAction::Uninstall => println!(
+                    "{} {} {} [v{}]",
+                    "-".red(),
+                    key.get_display_name().clone().red(),
+                    key.get_path(),
+                    key.get_revision()
+                ),
+                _ => {}
+            }
+        }
 
-        Ok(())
+        Ok(actions)
     }
     /// Lists the available and installed packages
     pub fn list_packages(
@@ -246,12 +274,6 @@ impl Sdk {
         if !args.no_interactive {
             self.start_tui(filtered)?;
         } else {
-            // println!(
-            //     "{}|{}|{}",
-            //     style("Path").underlined(),
-            //     style("Version").underlined(),
-            //     style("Description").underlined()
-            // );
             let pipe = style("|").dim();
             for package in filtered.get_packages() {
                 println!(

@@ -118,7 +118,7 @@ impl From<&str> for OsType {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BitSizeType {
     Bit64,
     Bit32,
@@ -146,7 +146,7 @@ pub struct RepositoryXml {
     licenses: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RemotePackage {
     path: String,
     /// An optional element indicating the package is obsolete.
@@ -161,7 +161,7 @@ pub struct RemotePackage {
     revision: Revision,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Hash, PartialEq, Eq)]
 pub struct Archive {
     size: usize,
     checksum: String,
