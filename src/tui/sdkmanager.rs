@@ -87,14 +87,14 @@ impl StatefulWidget for HelpFooter {
 }
 #[derive(Default)]
 struct HelpPopoup {
-    percent_width: u16,
-    percent_height: u16,
+    percent_width: u8,
+    percent_height: u8,
     scroll_position: u16,
     help: HashMap<String, Vec<HelpEntry>>,
 }
 
 impl HelpPopoup {
-    pub fn new(percent_width: u16, percent_height: u16) -> Self {
+    pub fn new(percent_width: u8, percent_height: u8) -> Self {
         Self {
             percent_width,
             percent_height,
@@ -102,28 +102,11 @@ impl HelpPopoup {
             help: HashMap::new(),
         }
     }
-    fn calculate_area(&self, area: Rect) -> Rect {
-        // Calculate the position of the popup based on width&height
-        let center_vertical = Layout::vertical([
-            Constraint::Percentage((100 - self.percent_height) / 2),
-            Constraint::Percentage(self.percent_height),
-            Constraint::Percentage((100 - self.percent_height) / 2),
-        ])
-        .split(area);
-        let center_horizontal = Layout::horizontal([
-            Constraint::Percentage((100 - self.percent_width) / 2),
-            Constraint::Percentage(self.percent_width),
-            Constraint::Percentage((100 - self.percent_width) / 3),
-        ])
-        .split(center_vertical[1]);
-
-        center_horizontal[1]
-    }
     pub fn set_help(&mut self, context: String, entries: Vec<HelpEntry>) {
         self.help.insert(context, entries);
     }
     pub fn draw(&mut self, frame: &mut Frame) {
-        let area = self.calculate_area(frame.size());
+        let area = calculate_center_area(self.percent_width, self.percent_height, frame.size());
         frame.render_widget(Clear, area);
         frame.render_widget(Block::new().title("Help").borders(Borders::ALL), area);
         frame.render_widget(
@@ -578,6 +561,85 @@ impl StatefulWidget for &DetailsWidget {
     }
 }
 
+type PendingActions = HashMap<RemotePackage, PendingAction>;
+
+pub struct ConfirmActionPopup<'a> {
+    actions: &'a PendingActions,
+}
+impl<'a> ConfirmActionPopup<'a> {
+    pub fn new(actions: &'a PendingActions) -> Self {
+        Self { actions }
+    }
+}
+impl<'a> Widget for ConfirmActionPopup<'a> {
+    fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer)
+    where
+        Self: Sized,
+    {
+        let inner = area.inner(&ratatui::layout::Margin {
+            horizontal: 2,
+            vertical: 2,
+        });
+        Clear.render(area, buf);
+        Block::bordered()
+            .title("Confirm changes")
+            .title_bottom(Line::from("(Esc) Cancel").left_aligned())
+            .title_bottom(Line::from("(Enter) Confirm").right_aligned())
+            .render(area, buf);
+        let layout = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).split(inner);
+
+        Paragraph::new("You are about to:")
+            .bold()
+            .render(layout[0], buf);
+        let mut installs: Vec<&RemotePackage> = Vec::new();
+        let mut uninstalls: Vec<&RemotePackage> = Vec::new();
+
+        for (package, action) in self.actions.iter() {
+            match action {
+                PendingAction::Install => installs.push(package),
+                PendingAction::Uninstall => uninstalls.push(package),
+                _ => {}
+            }
+        }
+
+        let mut lines: Vec<Line> = Vec::new();
+        // add consistency in list
+        installs.sort_unstable_by_key(|p| p.get_display_name());
+        uninstalls.sort_unstable_by_key(|p| p.get_display_name());
+        lines.push(Line::raw(""));
+        lines.push("Install".underlined().bold().into());
+
+        for package in installs {
+            lines.push(Line::from(vec![
+                Span::from("[+] ").green(),
+                Span::from(format!(
+                    "{} {} v{}",
+                    package.get_display_name(),
+                    package.get_path(),
+                    package.get_revision()
+                )),
+            ]));
+        }
+        lines.push(Line::raw(""));
+        lines.push("Uninstall".underlined().bold().into());
+        for package in uninstalls {
+            lines.push(Line::from(vec![
+                Span::from("[-] ").red(),
+                Span::from(format!(
+                    "{} {} v{}",
+                    package.get_display_name(),
+                    package.get_path(),
+                    package.get_revision()
+                )),
+            ]));
+        }
+
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .render(layout[1], buf);
+    }
+}
+
 #[derive(Debug, Default)]
 pub enum PendingAction {
     #[default]
@@ -837,6 +899,8 @@ pub struct SdkManager {
 
     channels: Vec<String>,
     channels_list_state: ListState,
+
+    show_exit_dialog: bool,
 }
 
 impl SdkManager {
@@ -879,6 +943,7 @@ impl SdkManager {
             show_channel_list: false,
             channels,
             channels_list_state: channel_state,
+            show_exit_dialog: false,
         }
     }
     /// ===============
@@ -1022,6 +1087,12 @@ impl SdkManager {
 
             frame.render_stateful_widget(list, area, &mut self.channels_list_state);
         }
+        if self.show_exit_dialog {
+            frame.render_widget(
+                ConfirmActionPopup::new(&self.state.pending_actions),
+                calculate_center_area(100, 100, frame.size()),
+            );
+        }
     }
     /// Blocks to read for any input event to the console.
     fn handle_events(&mut self) -> io::Result<()> {
@@ -1029,6 +1100,11 @@ impl SdkManager {
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Press {
                 match self.state.current_mode {
+                    Modes::Normal if self.show_exit_dialog => match key.code {
+                        KeyCode::Enter => self.exit = true,
+                        KeyCode::Esc | KeyCode::Char('q') => self.show_exit_dialog = false,
+                        _ => {}
+                    },
                     Modes::Normal if self.show_help => match key.code {
                         KeyCode::Up => {
                             self.help_popup.scroll_position =
@@ -1099,7 +1175,11 @@ impl SdkManager {
                     Modes::Normal => match key.code {
                         // open details page
                         KeyCode::Enter => {
-                            self.exit = true;
+                            if !self.state.pending_actions.is_empty() {
+                                self.show_exit_dialog = true;
+                            } else {
+                                self.exit = true;
+                            }
                         }
                         // Up scroll movements
                         KeyCode::Up => match self.current_page {
@@ -1230,4 +1310,25 @@ impl SdkManager {
         }
         Ok(())
     }
+}
+/// Caclulates the center region based on preferred width and height percentages
+pub fn calculate_center_area(percentage_width: u8, percentage_height: u8, area: Rect) -> Rect {
+    let percent_width = percentage_width.clamp(0, 100) as u16;
+    let percent_height = percentage_height.clamp(0, 100) as u16;
+
+    // Calculate the position of the popup based on width&height
+    let center_vertical = Layout::vertical([
+        Constraint::Percentage((100 - percent_height) / 2),
+        Constraint::Percentage(percent_height),
+        Constraint::Percentage((100 - percent_height) / 2),
+    ])
+    .split(area);
+    let center_horizontal = Layout::horizontal([
+        Constraint::Percentage((100 - percent_width) / 2),
+        Constraint::Percentage(percent_width),
+        Constraint::Percentage((100 - percent_width) / 3),
+    ])
+    .split(center_vertical[1]);
+
+    center_horizontal[1]
 }
