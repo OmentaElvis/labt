@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::rc::Rc;
 
 use fuzzy_matcher::clangd::fuzzy_match;
 
@@ -22,27 +21,22 @@ pub enum SdkFilters {
     Installed,
 }
 
-#[derive(Default)]
-pub struct FilteredPackages {
+pub struct FilteredPackages<'a, 'repo> {
     /// The original repo to filter from
-    pub repo: Rc<RepositoryXml>,
-    // After several hours fighting the compiler, just resolved to clone the entries,
-    // There is no performace requirement now at this module
-    // FIXME should use Vec<&RemotePackage> to prevent clonning of entrues
-    /// Filtered backage list if filters are activated
-    pub packages: Vec<RemotePackage>,
+    pub repo: &'repo RepositoryXml,
+    pub packages: Vec<&'repo RemotePackage>,
     /// List of filters to apply
     pub filters: Vec<SdkFilters>,
     /// These are singleton filters applied to all entries
     pub single_filters: HashSet<SdkFilters>,
 
-    pub installed: InstalledList,
+    pub installed: &'a InstalledList,
     /// The channel to show packages for. If set to None all channels are shown
     pub channel: Option<ChannelType>,
 }
 
-impl FilteredPackages {
-    pub fn new(repo: Rc<RepositoryXml>, installed: InstalledList) -> Self {
+impl<'a, 'repo> FilteredPackages<'a, 'repo> {
+    pub fn new(repo: &'repo RepositoryXml, installed: &'a InstalledList) -> Self {
         Self {
             repo,
             installed,
@@ -105,7 +99,7 @@ impl FilteredPackages {
             self.repo.get_remote_packages().len()
         } else {
             let installed_hash = self.installed.get_hash_map();
-            let mut ranked: Vec<(i64, &RemotePackage)> = self
+            let mut ranked: Vec<(i64, &'repo RemotePackage)> = self
                 .repo
                 .get_remote_packages()
                 .iter()
@@ -182,19 +176,18 @@ impl FilteredPackages {
                 })
                 .collect();
             ranked.sort_unstable_by_key(|p| p.0);
-            self.packages = ranked.iter().rev().map(|m| m.1.to_owned()).collect();
+            self.packages = ranked.iter().rev().map(|m| m.1).collect();
             self.packages.len()
         }
     }
 
-    /// rerurns the package list. If no filters are available the original
-    /// package list is returned, otherwise returns the "applied" filtering.
-    /// Note that it does not apply filters set so you must call `apply` before reading this
-    pub fn get_packages(&self) -> &Vec<RemotePackage> {
-        if !self.filters.is_empty() || !self.single_filters.is_empty() {
-            &self.packages
-        } else {
-            self.repo.get_remote_packages()
-        }
+    /// returns the internal package filtered list.
+    /// Note that it does not apply filters set so you must call `apply` before calling this
+    pub fn get_packages(&self) -> &Vec<&RemotePackage> {
+        &self.packages
+    }
+    /// reeturns the original unfiltered packages vec
+    pub fn get_unfiltered_packages(&self) -> &Vec<RemotePackage> {
+        self.repo.get_remote_packages()
     }
 }

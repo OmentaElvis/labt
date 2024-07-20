@@ -6,7 +6,6 @@ use std::{
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     process,
-    rc::Rc,
 };
 
 use anyhow::{anyhow, bail, Context};
@@ -223,9 +222,9 @@ impl Sdk {
             args: args.clone(),
         }
     }
-    pub fn start_tui(
+    pub fn start_tui<'a>(
         &self,
-        packages: FilteredPackages,
+        packages: &'a mut FilteredPackages<'a, 'a>,
     ) -> io::Result<HashMap<RemotePackage, PendingAction>> {
         let mut terminal: Tui = tui::init()?;
         terminal.clear()?;
@@ -254,13 +253,15 @@ impl Sdk {
         Ok(actions)
     }
     /// Lists the available and installed packages
-    pub fn list_packages(
+    pub fn list_packages<'list_fn>(
         &self,
         args: &ListArgs,
-        repo: RepositoryXml,
-        installed: InstalledList,
+        repo: &'list_fn RepositoryXml,
+        installed: &'list_fn InstalledList,
     ) -> anyhow::Result<()> {
-        let mut filtered = FilteredPackages::new(Rc::new(repo), installed);
+        // let installed = Rc::new(installed);
+
+        let mut filtered = FilteredPackages::new(&repo, &installed);
         if args.installed {
             filtered.insert_singleton_filter(super::sdkmanager::filters::SdkFilters::Installed);
         }
@@ -272,7 +273,8 @@ impl Sdk {
         filtered.set_channel(args.channel.clone());
         filtered.apply();
         if !args.no_interactive {
-            self.start_tui(filtered)?;
+            let actions = self.start_tui(&mut filtered)?;
+            if !actions.is_empty() {}
         } else {
             let pipe = style("|").dim();
             for package in filtered.get_packages() {
@@ -479,7 +481,7 @@ impl Submodule for Sdk {
                     .context("Failed to install package")?;
             }
             Some(SdkSubcommands::List(args)) => {
-                self.list_packages(args, repo, list)
+                self.list_packages(args, &repo, &list)
                     .context("Failed to list packages")?;
             }
             None => {}

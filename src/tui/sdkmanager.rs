@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{self, Read},
+    marker::PhantomData,
 };
 
 use anyhow::{bail, Context};
@@ -156,10 +157,12 @@ impl Widget for &mut HelpPopoup {
 }
 
 #[derive(Default)]
-struct MainListPage {}
+struct MainListPage<'a> {
+    _phantom: PhantomData<&'a ()>,
+}
 
-impl StatefulWidget for &MainListPage {
-    type State = AppState;
+impl<'a> StatefulWidget for &MainListPage<'a> {
+    type State = AppState<'a>;
     fn render(
         self,
         area: ratatui::prelude::Rect,
@@ -280,10 +283,12 @@ impl StatefulWidget for &MainListPage {
 }
 
 #[derive(Default)]
-struct LicensePage {}
+struct LicensePage<'a> {
+    _phantom: PhantomData<&'a ()>,
+}
 
-impl StatefulWidget for &LicensePage {
-    type State = AppState;
+impl<'a> StatefulWidget for &LicensePage<'a> {
+    type State = AppState<'a>;
     fn render(
         self,
         area: ratatui::prelude::Rect,
@@ -333,9 +338,11 @@ impl StatefulWidget for &LicensePage {
     }
 }
 #[derive(Default)]
-struct FooterWidget {}
-impl StatefulWidget for &FooterWidget {
-    type State = AppState;
+struct FooterWidget<'a> {
+    _phantom: PhantomData<&'a ()>,
+}
+impl<'a> StatefulWidget for &FooterWidget<'a> {
+    type State = AppState<'a>;
     fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer, state: &mut Self::State) {
         let layout = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
 
@@ -414,10 +421,12 @@ impl StatefulWidget for &FooterWidget {
 }
 
 #[derive(Default)]
-struct DetailsWidget {}
+struct DetailsWidget<'a> {
+    _phantom: PhantomData<&'a ()>,
+}
 
-impl StatefulWidget for &DetailsWidget {
-    type State = AppState;
+impl<'a> StatefulWidget for &DetailsWidget<'a> {
+    type State = AppState<'a>;
     fn render(
         self,
         area: ratatui::prelude::Rect,
@@ -651,8 +660,7 @@ pub enum PendingAction {
     Uninstall,
 }
 
-#[derive(Default)]
-struct AppState {
+struct AppState<'a> {
     /// The selected package
     pub selected_package: usize,
 
@@ -669,7 +677,7 @@ struct AppState {
     pub current_mode: Modes,
 
     /// The filtered packages
-    pub filtered_packages: FilteredPackages,
+    pub filtered_packages: &'a mut FilteredPackages<'a, 'a>,
 
     // caches licenses from sdk path
     licenses: HashMap<String, String>,
@@ -680,8 +688,8 @@ struct AppState {
     pub pending_actions: HashMap<RemotePackage, PendingAction>,
 }
 
-impl AppState {
-    pub fn new(packages: FilteredPackages) -> Self {
+impl<'a> AppState<'a> {
+    pub fn new(packages: &'a mut FilteredPackages<'a, 'a>) -> Self {
         Self {
             selected_package: 0,
             license_scroll_position: 0,
@@ -744,10 +752,11 @@ impl AppState {
         self.filtered_packages
             .get_packages()
             .get(self.selected_package)
+            .copied()
     }
     /// Returns remote packages from repo.
     /// Applies filter if it was activated
-    pub fn get_remote_packages(&self) -> &Vec<RemotePackage> {
+    pub fn get_remote_packages(&self) -> &Vec<&RemotePackage> {
         self.filtered_packages.get_packages()
     }
     /// Returns the license for current package
@@ -886,12 +895,12 @@ mod help_pages {
     pub const DETAILS: &str = "package details";
 }
 
-pub struct SdkManager {
+pub struct SdkManager<'a> {
     exit: bool,
 
     current_page: Pages,
 
-    state: AppState,
+    state: AppState<'a>,
     show_help: bool,
 
     help_popup: HelpPopoup,
@@ -903,8 +912,8 @@ pub struct SdkManager {
     show_exit_dialog: bool,
 }
 
-impl SdkManager {
-    pub fn new(packages: FilteredPackages) -> Self {
+impl<'a> SdkManager<'a> {
+    pub fn new(packages: &'a mut FilteredPackages<'a, 'a>) -> Self {
         let mut channel_state = ListState::default();
         let mut channels: Vec<String> = if let Some(channel) = &packages.channel {
             packages
