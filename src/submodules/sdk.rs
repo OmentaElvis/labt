@@ -1295,7 +1295,7 @@ impl Installer {
 
         // unzip
         let file = File::open(&output).context("Failed to open download tmp file")?;
-        let mut archive = zip::ZipArchive::new(file)?;
+        let mut archive = zip::ZipArchive::new(file).context(format!("Failed to open downloaded zip archive ({:?}) for {}", &output, target.package.get_path()))?;
         if let Some(prog) = &prog {
             prog.reset();
             extract_with_progress(&mut archive, target_path, prog).context(format!(
@@ -1303,7 +1303,7 @@ impl Installer {
                 target_path
             ))?;
         } else {
-            archive.extract(target_path)?;
+            archive.extract(target_path).context(format!("Failed to open downloaded zip archive ({:?}) for {}", &output, target.package.get_path()))?;
         }
         if let Some(prog) = &prog {
             prog.finish_and_clear();
