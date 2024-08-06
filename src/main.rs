@@ -35,6 +35,9 @@ thread_local! {
 /// DO NOT use directly
 static PROJECT_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
+/// Cached value if labt home. Initialized by get_home function
+static LABT_HOME_PATH: OnceLock<PathBuf> = OnceLock::new();
+
 pub const LABT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const USER_AGENT: &str = concat!("Labt/", env!("CARGO_PKG_VERSION"));
 pub const TARGET: &str = env!("TARGET");
@@ -53,17 +56,34 @@ pub mod envs {
 /// # Errors
 ///
 /// This function will return an error if no suitable path is found for labt home.
-#[cfg(not(target_os = "windows"))]
 pub fn get_home() -> anyhow::Result<PathBuf> {
+    get_home_ref().cloned()
+}
+
+/// Returns the location of Labt home, this is where Labt stores its
+/// configurations files, plugins and cache. It first checks if LABT_HOME
+/// was set. If not set, falls back to $HOME/.labt on linux, or %LOCALAPPDATA%/.labt on
+/// windows.
+///
+/// # Errors
+///
+/// This function will return an error if no suitable path is found for labt home.
+#[cfg(not(target_os = "windows"))]
+pub fn get_home_ref() -> anyhow::Result<&'static PathBuf> {
+    // check for cached static variable
+    if let Some(path) = LABT_HOME_PATH.get() {
+        return Ok(path);
+    }
+
     if let Ok(path) = std::env::var(envs::LABT_HOME) {
-        return Ok(PathBuf::from(path));
+        return Ok(LABT_HOME_PATH.get_or_init(|| PathBuf::from(path)));
     }
 
     if let Ok(path) = std::env::var(envs::HOME) {
         let mut path = PathBuf::from(path);
         path.push(".labt");
         if path.exists() {
-            return Ok(path);
+            return Ok(LABT_HOME_PATH.get_or_init(|| path));
         } else {
             bail!(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -84,16 +104,21 @@ pub fn get_home() -> anyhow::Result<PathBuf> {
 ///
 /// This function will return an error if no suitable path is found for labt home.
 #[cfg(target_os = "windows")]
-pub fn get_home() -> anyhow::Result<PathBuf> {
+pub fn get_home_ref() -> anyhow::Result<&'static PathBuf> {
+    // check for cached static variable
+    if let Some(path) = LABT_HOME_PATH.get() {
+        return Ok(path);
+    }
+
     if let Ok(path) = std::env::var(envs::LABT_HOME) {
-        return Ok(PathBuf::from(path));
+        return Ok(LABT_HOME_PATH.get_or_init(|| PathBuf::from(path)));
     }
 
     if let Ok(path) = std::env::var(envs::LOCALAPPDATA) {
         let mut path = PathBuf::from(path);
         path.push(".labt");
         if path.exists() {
-            return Ok(path);
+            return Ok(LABT_HOME_PATH.get_or_init(|| path));
         } else {
             bail!(std::io::Error::new(
                 std::io::ErrorKind::NotFound,

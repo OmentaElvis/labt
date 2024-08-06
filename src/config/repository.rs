@@ -129,11 +129,20 @@ pub enum BitSizeType {
 impl FromStr for BitSizeType {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "32" => Ok(Self::Bit32),
-            "64" => Ok(Self::Bit64),
+        match s.to_lowercase().trim() {
+            "32" | "32bit" | "32 bit" => Ok(Self::Bit32),
+            "64" | "64bit" | "64 bit" => Ok(Self::Bit64),
             "" => Ok(Self::Unset),
             _ => Err(anyhow::anyhow!("Unknown bit width or unsupported: {}", s)),
+        }
+    }
+}
+impl Display for BitSizeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bit64 => write!(f, "64"),
+            Self::Bit32 => write!(f, "32"),
+            _ => write!(f, ""),
         }
     }
 }

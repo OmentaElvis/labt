@@ -6,13 +6,15 @@ use std::{
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     process,
+    rc::Rc,
 };
 
 use anyhow::{anyhow, bail, Context};
 use clap::{Args, Subcommand};
 use console::style;
 use crossterm::style::Stylize;
-use indicatif::{HumanBytes, ProgressStyle};
+use futures_util::{FutureExt, StreamExt};
+use indicatif::{HumanBytes, MultiProgress, ProgressStyle};
 use log::{info, warn};
 use reqwest::Url;
 use toml_edit::{value, Document};
@@ -29,6 +31,7 @@ use crate::{
         sdkmanager::{PendingAction, SdkManager},
         Tui,
     },
+    USER_AGENT,
 };
 
 // consts
@@ -78,6 +81,15 @@ pub struct ListArgs {
     /// Filter by channel name e.g. stable, beta, dev, canary etc.
     #[arg(long)]
     channel: Option<ChannelType>,
+    /// The base url to download this package from. The target archive file path is appended to the end of this.
+    #[arg(long)]
+    url: Option<Url>,
+    /// The host platform to select. Format: <Os[;bit]> e.g. linux;64. Defaults to native os. This flag is used during install to select correct packages to download.
+    #[arg(long)]
+    host_os: Option<String>,
+    /// Disables progressbars and trace logs
+    #[arg(long, action)]
+    quiet: bool,
 }
 
 #[derive(Clone, Args)]
@@ -103,6 +115,9 @@ pub struct InstallArgs {
     /// The base url to download this package from. The target archive file path is appended to the end of this.
     #[arg(long)]
     url: Option<Url>,
+    /// Disables progressbars and trace logs
+    #[arg(long, action)]
+    quiet: bool,
 }
 
 pub struct Sdk {
@@ -149,6 +164,18 @@ impl SdkLock {
             fs::write(&lock_file, pid.to_string().as_bytes())?;
         }
 
+        Ok(Self {
+            path: lock_file,
+            pid,
+            release_err_behaviour: SdkLockReleaseErrorBehaviour::LogPanic,
+        })
+    }
+    /// Polls for the lock file at intervals until it is released.
+    /// Does not return util lock is available
+    pub fn obtain_wait(path: &Path, pid: u32) -> io::Result<Self> {
+        create_dir_all(path)?;
+
+        let lock_file = path.join(LOCK_FILE);
         Ok(Self {
             path: lock_file,
             pid,
@@ -257,11 +284,11 @@ impl Sdk {
         &self,
         args: &ListArgs,
         repo: &'list_fn RepositoryXml,
-        installed: &'list_fn InstalledList,
+        installed: &'list_fn mut InstalledList,
     ) -> anyhow::Result<()> {
         // let installed = Rc::new(installed);
 
-        let mut filtered = FilteredPackages::new(&repo, &installed);
+        let mut filtered = FilteredPackages::new(repo, installed);
         if args.installed {
             filtered.insert_singleton_filter(super::sdkmanager::filters::SdkFilters::Installed);
         }
@@ -274,7 +301,14 @@ impl Sdk {
         filtered.apply();
         if !args.no_interactive {
             let actions = self.start_tui(&mut filtered)?;
-            if !actions.is_empty() {}
+            if !actions.is_empty() {
+                let url = if let Some(url) = &args.url {
+                    url.clone()
+                } else {
+                    Url::parse(DEFAULT_URL)?
+                };
+                self.perform_actions(actions, repo, installed, url, &args.host_os, args.quiet)?;
+            }
         } else {
             let pipe = style("|").dim();
             for package in filtered.get_packages() {
@@ -287,6 +321,76 @@ impl Sdk {
             }
         }
         Ok(())
+    }
+    /// performs all the pending actions
+    pub fn perform_actions(
+        &self,
+        mut actions: HashMap<RemotePackage, PendingAction>,
+        _repo: &RepositoryXml,
+        installed_list: &mut InstalledList,
+        url: Url,
+        host_os: &Option<String>,
+        quiet: bool,
+    ) -> anyhow::Result<()> {
+        let mut installed: Vec<RemotePackage> = Vec::new();
+        let mut uninstalled: Vec<RemotePackage> = Vec::new();
+
+        for (package, action) in actions.drain() {
+            match action {
+                PendingAction::Install => installed.push(package),
+                PendingAction::Uninstall => uninstalled.push(package),
+                _ => {}
+            }
+        }
+        let (host_os, bits) = self.get_host_os_and_bits(host_os.to_owned())?;
+        let mut installer = if installed.len() > 1 {
+            Installer::new(InstallerMode::Parallel, url, bits, host_os, quiet)
+        } else {
+            Installer::new(InstallerMode::Sequential, url, bits, host_os, quiet)
+        };
+
+        for package in installed {
+            installer.add_package(package)?;
+        }
+
+        installer.install()?;
+        log::info!(target: SDKMANAGER_TARGET, "Installed [{} of {}] packages", installer.complete_tasks.len(), installer.install_targets.len());
+        for complete in installer.complete_tasks {
+            installed_list.add_installed_package(complete);
+        }
+        installed_list.save_to_file()?;
+
+        Ok(())
+    }
+    /// Returns the appropriate os and pointer width size (64 or 32bit)
+    /// If os is None it returns the defaults of the current host os running labt
+    fn get_host_os_and_bits(&self, os: Option<String>) -> anyhow::Result<(String, BitSizeType)> {
+        // if you are debugging the sdkmanager, please check this section as it may be a source of bugs
+        let mut bits = if cfg!(target_pointer_width = "64") {
+            BitSizeType::Bit64
+        } else {
+            BitSizeType::Bit32
+        };
+        // I think android repo only supports linux, macos, windows
+        let host_os = if let Some(host) = os {
+            if let Some((os, bit)) = host.split_once(';') {
+                bits = bit
+                    .parse()
+                    .context("Invalid platform bit width. Supported are 32bit and 64bit")?;
+                os.to_string()
+            } else {
+                host
+            }
+        } else {
+            match env::consts::FAMILY {
+                "unix" if env::consts::OS.eq("macos") => "macos",
+                "unix" => "linux",
+                _ => "windows",
+            }
+            .to_string()
+        };
+
+        Ok((host_os, bits))
     }
     /// Tries to install the package provided
     pub fn install_package(
@@ -349,30 +453,7 @@ impl Sdk {
             warn!(target: SDKMANAGER_TARGET, "{}", err);
             return Err(anyhow!(io::Error::new(io::ErrorKind::NotFound, err)));
         };
-        // if you are debugging the sdkmanager, please check this section as it may be a source of bugs
-        let mut bits = if cfg!(target_pointer_width = "64") {
-            BitSizeType::Bit64
-        } else {
-            BitSizeType::Bit32
-        };
-        // I think android repo only supports linux, macos, windows
-        let host_os = if let Some(host) = &args.host_os {
-            if let Some((os, bit)) = host.split_once(';') {
-                bits = bit
-                    .parse()
-                    .context("Failed to parse bits from --host-os arg")?;
-                os.to_string()
-            } else {
-                host.clone()
-            }
-        } else {
-            match env::consts::FAMILY {
-                "unix" if env::consts::OS.eq("macos") => "macos",
-                "unix" => "linux",
-                _ => "windows",
-            }
-            .to_string()
-        };
+        let (host_os, bits) = self.get_host_os_and_bits(args.host_os.clone())?;
 
         let url = if let Some(url) = &args.url {
             url.to_owned()
@@ -472,7 +553,7 @@ impl Submodule for Sdk {
             parse_repository_toml(&toml).context("Failed to parse android repository config from cache. try --update-repository-list to force update config.")?
         };
 
-        let list =
+        let mut list =
             InstalledList::parse_from_sdk().context("Failed reading installed packages list")?;
 
         match &self.args.subcommands {
@@ -481,7 +562,7 @@ impl Submodule for Sdk {
                     .context("Failed to install package")?;
             }
             Some(SdkSubcommands::List(args)) => {
-                self.list_packages(args, &repo, &list)
+                self.list_packages(args, &repo, &mut list)
                     .context("Failed to list packages")?;
             }
             None => {}
@@ -827,7 +908,15 @@ pub fn install_package(
     // unzip
     let file = File::open(&output).context("Failed to open download tmp file")?;
     let mut archive = zip::ZipArchive::new(file)?;
-    extract_with_progress(&mut archive, target_path).context(format!(
+    let prog = indicatif::ProgressBar::new(archive.len() as u64)
+        .with_style(
+            ProgressStyle::with_template(
+                "{spinner} {msg} [{percent}%] {bar:40} {pos}/{len} {duration}",
+            )
+            .unwrap(),
+        )
+        .with_message("Extracting");
+    extract_with_progress(&mut archive, target_path, &prog).context(format!(
         "Failed to unzip package archive to ({:?})",
         target_path
     ))?;
@@ -851,16 +940,11 @@ pub fn install_package(
 pub fn extract_with_progress<P: AsRef<Path>>(
     archive: &mut ZipArchive<File>,
     directory: P,
+    prog: &indicatif::ProgressBar,
 ) -> anyhow::Result<()> {
-    let prog = indicatif::ProgressBar::new(archive.len() as u64)
-        .with_style(
-            ProgressStyle::with_template(
-                "{spinner} {msg} [{percent}%] {bar:40} {pos}/{len} {duration}",
-            )
-            .unwrap(),
-        )
-        .with_message("Extracting");
-
+    prog.set_length(archive.len() as u64);
+    prog.reset();
+    prog.set_message("Extracting");
     let make_writable_dir_all = |outpath: &dyn AsRef<Path>| -> Result<(), zip::result::ZipError> {
         create_dir_all(outpath.as_ref())?;
         #[cfg(unix)]
@@ -965,4 +1049,383 @@ pub fn extract_with_progress<P: AsRef<Path>>(
     }
     prog.finish_and_clear();
     Ok(())
+}
+/// How the installer should behave
+enum InstallerMode {
+    /// Turn on a tokio runtime to install everything concurrently. May avoid
+    /// using tokio if it is just a single package.
+    Parallel,
+    /// Install the packages sequentially
+    Sequential,
+}
+
+/// Manages the installation on packages
+struct Installer {
+    /// The installer mode
+    mode: InstallerMode,
+    /// Progress bar
+    multi_prog: MultiProgress,
+
+    install_targets: Vec<InstallerTarget>,
+    complete_tasks: Vec<InstalledPackage>,
+
+    default_url: Rc<Url>,
+    /// The current os architecture bits, ie 64 or 32. This sets the preferred bits. If an archive is platform independent, it will be downloaded instead.
+    bits: BitSizeType,
+    /// Target os
+    host_os: String,
+    /// If to show progressbars
+    quiet: bool,
+}
+
+struct InstallerTarget {
+    bits: BitSizeType,
+    host_os: String,
+    target_path: PathBuf,
+    download_url: Rc<Url>,
+    package: RemotePackage,
+}
+
+impl Installer {
+    pub fn new(
+        mode: InstallerMode,
+        download_from: Url,
+        bits: BitSizeType,
+        host_os: String,
+        quiet: bool,
+    ) -> Self {
+        Self {
+            mode,
+            multi_prog: MultiProgress::new(),
+            install_targets: Vec::new(),
+            complete_tasks: Vec::new(),
+            default_url: Rc::new(download_from),
+            bits,
+            host_os,
+            quiet,
+        }
+    }
+
+    pub fn add_target(&mut self, target: InstallerTarget) {
+        self.install_targets.push(target);
+    }
+
+    pub fn add_package(&mut self, package: RemotePackage) -> anyhow::Result<()> {
+        let path: PathBuf = package.get_path().split(';').collect();
+        let sdk = get_sdk_path()?;
+        let target = InstallerTarget {
+            bits: self.bits,
+            host_os: self.host_os.clone(),
+            target_path: sdk.join(path),
+            package,
+            download_url: Rc::clone(&self.default_url),
+        };
+
+        self.add_target(target);
+
+        Ok(())
+    }
+
+    fn select_archive<'a>(
+        &self,
+        archives: &'a [Archive],
+        host_os: &String,
+        bits: &BitSizeType,
+    ) -> anyhow::Result<&'a Archive> {
+        let archives: Vec<&Archive> = archives
+            .iter()
+            .filter(|p| {
+                if p.get_host_os().is_empty() {
+                    // os not set so include this
+                    true
+                } else {
+                    p.get_host_os().eq(host_os)
+                }
+            })
+            .filter(|p| {
+                let b = p.get_host_bits();
+                if b == BitSizeType::Unset {
+                    true
+                } else {
+                    b == *bits
+                }
+            })
+            .collect();
+        // select the first archive and install it
+        if let Some(archive) = archives.first() {
+            Ok(archive)
+        } else {
+            bail!(
+                "Failed to get an appropriate archive to download for platform: {}, {} bit",
+                host_os,
+                bits
+            );
+        }
+    }
+    fn download_package_blocking(
+        &self,
+        res: reqwest::blocking::Response,
+        target: &InstallerTarget,
+        prog: Option<indicatif::ProgressBar>,
+    ) -> anyhow::Result<InstalledPackage> {
+        let target_path = &target.target_path;
+        // create a lock file to protect directory
+        let pid = process::id();
+        // lock will be released if it goes out of scope
+        let _lock = SdkLock::obtain(target_path, pid)?;
+        let mut output = target_path.clone();
+        output.push("package.tmp");
+
+        let file = File::create(&output).context("Failed to create download tmp file")?;
+        let mut writer = BufWriter::new(file);
+
+        let mut reader = BufReader::new(res);
+
+        if let Some(prog) = &prog {
+            // progressbar is enabled, so possibly waste some extra cpu cycles accomodating for it
+            const BUFFER_LENGTH: usize = 8 * 1024;
+            let mut buf: [u8; BUFFER_LENGTH] = [0; BUFFER_LENGTH];
+            loop {
+                let read = reader.read(&mut buf)?;
+                if read == 0 {
+                    break;
+                }
+
+                let written = writer.write(&buf[0..read])?;
+                if written != read {
+                    return Err(anyhow!("Failed to copy all bytes from the network stream to a local file: read {}, written: {}", read, written));
+                }
+
+                prog.inc(read as u64);
+            }
+            prog.finish_and_clear();
+            drop(writer);
+            drop(reader);
+        } else {
+            // pipe input to output
+            io::copy(&mut reader, &mut writer)?;
+        }
+
+        // unzip
+        let file = File::open(&output).context("Failed to open download tmp file")?;
+        let mut archive = zip::ZipArchive::new(file)?;
+        if let Some(prog) = &prog {
+            extract_with_progress(&mut archive, target_path, prog).context(format!(
+                "Failed to unzip package archive to ({:?})",
+                target_path
+            ))?;
+        } else {
+            archive.extract(target_path)?;
+        }
+        info!(target: SDKMANAGER_TARGET, "Extracted {} entries to ({:?}).", archive.len(), target_path);
+
+        log::trace!(target: SDKMANAGER_TARGET, "Removing download temp file ({:?})", output);
+        remove_file(&output).context(format!(
+            "Failed to remove download temp file at ({:?})",
+            output
+        ))?;
+
+        let package = &target.package;
+
+        Ok(InstalledPackage {
+            path: package.get_path().to_owned(),
+            version: package.get_revision().to_owned(),
+            url: String::new(),
+            directory: Some(target_path.to_path_buf()),
+            channel: ChannelType::Ref(package.get_channel_ref().to_owned()),
+        })
+    }
+
+    async fn download_package_async(
+        &self,
+        res: reqwest::Response,
+        target: &InstallerTarget,
+        prog: Option<indicatif::ProgressBar>,
+    ) -> anyhow::Result<InstalledPackage> {
+        use tokio::io::AsyncWriteExt;
+        let target_path = &target.target_path;
+        // create a lock file to protect directory
+        let pid = process::id();
+        // lock will be released if it goes out of scope
+        let _lock = SdkLock::obtain(target_path, pid)?;
+
+        let mut output = target_path.clone();
+        output.push("package.tmp");
+
+        let file = tokio::fs::File::create(&output)
+            .await
+            .context("Failed to create download tmp file")?;
+        let mut writer = tokio::io::BufWriter::new(file);
+
+        let mut stream = res.bytes_stream();
+        while let Some(item) = stream.next().await {
+            let bytes = item?;
+            let written = writer.write(&bytes[0..]).await?;
+            if written != bytes.len() {
+                return Err(anyhow!("Failed to copy all bytes from the network stream to a local file: read {}, written: {}", bytes.len(), written));
+            }
+
+            if let Some(prog) = &prog {
+                prog.inc(bytes.len() as u64);
+            }
+        }
+
+        if let Some(prog) = &prog {
+            prog.finish_and_clear();
+        }
+        drop(writer);
+
+        // unzip
+        let file = File::open(&output).context("Failed to open download tmp file")?;
+        let mut archive = zip::ZipArchive::new(file)?;
+        if let Some(prog) = &prog {
+            extract_with_progress(&mut archive, target_path, prog).context(format!(
+                "Failed to unzip package archive to ({:?})",
+                target_path
+            ))?;
+        } else {
+            archive.extract(target_path)?;
+        }
+        info!(target: SDKMANAGER_TARGET, "Extracted {} entries to ({:?}).", archive.len(), target_path);
+
+        log::trace!(target: SDKMANAGER_TARGET, "Removing download temp file ({:?})", output);
+        remove_file(&output).context(format!(
+            "Failed to remove download temp file at ({:?})",
+            output
+        ))?;
+
+        let package = &target.package;
+
+        Ok(InstalledPackage {
+            path: package.get_path().to_owned(),
+            version: package.get_revision().to_owned(),
+            url: String::new(),
+            directory: Some(target_path.to_path_buf()),
+            channel: ChannelType::Ref(package.get_channel_ref().to_owned()),
+        })
+    }
+    /// spawns a new tokio instance to do all the installs
+    fn install_async(&mut self) -> anyhow::Result<()> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .thread_name("package_installer")
+            .enable_all()
+            .build()?;
+
+        let results = runtime.block_on(async {
+            let client = reqwest::ClientBuilder::new()
+                .user_agent(USER_AGENT)
+                .build()?;
+
+            let mut tasks = Vec::new();
+
+            for target in &self.install_targets {
+
+                let archive =
+                    self.select_archive(target.package.get_archives(), &target.host_os, &target.bits)?;
+                let archive_url = archive.get_url();
+                let url =
+                        // if archive url is a full url use it otherwise treat the url like a file name
+                        if archive_url.starts_with("http://") || archive_url.starts_with("https://") {
+                            Url::parse(archive_url).context("Invalid archive url encountered")?
+                        } else {
+                            target.download_url.join(archive_url).context(format!("Failed to join url {} with {}", target.download_url, archive_url))?
+                        };
+                let req = client.get(url.clone());
+                let res = req.send().then(
+                    |res| async {
+                        let url = url;
+                        let res = res.context(format!(
+                             "Failed to complete request to {url} for {}",
+                             target.package.get_path()
+                            ))?
+                            .error_for_status()
+                            .context(format!("Server responded with an error while trying to fetch {}", target.package.get_path()))?;
+
+                        let mut installed_package = if !self.quiet {
+                        let prog = indicatif::ProgressBar::new(archive.get_size() as u64).with_style(
+                            ProgressStyle::with_template(
+                                "{spinner}[{percent}%] {bar:40} {binary_bytes_per_sec} {duration}",
+                            )
+                            .unwrap(),
+                        );
+                        let prog = self.multi_prog.add(prog);
+                         self.download_package_async(res, target, Some(prog)).await?
+                        } else{
+                         self.download_package_async(res, target, None).await?
+                        };
+                        installed_package.url = url.to_string();
+                       Ok::<InstalledPackage, anyhow::Error>(installed_package)
+                    }
+                );
+                tasks.push(res);
+            }
+            let mut result: Vec<anyhow::Result<InstalledPackage>> = Vec::new();
+            for task in tasks {
+                result.push(task.await);
+            }
+
+            Ok::<Vec<anyhow::Result<InstalledPackage>>, anyhow::Error>(result)
+        })?;
+
+        for result in results {
+            match result {
+                Ok(package) => self.complete_tasks.push(package),
+                Err(err) => {
+                    log::error!(target: SDKMANAGER_TARGET, "{:?}", err);
+                }
+            }
+        }
+
+        Ok(())
+    }
+    fn install_sync(&mut self) -> anyhow::Result<()> {
+        let client = reqwest::blocking::ClientBuilder::new()
+            .user_agent(USER_AGENT)
+            .build()?;
+        for target in &self.install_targets {
+            // get the target archive to download
+            let archive =
+                self.select_archive(target.package.get_archives(), &target.host_os, &target.bits)?;
+            let archive_url = archive.get_url();
+            let url =
+                    // if archive url is a full url use it otherwise treat the url like a file name
+                    if archive_url.starts_with("http://") || archive_url.starts_with("https://") {
+                        Url::parse(archive_url).context("Invalid archive url encountered")?
+                    } else {
+                        target.download_url.join(archive_url).context(format!("Failed to join url {} with {}", target.download_url, archive_url))?
+                    };
+            let req = client.get(url.clone());
+            let res = req.send().context(format!(
+                "Failed to complete request to {url} for {}",
+                target.package.get_path()
+            ))?;
+            let mut installed_package = if !self.quiet {
+                let prog = indicatif::ProgressBar::new(archive.get_size() as u64).with_style(
+                    ProgressStyle::with_template(
+                        "{spinner}[{percent}%] {bar:40} {binary_bytes_per_sec} {duration}",
+                    )
+                    .unwrap(),
+                );
+                self.download_package_blocking(res, target, Some(prog))?
+            } else {
+                self.download_package_blocking(res, target, None)?
+            };
+            installed_package.url = url.to_string();
+            self.complete_tasks.push(installed_package);
+        }
+
+        Ok(())
+    }
+
+    /// Starts the installation process
+    pub fn install(&mut self) -> anyhow::Result<()> {
+        match self.mode {
+            InstallerMode::Parallel => self.install_async()?,
+            InstallerMode::Sequential => {
+                self.install_sync()?;
+            }
+        }
+
+        Ok(())
+    }
 }
