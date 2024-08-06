@@ -6,15 +6,15 @@ use std::{
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     process,
-    rc::Rc,
+    sync::Arc,
 };
 
 use anyhow::{anyhow, bail, Context};
 use clap::{Args, Subcommand};
 use console::style;
 use crossterm::style::Stylize;
-use futures_util::{FutureExt, StreamExt};
-use indicatif::{HumanBytes, MultiProgress, ProgressStyle};
+use futures_util::StreamExt;
+use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
 use log::{info, warn};
 use reqwest::Url;
 use toml_edit::{value, Document};
@@ -31,7 +31,7 @@ use crate::{
         sdkmanager::{PendingAction, SdkManager},
         Tui,
     },
-    USER_AGENT,
+    MULTI_PROGRESS_BAR, USER_AGENT,
 };
 
 // consts
@@ -1063,13 +1063,10 @@ enum InstallerMode {
 struct Installer {
     /// The installer mode
     mode: InstallerMode,
-    /// Progress bar
-    multi_prog: MultiProgress,
-
     install_targets: Vec<InstallerTarget>,
     complete_tasks: Vec<InstalledPackage>,
 
-    default_url: Rc<Url>,
+    default_url: Arc<Url>,
     /// The current os architecture bits, ie 64 or 32. This sets the preferred bits. If an archive is platform independent, it will be downloaded instead.
     bits: BitSizeType,
     /// Target os
@@ -1078,11 +1075,12 @@ struct Installer {
     quiet: bool,
 }
 
+#[derive(Clone)]
 struct InstallerTarget {
     bits: BitSizeType,
     host_os: String,
     target_path: PathBuf,
-    download_url: Rc<Url>,
+    download_url: Arc<Url>,
     package: RemotePackage,
 }
 
@@ -1096,10 +1094,9 @@ impl Installer {
     ) -> Self {
         Self {
             mode,
-            multi_prog: MultiProgress::new(),
             install_targets: Vec::new(),
             complete_tasks: Vec::new(),
-            default_url: Rc::new(download_from),
+            default_url: Arc::new(download_from),
             bits,
             host_os,
             quiet,
@@ -1118,7 +1115,7 @@ impl Installer {
             host_os: self.host_os.clone(),
             target_path: sdk.join(path),
             package,
-            download_url: Rc::clone(&self.default_url),
+            download_url: Arc::clone(&self.default_url),
         };
 
         self.add_target(target);
@@ -1127,7 +1124,6 @@ impl Installer {
     }
 
     fn select_archive<'a>(
-        &self,
         archives: &'a [Archive],
         host_os: &String,
         bits: &BitSizeType,
@@ -1237,12 +1233,37 @@ impl Installer {
     }
 
     async fn download_package_async(
-        &self,
-        res: reqwest::Response,
-        target: &InstallerTarget,
-        prog: Option<indicatif::ProgressBar>,
+        client: reqwest::Client,
+        target: InstallerTarget,
+        prog: Option<ProgressBar>,
     ) -> anyhow::Result<InstalledPackage> {
         use tokio::io::AsyncWriteExt;
+        let archive =
+            Self::select_archive(target.package.get_archives(), &target.host_os, &target.bits)?;
+        let archive_url = archive.get_url();
+        let url =
+                // if archive url is a full url use it otherwise treat the url like a file name
+                if archive_url.starts_with("http://") || archive_url.starts_with("https://") {
+                    Url::parse(archive_url).context("Invalid archive url encountered")?
+                } else {
+                    target.download_url.join(archive_url).context(format!("Failed to join url {} with {}", target.download_url, archive_url))?
+                };
+        let req = client.get(url.clone());
+        let res = req
+            .send()
+            .await
+            .context(format!(
+                "Failed to complete request to {url} for {}",
+                target.package.get_path()
+            ))?
+            .error_for_status()
+            .context(format!(
+                "Server responded with an error while trying to fetch {}",
+                target.package.get_path()
+            ))?;
+        if let Some(prog) = &prog {
+            prog.set_length(archive.get_size() as u64);
+        }
         let target_path = &target.target_path;
         // create a lock file to protect directory
         let pid = process::id();
@@ -1270,21 +1291,22 @@ impl Installer {
             }
         }
 
-        if let Some(prog) = &prog {
-            prog.finish_and_clear();
-        }
         drop(writer);
 
         // unzip
         let file = File::open(&output).context("Failed to open download tmp file")?;
         let mut archive = zip::ZipArchive::new(file)?;
         if let Some(prog) = &prog {
+            prog.reset();
             extract_with_progress(&mut archive, target_path, prog).context(format!(
                 "Failed to unzip package archive to ({:?})",
                 target_path
             ))?;
         } else {
             archive.extract(target_path)?;
+        }
+        if let Some(prog) = &prog {
+            prog.finish_and_clear();
         }
         info!(target: SDKMANAGER_TARGET, "Extracted {} entries to ({:?}).", archive.len(), target_path);
 
@@ -1299,7 +1321,7 @@ impl Installer {
         Ok(InstalledPackage {
             path: package.get_path().to_owned(),
             version: package.get_revision().to_owned(),
-            url: String::new(),
+            url: url.to_string(),
             directory: Some(target_path.to_path_buf()),
             channel: ChannelType::Ref(package.get_channel_ref().to_owned()),
         })
@@ -1311,57 +1333,36 @@ impl Installer {
             .enable_all()
             .build()?;
 
-        let results = runtime.block_on(async {
-            let client = reqwest::ClientBuilder::new()
-                .user_agent(USER_AGENT)
-                .build()?;
+        let client = reqwest::ClientBuilder::new()
+            .user_agent(USER_AGENT)
+            .build()?;
+        let quiet = self.quiet;
 
+        let results = runtime.block_on(async {
             let mut tasks = Vec::new();
 
             for target in &self.install_targets {
-
-                let archive =
-                    self.select_archive(target.package.get_archives(), &target.host_os, &target.bits)?;
-                let archive_url = archive.get_url();
-                let url =
-                        // if archive url is a full url use it otherwise treat the url like a file name
-                        if archive_url.starts_with("http://") || archive_url.starts_with("https://") {
-                            Url::parse(archive_url).context("Invalid archive url encountered")?
-                        } else {
-                            target.download_url.join(archive_url).context(format!("Failed to join url {} with {}", target.download_url, archive_url))?
-                        };
-                let req = client.get(url.clone());
-                let res = req.send().then(
-                    |res| async {
-                        let url = url;
-                        let res = res.context(format!(
-                             "Failed to complete request to {url} for {}",
-                             target.package.get_path()
-                            ))?
-                            .error_for_status()
-                            .context(format!("Server responded with an error while trying to fetch {}", target.package.get_path()))?;
-
-                        let mut installed_package = if !self.quiet {
-                        let prog = indicatif::ProgressBar::new(archive.get_size() as u64).with_style(
-                            ProgressStyle::with_template(
-                                "{spinner}[{percent}%] {bar:40} {binary_bytes_per_sec} {duration}",
-                            )
-                            .unwrap(),
-                        );
-                        let prog = self.multi_prog.add(prog);
-                         self.download_package_async(res, target, Some(prog)).await?
-                        } else{
-                         self.download_package_async(res, target, None).await?
-                        };
-                        installed_package.url = url.to_string();
-                       Ok::<InstalledPackage, anyhow::Error>(installed_package)
-                    }
-                );
-                tasks.push(res);
+                let prog = if !quiet {
+                    let prog = indicatif::ProgressBar::new(0).with_style(
+                        ProgressStyle::with_template(
+                            "{spinner}[{percent}%] {bar:40} {binary_bytes_per_sec} {duration} {msg}",
+                        )
+                        .unwrap(),
+                    ).with_message("Downloading");
+                    
+                    Some(MULTI_PROGRESS_BAR.with(|multi| multi.borrow().add(prog)))
+                } else {
+                    None
+                };
+                tasks.push(tokio::spawn(Self::download_package_async(
+                    client.clone(),
+                    target.clone(),
+                    prog,
+                )));
             }
             let mut result: Vec<anyhow::Result<InstalledPackage>> = Vec::new();
             for task in tasks {
-                result.push(task.await);
+                result.push(task.await?);
             }
 
             Ok::<Vec<anyhow::Result<InstalledPackage>>, anyhow::Error>(result)
@@ -1385,7 +1386,7 @@ impl Installer {
         for target in &self.install_targets {
             // get the target archive to download
             let archive =
-                self.select_archive(target.package.get_archives(), &target.host_os, &target.bits)?;
+                Self::select_archive(target.package.get_archives(), &target.host_os, &target.bits)?;
             let archive_url = archive.get_url();
             let url =
                     // if archive url is a full url use it otherwise treat the url like a file name
