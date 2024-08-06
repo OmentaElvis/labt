@@ -1292,7 +1292,11 @@ impl Installer {
                 prog.inc(bytes.len() as u64);
             }
         }
-
+        writer.flush().await.context(format!(
+            "An error occured while trying to flush remaining bytes to disk at ({:?}) at {}",
+            &output,
+            target.package.get_path()
+        ))?;
         drop(writer);
         let extract_path = target_path.clone();
         let package_path_name = target.package.get_path().to_owned();
