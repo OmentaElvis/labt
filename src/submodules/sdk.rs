@@ -944,7 +944,6 @@ pub fn extract_with_progress<P: AsRef<Path>>(
 ) -> anyhow::Result<()> {
     prog.set_length(archive.len() as u64);
     prog.reset();
-    prog.set_message("Extracting");
     let make_writable_dir_all = |outpath: &dyn AsRef<Path>| -> Result<(), zip::result::ZipError> {
         create_dir_all(outpath.as_ref())?;
         #[cfg(unix)]
@@ -1178,6 +1177,7 @@ impl Installer {
         let mut reader = BufReader::new(res);
 
         if let Some(prog) = &prog {
+            prog.set_message(format!("Downloading {}", target.package.get_path()));
             // progressbar is enabled, so possibly waste some extra cpu cycles accomodating for it
             const BUFFER_LENGTH: usize = 8 * 1024;
             let mut buf: [u8; BUFFER_LENGTH] = [0; BUFFER_LENGTH];
@@ -1206,6 +1206,7 @@ impl Installer {
         let file = File::open(&output).context("Failed to open download tmp file")?;
         let mut archive = zip::ZipArchive::new(file)?;
         if let Some(prog) = &prog {
+            prog.set_message(format!("Extracting {}", target.package.get_path()));
             extract_with_progress(&mut archive, target_path, prog).context(format!(
                 "Failed to unzip package archive to ({:?})",
                 target_path
@@ -1263,6 +1264,7 @@ impl Installer {
             ))?;
         if let Some(prog) = &prog {
             prog.set_length(archive.get_size() as u64);
+            prog.set_message(format!("Downloading {}", target.package.get_path()));
         }
         let target_path = &target.target_path;
         // create a lock file to protect directory
@@ -1305,6 +1307,7 @@ impl Installer {
             ))?;
             if let Some(prog) = &prog {
                 prog.reset();
+                prog.set_message(format!("Extracting {}", &package_path_name));
                 extract_with_progress(&mut archive, &extract_path, prog).context(format!(
                     "Failed to unzip package archive to ({:?})",
                     extract_path
@@ -1357,7 +1360,7 @@ impl Installer {
                 let prog = if !quiet {
                     let prog = indicatif::ProgressBar::new(0).with_style(
                         ProgressStyle::with_template(
-                            "{spinner}[{percent}%] {bar:40} {binary_bytes_per_sec} {duration} {msg}",
+                            "{spinner}[{percent}%] {bar:40} {binary_bytes_per_sec} {duration} {wide_msg}",
                         )
                         .unwrap(),
                     ).with_message("Downloading");
@@ -1414,7 +1417,7 @@ impl Installer {
             let mut installed_package = if !self.quiet {
                 let prog = indicatif::ProgressBar::new(archive.get_size() as u64).with_style(
                     ProgressStyle::with_template(
-                        "{spinner}[{percent}%] {bar:40} {binary_bytes_per_sec} {duration}",
+                        "{spinner}[{percent}%] {bar:40} {binary_bytes_per_sec} {duration} {wide_msg}",
                     )
                     .unwrap(),
                 );
