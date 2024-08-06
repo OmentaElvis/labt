@@ -1292,23 +1292,35 @@ impl Installer {
         }
 
         drop(writer);
-
+        let extract_path = target_path.clone();
+        let package_path_name = target.package.get_path().to_owned();
+        let output_file = output.to_owned();
         // unzip
-        let file = File::open(&output).context("Failed to open download tmp file")?;
-        let mut archive = zip::ZipArchive::new(file).context(format!("Failed to open downloaded zip archive ({:?}) for {}", &output, target.package.get_path()))?;
-        if let Some(prog) = &prog {
-            prog.reset();
-            extract_with_progress(&mut archive, target_path, prog).context(format!(
-                "Failed to unzip package archive to ({:?})",
-                target_path
+        tokio::task::spawn_blocking(move || {
+            let prog = prog;
+            let file = File::open(&output_file).context("Failed to open download tmp file")?;
+            let mut archive = zip::ZipArchive::new(file).context(format!(
+                "Failed to open downloaded zip archive ({:?}) for {}",
+                &output_file, package_path_name
             ))?;
-        } else {
-            archive.extract(target_path).context(format!("Failed to open downloaded zip archive ({:?}) for {}", &output, target.package.get_path()))?;
-        }
-        if let Some(prog) = &prog {
-            prog.finish_and_clear();
-        }
-        info!(target: SDKMANAGER_TARGET, "Extracted {} entries to ({:?}).", archive.len(), target_path);
+            if let Some(prog) = &prog {
+                prog.reset();
+                extract_with_progress(&mut archive, &extract_path, prog).context(format!(
+                    "Failed to unzip package archive to ({:?})",
+                    extract_path
+                ))?;
+            } else {
+                archive.extract(&extract_path).context(format!(
+                    "Failed to open downloaded zip archive ({:?}) for {}",
+                    &output_file, package_path_name
+                ))?;
+            }
+            if let Some(prog) = &prog {
+                prog.finish_and_clear();
+            }
+            info!(target: SDKMANAGER_TARGET, "Extracted {} entries to ({:?}).", archive.len(), extract_path);
+            Ok::<_, anyhow::Error>(())
+        }).await??;
 
         log::trace!(target: SDKMANAGER_TARGET, "Removing download temp file ({:?})", output);
         remove_file(&output).context(format!(
@@ -1349,7 +1361,6 @@ impl Installer {
                         )
                         .unwrap(),
                     ).with_message("Downloading");
-                    
                     Some(MULTI_PROGRESS_BAR.with(|multi| multi.borrow().add(prog)))
                 } else {
                     None
