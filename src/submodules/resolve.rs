@@ -13,7 +13,7 @@ use crate::config::lock::write_lock;
 use crate::config::{get_config, get_resolvers_from_config};
 use crate::pom::Scope;
 use crate::pom::{self, Project};
-use crate::{get_project_root, MULTI_PRPGRESS_BAR};
+use crate::{get_project_root, MULTI_PROGRESS_BAR};
 
 use super::resolvers::Resolver;
 use super::resolvers::ResolverErrorKind;
@@ -490,7 +490,7 @@ pub fn resolve(
 
     // start a new spinner progress bar and add it to the global multi progress bar
     let spinner = Rc::new(RefCell::new(
-        MULTI_PRPGRESS_BAR.with(|multi| multi.borrow().add(ProgressBar::new_spinner())),
+        MULTI_PROGRESS_BAR.with(|multi| multi.borrow().add(ProgressBar::new_spinner())),
     ));
     spinner
         .borrow()

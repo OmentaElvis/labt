@@ -11,7 +11,7 @@ use anyhow::{bail, Context};
 use indicatif::{HumanBytes, ProgressBar};
 use log::info;
 
-use crate::{get_home, submodules::resolve::ProjectDep, MULTI_PRPGRESS_BAR};
+use crate::{get_home, submodules::resolve::ProjectDep, MULTI_PROGRESS_BAR};
 
 use self::{download::download, properties::write_properties};
 #[derive(Clone, Debug)]
@@ -226,7 +226,7 @@ pub fn save_dependencies(deps: &Vec<ProjectDep>) -> anyhow::Result<()> {
     }
     // initialize a new progressbar
     let pb =
-        MULTI_PRPGRESS_BAR.with(|multi| multi.borrow().add(ProgressBar::new(deps.len() as u64)));
+        MULTI_PROGRESS_BAR.with(|multi| multi.borrow().add(ProgressBar::new(deps.len() as u64)));
     // begin the download  of the dependencies
     for project in deps {
         let mut cache = Cache::from(project);

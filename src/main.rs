@@ -28,7 +28,7 @@ pub mod templating;
 pub mod tui;
 
 thread_local! {
-    pub static MULTI_PRPGRESS_BAR: RefCell<MultiProgress> = RefCell::new(MultiProgress::new());
+    pub static MULTI_PROGRESS_BAR: RefCell<MultiProgress> = RefCell::new(MultiProgress::new());
 }
 /// Initialized by get_project_root. It caches the the
 /// result of the function to prevent extra system calls
@@ -233,7 +233,7 @@ fn main() -> anyhow::Result<()> {
         })
         .build();
 
-    let multi = MULTI_PRPGRESS_BAR.with(|multi| multi.borrow().clone());
+    let multi = MULTI_PROGRESS_BAR.with(|multi| multi.borrow().clone());
     LogWrapper::new(multi.clone(), logger).try_init()?;
 
     parse_args();
