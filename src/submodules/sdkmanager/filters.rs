@@ -107,21 +107,15 @@ impl<'a, 'repo> FilteredPackages<'a, 'repo> {
                     for filter in self.single_filters.iter() {
                         match filter {
                             SdkFilters::Installed => {
-                                if let Some(channel) =
-                                    self.repo.get_channels().get(p.get_channel_ref())
-                                {
-                                    // short circuit for installed
-                                    if !installed_hash.contains_key(
-                                        &InstalledPackage::new(
-                                            p.get_path().clone(),
-                                            p.get_revision().clone(),
-                                            channel.clone(),
-                                        )
-                                        .to_id(),
-                                    ) {
-                                        return false;
-                                    }
-                                } else {
+                                // short circuit for installed
+                                if !installed_hash.contains_key(
+                                    &InstalledPackage::new(
+                                        p.get_path().clone(),
+                                        p.get_revision().clone(),
+                                        p.get_channel().clone(),
+                                    )
+                                    .to_id(),
+                                ) {
                                     return false;
                                 }
                             }
@@ -136,11 +130,7 @@ impl<'a, 'repo> FilteredPackages<'a, 'repo> {
                     }
                     // apply channel filters
                     if let Some(channel) = &self.channel {
-                        if let Some(c) = self.repo.get_channels().get(p.get_channel_ref()) {
-                            if channel != c {
-                                return false;
-                            }
-                        } else {
+                        if channel != p.get_channel() {
                             return false;
                         }
                     }

@@ -30,6 +30,13 @@ use crate::{
 
 use super::Tui;
 
+const AVAILABLE_CHANNELS: &[ChannelType] = &[
+    ChannelType::Stable,
+    ChannelType::Beta,
+    ChannelType::Dev,
+    ChannelType::Canary,
+];
+
 /// List of pages we can switch between
 #[derive(Default)]
 enum Pages {
@@ -480,33 +487,23 @@ impl<'a> StatefulWidget for &DetailsWidget<'a> {
             Span::from(package.get_path().as_str()),
         ])
         .render(layout[2], buf);
-        let channel = state
-            .filtered_packages
-            .repo
-            .get_channels()
-            .get(package.get_channel_ref());
+        let channel = package.get_channel();
 
-        if let Some(channel) = channel {
-            Line::from(vec![
-                Span::styled("channel  : ", Style::new().fg(Color::DarkGray)),
-                Span::from(channel.to_string()),
-            ])
-            .render(layout[3], buf);
-        }
+        Line::from(vec![
+            Span::styled("channel  : ", Style::new().fg(Color::DarkGray)),
+            Span::from(channel.to_string()),
+        ])
+        .render(layout[3], buf);
 
         // Check if a package is installed
-        if channel
-            .and_then(|c| {
-                // channel type enum is needed for this to construct the id
-                state
-                    .filtered_packages
-                    .installed
-                    .contains_id(&InstalledPackage::new(
-                        package.get_path().clone(),
-                        package.get_revision().clone(),
-                        c.clone(),
-                    ))
-            })
+        if state
+            .filtered_packages
+            .installed
+            .contains_id(&InstalledPackage::new(
+                package.get_path().clone(),
+                package.get_revision().clone(),
+                channel.clone(),
+            ))
             .is_some()
         {
             Line::from(vec![
@@ -849,12 +846,7 @@ impl<'a> AppState<'a> {
         let installed = InstalledPackage::new(
             package.get_path().to_string(),
             package.get_revision().to_owned(),
-            self.filtered_packages
-                .repo
-                .get_channels()
-                .get(package.get_channel_ref())
-                .cloned()
-                .unwrap_or(ChannelType::Unset),
+            package.get_channel().clone(),
         );
 
         if self
@@ -915,30 +907,8 @@ pub struct SdkManager<'a> {
 impl<'a> SdkManager<'a> {
     pub fn new(packages: &'a mut FilteredPackages<'a, 'a>) -> Self {
         let mut channel_state = ListState::default();
-        let mut channels: Vec<String> = if let Some(channel) = &packages.channel {
-            packages
-                .repo
-                .get_channels()
-                .iter()
-                .enumerate()
-                .map(|(i, k)| {
-                    if k.1 == channel {
-                        channel_state.select(Some(i));
-                    }
-                    k.0.to_string()
-                })
-                .collect()
-        } else {
-            let p: Vec<String> = packages
-                .repo
-                .get_channels()
-                .keys()
-                .map(|k| k.to_string())
-                .collect();
-            channel_state.select(Some(p.len()));
-            p
-        };
-        channels.sort_unstable();
+        let mut channels: Vec<String> = AVAILABLE_CHANNELS.iter().map(|c| c.to_string()).collect();
+        channel_state.select(Some(channels.len()));
         channels.push("ALL".to_string());
 
         let state = AppState::new(packages);
@@ -1078,17 +1048,13 @@ impl<'a> SdkManager<'a> {
             );
             frame.render_widget(Clear, area);
 
-            let list: List = self
-                .channels
-                .iter()
-                .map(|f| {
-                    if let Some(c) = self.state.filtered_packages.repo.get_channels().get(f) {
-                        format!("{}", c)
-                    } else {
-                        f.to_string()
-                    }
-                })
-                .collect();
+            let list: List = List::new(
+                self.channels
+                    .iter()
+                    .map(|f| f.as_str())
+                    .collect::<Vec<&str>>(),
+            );
+
             let list = list
                 .block(Block::bordered())
                 .highlight_symbol(">")
@@ -1162,14 +1128,8 @@ impl<'a> SdkManager<'a> {
                                         // clear the channel flags
                                         self.state.filtered_packages.set_channel(None);
                                     } else {
-                                        self.state.filtered_packages.set_channel(
-                                            self.state
-                                                .filtered_packages
-                                                .repo
-                                                .get_channels()
-                                                .get(channel)
-                                                .map(|c| c.to_owned()),
-                                        );
+                                        let channel: ChannelType = channel.to_owned().into();
+                                        self.state.filtered_packages.set_channel(Some(channel));
                                     }
                                 }
                             }

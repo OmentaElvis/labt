@@ -182,7 +182,6 @@ impl FromStr for InstalledList {
             .context(format!("Failed to parse {INSTALLED_LIST}"))?;
 
         let mut package_list: Vec<InstalledPackage> = Vec::new();
-
         if doc.contains_array_of_tables(PACKAGE) {
             if let Some(packages) = doc[PACKAGE].as_array_of_tables() {
                 for package in packages {

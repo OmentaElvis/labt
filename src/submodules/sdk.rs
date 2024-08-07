@@ -400,11 +400,6 @@ impl Sdk {
         installed: InstalledList,
     ) -> anyhow::Result<InstalledPackage> {
         let mut installed = installed;
-        let channel = if let Some(channel) = &args.channel {
-            repo.get_channels().iter().find(|p| p.1 == channel)
-        } else {
-            None
-        };
 
         let package = repo.get_remote_packages().iter().find(|p| {
             if !&args.path.eq(p.get_path()) {
@@ -421,13 +416,8 @@ impl Sdk {
                 }
             }
 
-            if let Some((ref_id, _)) = channel {
-                if !ref_id.eq(p.get_channel_ref()) {
-                    return false;
-                }
-            } else {
-                //the channel was not found
-                if args.channel.is_some() {
+            if let Some(channel) = &args.channel {
+                if channel != p.get_channel() {
                     return false;
                 }
             }
@@ -436,7 +426,7 @@ impl Sdk {
         });
 
         let package = if let Some(p) = package {
-            info!(target: SDKMANAGER_TARGET, "Found sdk package: {}, {} v{}-{}",p.get_display_name(), p.get_path(), p.get_revision(), repo.get_channels().get(p.get_channel_ref()).unwrap_or(&ChannelType::Unknown("unknown".to_string())));
+            info!(target: SDKMANAGER_TARGET, "Found sdk package: {}, {} v{}-{}",p.get_display_name(), p.get_path(), p.get_revision(), p.get_channel());
 
             if p.is_obsolete() {
                 // is obsolete
@@ -444,12 +434,14 @@ impl Sdk {
             }
             p
         } else {
-            let err = format!(
-                "Package {} v{}-{} not found",
-                args.path,
-                args.version,
-                channel.map_or("unknown".to_string(), |c| c.1.to_string())
-            );
+            let err = if let Some(channel) = &args.channel {
+                format!(
+                    "Package {} v{}-{} not found",
+                    args.path, args.version, channel
+                )
+            } else {
+                format!("Package {} v{} not found", args.path, args.version)
+            };
             warn!(target: SDKMANAGER_TARGET, "{}", err);
             return Err(anyhow!(io::Error::new(io::ErrorKind::NotFound, err)));
         };
@@ -476,15 +468,6 @@ impl Sdk {
         let result = install_package(package, host_os, bits, &target, &url);
 
         if let Ok(package) = &result {
-            let mut package = package.to_owned();
-            if let ChannelType::Ref(reference) = &package.channel {
-                package.channel = repo
-                    .get_channels()
-                    .get(reference)
-                    .unwrap_or(&ChannelType::Unset)
-                    .clone();
-            }
-
             installed.insert_installed_package(package.to_owned());
             installed.save_to_file()?;
         }
@@ -619,7 +602,7 @@ pub fn write_repository_config(repo: &RepositoryXml) -> anyhow::Result<()> {
         table.insert(VERSION, value(package.get_revision().to_string()));
         table.insert(DISPLAY_NAME, value(package.get_display_name()));
         table.insert(LICENSE, value(package.get_uses_license()));
-        table.insert(CHANNEL, value(package.get_channel_ref()));
+        table.insert(CHANNEL, value(package.get_channel().to_string()));
         let mut archive_entries = toml_edit::ArrayOfTables::new();
         for archive in package.get_archives() {
             let mut archive_table = toml_edit::Table::new();
@@ -648,13 +631,6 @@ pub fn write_repository_config(repo: &RepositoryXml) -> anyhow::Result<()> {
         remotes.push(table);
     }
     doc[REMOTE_PACKAGE] = toml_edit::Item::ArrayOfTables(remotes);
-
-    // write channels ref
-    let mut channels = toml_edit::Table::new();
-    for channel in repo.get_channels() {
-        channels.insert(channel.0, value(channel.1.to_string()));
-    }
-    doc[CHANNELS] = toml_edit::Item::Table(channels);
 
     let mut repository = sdk.clone();
     repository.push("repository.toml");
@@ -757,16 +733,7 @@ pub fn parse_repository_toml(path: &Path) -> anyhow::Result<RepositoryXml> {
                 }
                 // Parse channel
                 if let Some(channel) = p.get(CHANNEL) {
-                    package.set_channel_ref(
-                        channel
-                            .as_value()
-                            .unwrap_or(&toml_edit::Value::String(toml_edit::Formatted::new(
-                                String::new(),
-                            )))
-                            .as_str()
-                            .unwrap()
-                            .to_string(),
-                    )
+                    package.set_channel(channel.as_str().unwrap().into())
                 }
 
                 // parse archives
@@ -810,14 +777,6 @@ pub fn parse_repository_toml(path: &Path) -> anyhow::Result<RepositoryXml> {
                     package.set_obsolete(obsolete.as_bool().unwrap());
                 }
                 repo.add_remote_package(package);
-            }
-        }
-    }
-    if toml.contains_table(CHANNELS) {
-        if let Some(channels) = toml[CHANNELS].as_table() {
-            for c in channels {
-                let channel: ChannelType = c.1.as_str().unwrap().into();
-                repo.add_channel(c.0, channel);
             }
         }
     }
@@ -933,7 +892,7 @@ pub fn install_package(
         version: package.get_revision().to_owned(),
         url: url.to_string(),
         directory: Some(target_path.to_path_buf()),
-        channel: ChannelType::Ref(package.get_channel_ref().to_owned()),
+        channel: package.get_channel().to_owned(),
     })
 }
 
@@ -988,7 +947,8 @@ pub fn extract_with_progress<P: AsRef<Path>>(
         };
         drop(file);
         if let Some(p) = outpath.parent() {
-            make_writable_dir_all(&p)?;
+            make_writable_dir_all(&p)
+                .context(format!("Failed to make output path ({:?}) writable", p))?;
         }
         if let Some(target) = symlink_target {
             #[cfg(unix)]
@@ -1229,7 +1189,7 @@ impl Installer {
             version: package.get_revision().to_owned(),
             url: String::new(),
             directory: Some(target_path.to_path_buf()),
-            channel: ChannelType::Ref(package.get_channel_ref().to_owned()),
+            channel: package.get_channel().to_owned(),
         })
     }
 
@@ -1342,7 +1302,7 @@ impl Installer {
             version: package.get_revision().to_owned(),
             url: url.to_string(),
             directory: Some(target_path.to_path_buf()),
-            channel: ChannelType::Ref(package.get_channel_ref().to_owned()),
+            channel: package.get_channel().to_owned(),
         })
     }
     /// spawns a new tokio instance to do all the installs

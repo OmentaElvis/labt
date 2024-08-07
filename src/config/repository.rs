@@ -49,40 +49,30 @@ pub enum ChannelType {
     Dev,
     Canary,
     Unknown(String),
-    /// A ref used to reference key channel tables
-    Ref(String),
     #[default]
     Unset,
 }
 impl From<&str> for ChannelType {
     fn from(value: &str) -> Self {
-        if let Some(reference) = value.strip_prefix('@') {
-            ChannelType::Ref(reference.to_string())
-        } else {
-            match value {
-                channel_strings::STABLE => ChannelType::Stable,
-                channel_strings::BETA => ChannelType::Beta,
-                channel_strings::DEV => ChannelType::Dev,
-                channel_strings::CANARY => ChannelType::Canary,
-                "" => ChannelType::Unset,
-                _ => ChannelType::Unknown(value.to_string()),
-            }
+        match value {
+            channel_strings::STABLE => ChannelType::Stable,
+            channel_strings::BETA => ChannelType::Beta,
+            channel_strings::DEV => ChannelType::Dev,
+            channel_strings::CANARY => ChannelType::Canary,
+            "" => ChannelType::Unset,
+            _ => ChannelType::Unknown(value.to_string()),
         }
     }
 }
 impl From<String> for ChannelType {
     fn from(value: String) -> Self {
-        if let Some(reference) = value.strip_prefix('@') {
-            ChannelType::Ref(reference.to_string())
-        } else {
-            match value.as_str() {
-                channel_strings::STABLE => ChannelType::Stable,
-                channel_strings::BETA => ChannelType::Beta,
-                channel_strings::DEV => ChannelType::Dev,
-                channel_strings::CANARY => ChannelType::Canary,
-                "" => ChannelType::Unset,
-                _ => ChannelType::Unknown(value),
-            }
+        match value.as_str() {
+            channel_strings::STABLE => ChannelType::Stable,
+            channel_strings::BETA => ChannelType::Beta,
+            channel_strings::DEV => ChannelType::Dev,
+            channel_strings::CANARY => ChannelType::Canary,
+            "" => ChannelType::Unset,
+            _ => ChannelType::Unknown(value),
         }
     }
 }
@@ -94,7 +84,6 @@ impl Display for ChannelType {
             Self::Dev => write!(f, "{}", channel_strings::DEV),
             Self::Canary => write!(f, "{}", channel_strings::CANARY),
             Self::Unset => write!(f, ""),
-            Self::Ref(refrence) => write!(f, "@{}", refrence),
             Self::Unknown(unknown) => write!(f, "{}", unknown),
         }
     }
@@ -149,7 +138,6 @@ impl Display for BitSizeType {
 
 #[derive(Debug)]
 pub struct RepositoryXml {
-    channels: HashMap<String, ChannelType>,
     remote_packages: Vec<RemotePackage>,
     /// List of licenses
     licenses: HashMap<String, String>,
@@ -162,7 +150,7 @@ pub struct RemotePackage {
     /// The string content is however currently not defined and ignored.
     obsolete: bool,
     name: String,
-    channel_ref: String,
+    channel: ChannelType,
     /// The optional license of this package. If present, users will have to agree to it before downloading.
     uses_license: String,
     /// A list of file archives for this package.
@@ -185,10 +173,10 @@ impl RemotePackage {
             path: String::new(),
             obsolete: false,
             name: String::new(),
-            channel_ref: String::new(),
             uses_license: String::new(),
             archives: Vec::new(),
             revision: Revision::default(),
+            channel: ChannelType::Unset,
         }
     }
     // The following methods are self explanatory
@@ -201,8 +189,8 @@ impl RemotePackage {
     pub fn set_display_name(&mut self, name: String) {
         self.name = name;
     }
-    pub fn set_channel_ref(&mut self, channel_ref: String) {
-        self.channel_ref = channel_ref;
+    pub fn set_channel(&mut self, channel: ChannelType) {
+        self.channel = channel;
     }
     pub fn set_license(&mut self, license_ref: String) {
         self.uses_license = license_ref;
@@ -220,8 +208,8 @@ impl RemotePackage {
     pub fn get_display_name(&self) -> &String {
         &self.name
     }
-    pub fn get_channel_ref(&self) -> &String {
-        &self.channel_ref
+    pub fn get_channel(&self) -> &ChannelType {
+        &self.channel
     }
     pub fn get_revision(&self) -> &Revision {
         &self.revision
@@ -281,7 +269,6 @@ impl Archive {
 impl RepositoryXml {
     pub fn new() -> Self {
         Self {
-            channels: HashMap::new(),
             remote_packages: Vec::new(),
             licenses: HashMap::new(),
         }
@@ -291,12 +278,6 @@ impl RepositoryXml {
     }
     pub fn get_remote_packages(&self) -> &Vec<RemotePackage> {
         &self.remote_packages
-    }
-    pub fn get_channels(&self) -> &HashMap<String, ChannelType> {
-        &self.channels
-    }
-    pub fn add_channel(&mut self, id: &str, channel: ChannelType) -> Option<ChannelType> {
-        self.channels.insert(id.to_string(), channel)
     }
     pub fn add_license(&mut self, id: String, license: String) {
         self.licenses.insert(id, license);
@@ -476,6 +457,8 @@ pub struct RepositoryXmlParser {
     current_revision: Revision,
 
     current_license_id: Option<String>,
+    /// A reference table for channels
+    channels: HashMap<String, ChannelType>,
 }
 
 impl RepositoryXmlParser {
@@ -489,6 +472,7 @@ impl RepositoryXmlParser {
             current_package: RemotePackage::default(),
             current_revision: Revision::default(),
             current_archive: Archive::default(),
+            channels: HashMap::new(),
             // for some unknown reason, this Default thingy causes SIGSEGV
             // ..Default::default()
         }
@@ -709,8 +693,9 @@ impl RepositoryXmlParser {
                 Event::Empty(tag) => match tag.local_name().into_inner() {
                     tags::CHANNEL_REF => {
                         if let Some(attr) = tag.try_get_attribute("ref")? {
-                            self.current_package.channel_ref =
-                                String::from_utf8_lossy(&attr.value).to_string();
+                            self.current_package.channel = ChannelType::Unknown(
+                                String::from_utf8_lossy(&attr.value).to_string(),
+                            );
                             RemotePackageState::RemotePackage
                         } else {
                             bail!("Missing ref attribute for <channelRef/>");
@@ -823,7 +808,7 @@ impl RepositoryXmlParser {
                         unreachable!();
                     }
                     // TODO convert this to be a no clone/copy twice
-                    self.repo.channels.insert(
+                    self.channels.insert(
                         self.current_channel_id.clone().unwrap(),
                         self.current_channel_type.clone().unwrap(),
                     );
@@ -863,7 +848,15 @@ impl RepositoryXmlParser {
         };
         Ok(())
     }
-    pub fn get_repository(self) -> RepositoryXml {
+    /// Returns the complete repository with all channels resolved to their value
+    pub fn get_repository(mut self) -> RepositoryXml {
+        for package in self.repo.remote_packages.iter_mut() {
+            if let ChannelType::Unknown(id) = &package.channel {
+                if let Some(channel) = self.channels.get(id) {
+                    package.set_channel(channel.clone());
+                }
+            }
+        }
         self.repo
     }
 }
