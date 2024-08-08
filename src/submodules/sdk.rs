@@ -2,7 +2,7 @@ use core::panic;
 use std::{
     collections::HashMap,
     env,
-    fs::{self, create_dir, create_dir_all, remove_file, File},
+    fs::{self, create_dir, create_dir_all, remove_dir, remove_dir_all, remove_file, File},
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     process,
@@ -333,15 +333,33 @@ impl Sdk {
         quiet: bool,
     ) -> anyhow::Result<()> {
         let mut installed: Vec<RemotePackage> = Vec::new();
-        let mut uninstalled: Vec<RemotePackage> = Vec::new();
+        let mut uninstaller = Uninstaller::new(quiet);
 
         for (package, action) in actions.drain() {
             match action {
                 PendingAction::Install => installed.push(package),
-                PendingAction::Uninstall => uninstalled.push(package),
+                PendingAction::Uninstall => {
+                    if let Some(p) = installed_list.contains_id(&InstalledPackage::new(
+                        package.get_path().to_owned(),
+                        package.get_revision().to_owned(),
+                        package.get_channel().to_owned(),
+                    )) {
+                        uninstaller.add_uninstall_package(p.to_owned());
+                    }
+                }
                 _ => {}
             }
         }
+        // do uninstalls first before installs to have clean slate
+        let removed_packages = uninstaller
+            .uninstall()
+            .context("Failed to uninstall packages")?;
+        for package in removed_packages {
+            let dir = &package.directory.clone().unwrap_or(PathBuf::default());
+            info!(target: SDKMANAGER_TARGET, "Removed package {} at ({:?})", package.path, dir);
+            installed_list.remove_installed_package(&package);
+        }
+
         let (host_os, bits) = self.get_host_os_and_bits(host_os.to_owned())?;
         let mut installer = if installed.len() > 1 {
             Installer::new(InstallerMode::Parallel, url, bits, host_os, quiet)
@@ -354,7 +372,9 @@ impl Sdk {
         }
 
         installer.install()?;
-        log::info!(target: SDKMANAGER_TARGET, "Installed [{} of {}] packages", installer.complete_tasks.len(), installer.install_targets.len());
+        if !installer.install_targets.is_empty() {
+            log::info!(target: SDKMANAGER_TARGET, "Installed [{} of {}] packages", installer.complete_tasks.len(), installer.install_targets.len());
+        }
         for complete in installer.complete_tasks {
             installed_list.add_installed_package(complete);
         }
@@ -1009,6 +1029,119 @@ pub fn extract_with_progress<P: AsRef<Path>>(
     prog.finish_and_clear();
     Ok(())
 }
+
+/// Obtains a lock on the target path and deletes the package path
+struct Uninstaller {
+    packages: Vec<InstalledPackage>,
+    quiet: bool,
+}
+
+impl Uninstaller {
+    pub fn new(quiet: bool) -> Self {
+        Self {
+            packages: Vec::new(),
+            quiet,
+        }
+    }
+
+    pub fn add_uninstall_package(&mut self, package: InstalledPackage) {
+        self.packages.push(package);
+    }
+    /// Scans to check if a package exists in the sdk folder and if its removal
+    /// left an empty parent package path.
+    fn cleanup_sdk_dir(package: &mut InstalledPackage, mut dir: PathBuf) -> anyhow::Result<()> {
+        // pop the first entry as it was removed before this function call
+        if !dir.pop() {
+            return Ok(());
+        }
+        let sdk = get_sdk_path().context(super::sdkmanager::installed_list::SDK_PATH_ERR_STRING)?;
+        if !dir.starts_with(sdk) {
+            // aint touching that, not ours
+            return Ok(());
+        }
+        // skip the first as it was deleted by previous remove
+        let segments = package.path.split(';').rev().skip(1);
+        for segment in segments {
+            if let Some(p) = dir.file_name() {
+                if segment.eq(p) {
+                    // short circuit if path is not empty
+                    if dir.is_dir() {
+                        let entries = fs::read_dir(&dir)
+                            .context(format!("Failed to read directory contents of ({:?}).", dir))?
+                            .count();
+                        if entries > 0 {
+                            break;
+                        }
+                        #[cfg(test)]
+                        {
+                            info!("Removing {:?}", dir);
+                        }
+                        #[cfg(not(test))]
+                        {
+                            remove_dir(&dir)
+                                .context(format!("Failed to remove directory ({:?})", dir))?;
+                        }
+                        dir.pop();
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+    fn remove_package(package: &mut InstalledPackage, quiet: bool) -> anyhow::Result<()> {
+        // check for lock file on target dir
+        let dir = if let Some(dir) = &package.directory {
+            dir.clone()
+        } else {
+            let path: PathBuf = package.path.split(';').collect();
+            let sdk = get_sdk_path()?;
+            sdk.join(path)
+        };
+        let lock = dir.join(LOCK_FILE);
+        if lock.exists() {
+            let pid = process::id();
+            let other_pid = fs::read_to_string(&lock)?;
+            if !pid.to_string().eq(&other_pid) {
+                bail!("Unable to obtain lock at {}. This may be caused by a previous installation attempt that crashed or terminated unexpectedly, or another LABt process is currently operating on the directory and is locking it to prevent corruption. Try removing the lock file or waiting for the other process ({:?}) to finish.", lock.to_string_lossy(), pid);
+            }
+        }
+        let prog = if !quiet {
+            let prog = MULTI_PROGRESS_BAR.with(|m| m.borrow().add(ProgressBar::new_spinner()));
+            prog.set_message(format!("Removing {} at ({:?}).", package.path, dir));
+            Some(prog)
+        } else {
+            None
+        };
+        remove_dir_all(&dir).context(format!(
+            "Failed to clear package directory at ({:?}). An error occurred while removing all contents from this directory.",
+            dir
+        ))?;
+        package.directory = Some(dir.clone());
+        Self::cleanup_sdk_dir(package, dir).context(format!(
+            "Failed to cleanup sdk directory for package {}",
+            package.path
+        ))?;
+        if let Some(prog) = prog {
+            prog.finish_and_clear();
+        }
+        Ok(())
+    }
+    /// Loops through all packages marked for uninstall removing them from disk and install list
+    pub fn uninstall(mut self) -> anyhow::Result<Vec<InstalledPackage>> {
+        for package in &mut self.packages {
+            Self::remove_package(package, self.quiet)?;
+        }
+        Ok(self.packages)
+    }
+}
+
 /// How the installer should behave
 enum InstallerMode {
     /// Turn on a tokio runtime to install everything concurrently. May avoid

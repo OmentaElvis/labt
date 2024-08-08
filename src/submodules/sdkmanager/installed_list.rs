@@ -158,6 +158,18 @@ impl InstalledList {
             self.add_installed_package(package);
         }
     }
+    /// Removes a package from the list of packages with matching id
+    /// This function uses the package id (`to_id`) to search for matches.
+    pub fn remove_installed_package(&mut self, package: &InstalledPackage) {
+        if let Some((i, _)) = self
+            .packages
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.to_id() == package.to_id())
+        {
+            self.packages.remove(i);
+        }
+    }
     pub fn save_to_file(&mut self) -> anyhow::Result<()> {
         let mut sdk = get_sdk_path().context(SDK_PATH_ERR_STRING)?;
         sdk.push(INSTALLED_LIST);
