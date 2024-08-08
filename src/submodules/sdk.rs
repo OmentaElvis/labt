@@ -1155,6 +1155,11 @@ impl Installer {
                 prog.inc(read as u64);
             }
             prog.finish_and_clear();
+            writer.flush().context(format!(
+                "An error occured while trying to flush remaining bytes to disk at ({:?}) at {}",
+                &output,
+                target.package.get_path()
+            ))?;
             drop(writer);
             drop(reader);
         } else {
@@ -1374,10 +1379,17 @@ impl Installer {
                         target.download_url.join(archive_url).context(format!("Failed to join url {} with {}", target.download_url, archive_url))?
                     };
             let req = client.get(url.clone());
-            let res = req.send().context(format!(
-                "Failed to complete request to {url} for {}",
-                target.package.get_path()
-            ))?;
+            let res = req
+                .send()
+                .context(format!(
+                    "Failed to complete request to {url} for {}",
+                    target.package.get_path()
+                ))?
+                .error_for_status()
+                .context(format!(
+                    "Server responded with an error while trying to fetch {}",
+                    target.package.get_path()
+                ))?;
             let mut installed_package = if !self.quiet {
                 let prog = indicatif::ProgressBar::new(archive.get_size() as u64).with_style(
                     ProgressStyle::with_template(
