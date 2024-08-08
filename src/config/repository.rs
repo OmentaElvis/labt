@@ -358,6 +358,40 @@ impl Display for Revision {
         )
     }
 }
+impl PartialOrd for Revision {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        // major
+        match self.major.cmp(&other.major) {
+            std::cmp::Ordering::Greater => return Some(std::cmp::Ordering::Greater),
+            std::cmp::Ordering::Less => return Some(std::cmp::Ordering::Less),
+            _ => {}
+        }
+
+        // minor
+        match self.minor.cmp(&other.minor) {
+            std::cmp::Ordering::Greater => return Some(std::cmp::Ordering::Greater),
+            std::cmp::Ordering::Less => return Some(std::cmp::Ordering::Less),
+            _ => {}
+        }
+
+        // micro
+        match self.micro.cmp(&other.micro) {
+            std::cmp::Ordering::Greater => return Some(std::cmp::Ordering::Greater),
+            std::cmp::Ordering::Less => return Some(std::cmp::Ordering::Less),
+            _ => {}
+        }
+
+        // preview
+        match self.preview.cmp(&other.preview) {
+            std::cmp::Ordering::Greater => return Some(std::cmp::Ordering::Greater),
+            std::cmp::Ordering::Less => return Some(std::cmp::Ordering::Less),
+            _ => {}
+        }
+
+        // must be equal
+        Some(std::cmp::Ordering::Equal)
+    }
+}
 #[derive(Debug)]
 pub struct RevisionParseError {
     pub kind: RevisionParseErrorKind,
@@ -966,4 +1000,177 @@ fn revision_to_string() {
         ..Default::default()
     };
     assert_eq!(revision.to_string(), String::from("0.0.0.9999999"));
+}
+
+#[test]
+fn revision_version_compare() {
+    // Equal revisions
+    assert_eq!(
+        Revision {
+            major: 1,
+            minor: 2,
+            micro: 3,
+            preview: 0
+        },
+        Revision {
+            major: 1,
+            minor: 2,
+            micro: 3,
+            preview: 0
+        }
+    );
+    assert_eq!(
+        Revision {
+            major: 1,
+            minor: 2,
+            micro: 3,
+            preview: 1
+        },
+        Revision {
+            major: 1,
+            minor: 2,
+            micro: 3,
+            preview: 1
+        }
+    );
+
+    // Major version differences
+    assert!(
+        Revision {
+            major: 1,
+            minor: 2,
+            micro: 3,
+            preview: 0
+        } < Revision {
+            major: 2,
+            minor: 2,
+            micro: 3,
+            preview: 0
+        }
+    );
+    assert!(
+        Revision {
+            major: 2,
+            minor: 2,
+            micro: 3,
+            preview: 0
+        } > Revision {
+            major: 1,
+            minor: 2,
+            micro: 3,
+            preview: 0
+        }
+    );
+
+    // Minor version differences
+    assert!(
+        Revision {
+            major: 1,
+            minor: 1,
+            micro: 3,
+            preview: 0
+        } < Revision {
+            major: 1,
+            minor: 2,
+            micro: 3,
+            preview: 0
+        }
+    );
+    assert!(
+        Revision {
+            major: 1,
+            minor: 2,
+            micro: 3,
+            preview: 0
+        } > Revision {
+            major: 1,
+            minor: 1,
+            micro: 3,
+            preview: 0
+        }
+    );
+
+    // Micro version differences
+    assert!(
+        Revision {
+            major: 1,
+            minor: 2,
+            micro: 2,
+            preview: 0
+        } < Revision {
+            major: 1,
+            minor: 2,
+            micro: 3,
+            preview: 0
+        }
+    );
+    assert!(
+        Revision {
+            major: 1,
+            minor: 2,
+            micro: 3,
+            preview: 0
+        } > Revision {
+            major: 1,
+            minor: 2,
+            micro: 2,
+            preview: 0
+        }
+    );
+
+    // Preview version differences
+    assert!(
+        Revision {
+            major: 1,
+            minor: 2,
+            micro: 3,
+            preview: 0
+        } < Revision {
+            major: 1,
+            minor: 2,
+            micro: 3,
+            preview: 1
+        }
+    );
+    assert!(
+        Revision {
+            major: 1,
+            minor: 2,
+            micro: 3,
+            preview: 1
+        } > Revision {
+            major: 1,
+            minor: 2,
+            micro: 3,
+            preview: 0
+        }
+    );
+
+    // Mixed version differences
+    assert!(
+        Revision {
+            major: 1,
+            minor: 1,
+            micro: 2,
+            preview: 0
+        } < Revision {
+            major: 1,
+            minor: 2,
+            micro: 3,
+            preview: 1
+        }
+    );
+    assert!(
+        Revision {
+            major: 1,
+            minor: 2,
+            micro: 3,
+            preview: 1
+        } > Revision {
+            major: 1,
+            minor: 1,
+            micro: 2,
+            preview: 0
+        }
+    );
 }
