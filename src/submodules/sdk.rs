@@ -17,6 +17,7 @@ use futures_util::StreamExt;
 use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
 use log::{info, warn};
 use reqwest::Url;
+use sha1::{Digest, Sha1};
 use toml_edit::{value, Document};
 use zip::ZipArchive;
 
@@ -26,6 +27,7 @@ use crate::{
         Revision,
     },
     get_home,
+    submodules::sdkmanager::ToId,
     tui::{
         self,
         sdkmanager::{PendingAction, SdkManager},
@@ -324,7 +326,12 @@ impl Sdk {
         } else {
             Url::parse(DEFAULT_URL)?
         };
-        self.perform_actions(actions, repo, installed, url, &args.host_os, args.quiet)?;
+        // self contain errors comming from installers
+        if let Err(err) =
+            self.perform_actions(actions, repo, installed, url, &args.host_os, args.quiet)
+        {
+            log::error!(target: SDKMANAGER_TARGET, "{:?}", err);
+        }
         Ok(())
     }
     /// performs all the pending actions
@@ -1176,6 +1183,13 @@ struct InstallerTarget {
     download_url: Arc<Url>,
     package: RemotePackage,
 }
+fn checksum_err(path: String, archive: &Archive, checksum: String) -> anyhow::Error {
+    // error messages in reverse so anyhow can do its thing
+    anyhow!("Common reasons for this error include network connectivity issues, file corruption, or malicious tampering.")
+        .context(format!("Calculated checksum: {} ", checksum))
+        .context(format!("Expected checksum: {}", archive.get_checksum()))
+        .context(format!("Checksum mismatch: The downloaded file's SHA-1 checksum for {} does not match the expected value. Refusing to install.", path))
+}
 
 impl Installer {
     pub fn new(download_from: Url, bits: BitSizeType, host_os: String, quiet: bool) -> Self {
@@ -1244,12 +1258,73 @@ impl Installer {
             );
         }
     }
+    pub fn calculate_checksum(path: &Path, prog: Option<ProgressBar>) -> anyhow::Result<String> {
+        let file = File::open(path).context(format!(
+            "Failed to open file at ({:?}) to compute checksum.",
+            path
+        ))?;
+        let mut reader = BufReader::new(file);
+        let mut sha = Sha1::new();
+        let mut buf = [0; 4 * 1024];
+
+        if let Some(prog) = &prog {
+            prog.reset();
+            prog.set_message(format!("Calculating sha1 checksum for ({:?})", path));
+        }
+
+        loop {
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            sha.update(&buf[..n]);
+            if let Some(prog) = &prog {
+                prog.inc(n as u64);
+            }
+        }
+        let digest = sha.finalize();
+        Ok(format!("{:x}", digest))
+    }
     fn download_package_blocking(
         &self,
-        res: reqwest::blocking::Response,
+        client: &reqwest::blocking::Client,
         target: &InstallerTarget,
-        prog: Option<indicatif::ProgressBar>,
     ) -> anyhow::Result<InstalledPackage> {
+        // get the target archive to download
+        let archive =
+            Self::select_archive(target.package.get_archives(), &target.host_os, &target.bits)?;
+        let archive_url = archive.get_url();
+        let url =
+                    // if archive url is a full url use it otherwise treat the url like a file name
+                    if archive_url.starts_with("http://") || archive_url.starts_with("https://") {
+                        Url::parse(archive_url).context("Invalid archive url encountered")?
+                    } else {
+                        target.download_url.join(archive_url).context(format!("Failed to join url {} with {}", target.download_url, archive_url))?
+                    };
+        let req = client.get(url.clone());
+        let res = req
+            .send()
+            .context(format!(
+                "Failed to complete request to {url} for {}",
+                target.package.get_path()
+            ))?
+            .error_for_status()
+            .context(format!(
+                "Server responded with an error while trying to fetch {}",
+                target.package.get_path()
+            ))?;
+
+        let prog = if !self.quiet {
+            Some(indicatif::ProgressBar::new(archive.get_size() as u64).with_style(
+                ProgressStyle::with_template(
+                    "{spinner}[{percent}%] {bar:40} {binary_bytes_per_sec} {duration} {wide_msg}",
+                )
+                .unwrap(),
+            ))
+        } else {
+            None
+        };
+
         let target_path = &target.target_path;
         // create a lock file to protect directory
         let pid = process::id();
@@ -1292,6 +1367,22 @@ impl Installer {
         } else {
             // pipe input to output
             io::copy(&mut reader, &mut writer)?;
+            writer.flush().context(format!(
+                "An error occured while trying to flush remaining bytes to disk at ({:?}) at {}",
+                &output,
+                target.package.get_path()
+            ))?;
+            drop(writer);
+            drop(reader);
+        }
+        // calculate checksum
+        let checksum = Self::calculate_checksum(&output, prog.clone()).context(format!(
+            "Failed to compute sha1 checksum for ({:?})",
+            &output
+        ))?;
+
+        if !checksum.eq(archive.get_checksum()) {
+            bail!(checksum_err(target.package.to_id(), archive, checksum));
         }
 
         // unzip
@@ -1392,10 +1483,24 @@ impl Installer {
         drop(writer);
         let extract_path = target_path.clone();
         let package_path_name = target.package.get_path().to_owned();
+        let package_path_id = target.package.to_id();
         let output_file = output.to_owned();
+        let archive = archive.clone();
+
         // unzip
         tokio::task::spawn_blocking(move || {
             let prog = prog;
+            // calculate checksum
+            let checksum = Self::calculate_checksum(&output_file, prog.clone()).context(format!(
+                "Failed to compute sha1 checksum for ({:?})",
+                &output_file
+            ))?;
+
+            if !checksum.eq(archive.get_checksum()) {
+                bail!(checksum_err(package_path_id, &archive, checksum));
+            }
+
+            // unzip file
             let file = File::open(&output_file).context("Failed to open download tmp file")?;
             let mut archive = zip::ZipArchive::new(file).context(format!(
                 "Failed to open downloaded zip archive ({:?}) for {}",
@@ -1464,15 +1569,15 @@ impl Installer {
                 } else {
                     None
                 };
-                tasks.push(tokio::spawn(Self::download_package_async(
+                tasks.push((target.package.to_id(), tokio::spawn(Self::download_package_async(
                     client.clone(),
                     target.clone(),
                     prog,
-                )));
+                ))));
             }
             let mut result: Vec<anyhow::Result<InstalledPackage>> = Vec::new();
-            for task in tasks {
-                result.push(task.await?);
+            for (target, task) in tasks {
+                result.push(task.await?.context(format!("Failed to install package: {}", target)));
             }
 
             Ok::<Vec<anyhow::Result<InstalledPackage>>, anyhow::Error>(result)
@@ -1494,41 +1599,12 @@ impl Installer {
             .user_agent(USER_AGENT)
             .build()?;
         for target in &self.install_targets {
-            // get the target archive to download
-            let archive =
-                Self::select_archive(target.package.get_archives(), &target.host_os, &target.bits)?;
-            let archive_url = archive.get_url();
-            let url =
-                    // if archive url is a full url use it otherwise treat the url like a file name
-                    if archive_url.starts_with("http://") || archive_url.starts_with("https://") {
-                        Url::parse(archive_url).context("Invalid archive url encountered")?
-                    } else {
-                        target.download_url.join(archive_url).context(format!("Failed to join url {} with {}", target.download_url, archive_url))?
-                    };
-            let req = client.get(url.clone());
-            let res = req
-                .send()
-                .context(format!(
-                    "Failed to complete request to {url} for {}",
-                    target.package.get_path()
-                ))?
-                .error_for_status()
-                .context(format!(
-                    "Server responded with an error while trying to fetch {}",
-                    target.package.get_path()
-                ))?;
-            let mut installed_package = if !self.quiet {
-                let prog = indicatif::ProgressBar::new(archive.get_size() as u64).with_style(
-                    ProgressStyle::with_template(
-                        "{spinner}[{percent}%] {bar:40} {binary_bytes_per_sec} {duration} {wide_msg}",
-                    )
-                    .unwrap(),
-                );
-                self.download_package_blocking(res, target, Some(prog))?
-            } else {
-                self.download_package_blocking(res, target, None)?
-            };
-            installed_package.url = url.to_string();
+            let installed_package =
+                self.download_package_blocking(&client, target)
+                    .context(format!(
+                        "Failed to install package: {}",
+                        target.package.to_id()
+                    ))?;
             self.complete_tasks.push(installed_package);
         }
 

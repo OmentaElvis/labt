@@ -40,3 +40,4 @@ zip = { version = "2.1.1", default-features = false, features = ["deflate"] }
 ratatui = "0.26.3"
 crossterm = "0.27.0"
 fuzzy-matcher = "0.3.7"
+sha1 = "0.10.6"
