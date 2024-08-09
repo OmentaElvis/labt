@@ -11,6 +11,8 @@ use toml_edit::{value, ArrayOfTables, Document, Table};
 use crate::config::repository::{ChannelType, Revision};
 use crate::submodules::sdk::{get_sdk_path, toml_strings};
 
+use super::ToId;
+
 const INSTALLED_LIST: &str = "installed.toml";
 const INSTALLED_LIST_OPEN_ERR: &str = "Failed to open sdk installed.toml";
 const PACKAGE: &str = "package";
@@ -34,8 +36,10 @@ impl InstalledPackage {
             directory: None,
         }
     }
-    pub fn to_id(&self) -> String {
-        format!("{}:{}:{}", self.path, self.version, self.channel)
+}
+impl ToId for InstalledPackage {
+    fn create_id(&self) -> (&String, &Revision, &ChannelType) {
+        (&self.path, &self.version, &self.channel)
     }
 }
 
@@ -514,7 +518,10 @@ pub fn update_installed_list(
 
 #[cfg(test)]
 mod installed_list_test {
-    use crate::config::repository::{ChannelType, Revision};
+    use crate::{
+        config::repository::{ChannelType, Revision},
+        submodules::sdkmanager::ToId,
+    };
 
     use super::{InstalledList, InstalledPackage};
 

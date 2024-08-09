@@ -24,7 +24,10 @@ use crate::{
     get_home,
     submodules::{
         sdk::InstalledPackage,
-        sdkmanager::filters::{FilteredPackages, SdkFilters},
+        sdkmanager::{
+            filters::{FilteredPackages, SdkFilters},
+            ToId,
+        },
     },
 };
 
@@ -169,7 +172,7 @@ struct MainListPage<'a> {
 }
 
 impl<'a> StatefulWidget for &MainListPage<'a> {
-    type State = AppState<'a>;
+    type State = AppState<'a, 'a>;
     fn render(
         self,
         area: ratatui::prelude::Rect,
@@ -227,7 +230,7 @@ impl<'a> StatefulWidget for &MainListPage<'a> {
                 if version_string.len() > longest_version_string {
                     longest_version_string = version_string.len();
                 }
-                let version_cell = Cell::new(version_string);
+                let version_cell = Cell::new(version_string.clone());
                 let path = Cell::new(package.get_path().as_str());
 
                 if let Some(action) = state.pending_actions.get(package) {
@@ -240,6 +243,48 @@ impl<'a> StatefulWidget for &MainListPage<'a> {
                     match action {
                         PendingAction::Install => Row::new(cells).fg(Color::Green),
                         PendingAction::Uninstall => Row::new(cells).fg(Color::LightRed),
+                        PendingAction::Upgrade(p) => {
+                            cells[0] = Cell::new("U");
+                            cells[1] = cells[1].clone().fg(Color::Yellow);
+                            cells[2] = Cell::new(Line::from(vec![
+                                Span::styled(version_string, Style::new().fg(Color::DarkGray)),
+                                Span::styled(
+                                    format!("(+{})", p.get_revision()),
+                                    Style::new().fg(Color::Yellow),
+                                ),
+                            ]))
+                            .fg(Color::Yellow);
+                            cells[2] = cells[2].clone().fg(Color::DarkGray);
+                            Row::new(cells)
+                        }
+                        PendingAction::Downgrade(p) => {
+                            cells[0] = Cell::new("D");
+                            cells[1] = cells[1].clone().fg(Color::Yellow);
+                            cells[2] = Cell::new(Line::from(vec![
+                                Span::styled(version_string, Style::new().fg(Color::DarkGray)),
+                                Span::styled(
+                                    format!("(-{})", p.get_revision()),
+                                    Style::new().fg(Color::Yellow),
+                                ),
+                            ]))
+                            .fg(Color::Yellow);
+                            cells[2] = cells[2].clone().fg(Color::DarkGray);
+                            Row::new(cells)
+                        }
+                        PendingAction::Channel(p) => {
+                            cells[0] = Cell::new("C");
+                            cells[1] = cells[1].clone().fg(Color::Yellow);
+                            cells[2] = Cell::new(Line::from(vec![
+                                Span::styled(version_string, Style::new().fg(Color::DarkGray)),
+                                Span::styled(
+                                    format!("(*{})", p.get_channel()),
+                                    Style::new().fg(Color::Yellow),
+                                ),
+                            ]))
+                            .fg(Color::Yellow);
+                            cells[2] = cells[2].clone().fg(Color::DarkGray);
+                            Row::new(cells)
+                        }
                         _ => {
                             cells[0] = Cell::new("");
                             cells[1] = cells[1].clone().fg(Color::Cyan);
@@ -295,7 +340,7 @@ struct LicensePage<'a> {
 }
 
 impl<'a> StatefulWidget for &LicensePage<'a> {
-    type State = AppState<'a>;
+    type State = AppState<'a, 'a>;
     fn render(
         self,
         area: ratatui::prelude::Rect,
@@ -349,7 +394,7 @@ struct FooterWidget<'a> {
     _phantom: PhantomData<&'a ()>,
 }
 impl<'a> StatefulWidget for &FooterWidget<'a> {
-    type State = AppState<'a>;
+    type State = AppState<'a, 'a>;
     fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer, state: &mut Self::State) {
         let layout = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
 
@@ -433,7 +478,7 @@ struct DetailsWidget<'a> {
 }
 
 impl<'a> StatefulWidget for &DetailsWidget<'a> {
-    type State = AppState<'a>;
+    type State = AppState<'a, 'a>;
     fn render(
         self,
         area: ratatui::prelude::Rect,
@@ -603,7 +648,10 @@ impl<'a> Widget for ConfirmActionPopup<'a> {
         for (package, action) in self.actions.iter() {
             match action {
                 PendingAction::Install => installs.push(package),
-                PendingAction::Uninstall => uninstalls.push(package),
+                PendingAction::Uninstall
+                | PendingAction::Upgrade(_)
+                | PendingAction::Downgrade(_)
+                | PendingAction::Channel(_) => uninstalls.push(package),
                 _ => {}
             }
         }
@@ -655,9 +703,15 @@ pub enum PendingAction {
     Install,
     /// Uninstall package
     Uninstall,
+    /// Upgrade a package from lower version
+    Upgrade(RemotePackage),
+    /// Downgrade to a lower version
+    Downgrade(RemotePackage),
+    /// Change channel
+    Channel(RemotePackage),
 }
 
-struct AppState<'a> {
+struct AppState<'installed_list, 'repo> {
     /// The selected package
     pub selected_package: usize,
 
@@ -674,7 +728,7 @@ struct AppState<'a> {
     pub current_mode: Modes,
 
     /// The filtered packages
-    pub filtered_packages: &'a mut FilteredPackages<'a, 'a>,
+    pub filtered_packages: &'installed_list mut FilteredPackages<'installed_list, 'repo>,
 
     // caches licenses from sdk path
     licenses: HashMap<String, String>,
@@ -685,8 +739,8 @@ struct AppState<'a> {
     pub pending_actions: HashMap<RemotePackage, PendingAction>,
 }
 
-impl<'a> AppState<'a> {
-    pub fn new(packages: &'a mut FilteredPackages<'a, 'a>) -> Self {
+impl<'installed_list, 'repo> AppState<'installed_list, 'repo> {
+    pub fn new(packages: &'installed_list mut FilteredPackages<'installed_list, 'repo>) -> Self {
         Self {
             selected_package: 0,
             license_scroll_position: 0,
@@ -744,6 +798,7 @@ impl<'a> AppState<'a> {
     // pub fn get_selected_package_index(&self) -> usize {
     //     self.selected_package
     // }
+
     /// Returns the selected package
     pub fn get_selected_package(&self) -> Option<&RemotePackage> {
         self.filtered_packages
@@ -857,25 +912,91 @@ impl<'a> AppState<'a> {
         {
             // it is installed
             let package = package.clone();
-            if let Some(action) = self.pending_actions.get_mut(&package) {
-                match action {
-                    PendingAction::Noop => *action = PendingAction::Uninstall,
-                    _ => *action = PendingAction::Noop,
+            match self.pending_actions.get(&package) {
+                Some(PendingAction::Noop) => {
+                    self.pending_actions
+                        .insert(package, PendingAction::Uninstall);
                 }
-            } else {
-                self.set_action(package, PendingAction::Uninstall);
+                Some(PendingAction::Upgrade(p))
+                | Some(PendingAction::Downgrade(p))
+                | Some(PendingAction::Channel(p)) => {
+                    self.pending_actions.remove(&p.clone());
+                    self.pending_actions.insert(package, PendingAction::Noop);
+                }
+                None => {
+                    self.set_action(package, PendingAction::Uninstall);
+                }
+                _ => {
+                    self.set_action(package, PendingAction::Noop);
+                }
+            }
+
+            return;
+        }
+
+        // check if an existing package has same path. If so its an upgrade or downgrade
+        if let Some(installed_package) = self
+            .filtered_packages
+            .installed
+            .contains_path(&installed.path)
+        {
+            // a matching path was found
+            let new = &installed;
+            let out = &installed_package;
+
+            // Obtain thw remote package based on provided installed_package id
+            if let Some(remote_package) = self
+                .filtered_packages
+                .repo
+                .get_remote_packages()
+                .iter()
+                .find(|p| p.to_id() == installed_package.to_id())
+            {
+                // compute the kind of change
+                let new_action = if out.version > new.version {
+                    // TODO fix the following clonning and use lifetimes instead
+                    PendingAction::Downgrade(package.clone())
+                } else if new.version > out.version {
+                    PendingAction::Upgrade(package.clone())
+                } else {
+                    // equal versions but channel must be different
+                    PendingAction::Channel(package.clone())
+                };
+                // set the package being uninstalled with corresponding Downgrade/Upgrade/Channel.
+                let package = package.clone();
+                let remote_package = remote_package.clone();
+
+                // set install for this package
+                if let Some(action) = self.pending_actions.get_mut(&package) {
+                    match action {
+                        PendingAction::Noop => {
+                            *action = PendingAction::Install;
+                            self.set_action(remote_package.clone(), new_action);
+                        }
+                        _ => {
+                            *action = PendingAction::Noop;
+                            self.set_action(remote_package.clone(), PendingAction::Noop);
+                        }
+                    }
+                } else {
+                    self.set_action(package, PendingAction::Install);
+                    self.set_action(remote_package.clone(), new_action);
+                }
+            }
+            // since its a change of version. mark the other version for uninstall
+
+            return;
+        }
+
+        // not installed
+        let package = package.clone();
+        if let Some(action) = self.pending_actions.get_mut(&package) {
+            match action {
+                PendingAction::Noop => *action = PendingAction::Install,
+                _ => *action = PendingAction::Noop,
             }
         } else {
-            // not installed
-            let package = package.clone();
-            if let Some(action) = self.pending_actions.get_mut(&package) {
-                match action {
-                    PendingAction::Noop => *action = PendingAction::Install,
-                    _ => *action = PendingAction::Noop,
-                }
-            } else {
-                self.set_action(package, PendingAction::Install);
-            }
+            self.set_action(package, PendingAction::Install);
         }
     }
 }
@@ -892,7 +1013,7 @@ pub struct SdkManager<'a> {
 
     current_page: Pages,
 
-    state: AppState<'a>,
+    state: AppState<'a, 'a>,
     show_help: bool,
 
     help_popup: HelpPopoup,
@@ -904,8 +1025,8 @@ pub struct SdkManager<'a> {
     show_exit_dialog: bool,
 }
 
-impl<'a> SdkManager<'a> {
-    pub fn new(packages: &'a mut FilteredPackages<'a, 'a>) -> Self {
+impl<'sdk> SdkManager<'sdk> {
+    pub fn new(packages: &'sdk mut FilteredPackages<'sdk, 'sdk>) -> Self {
         let mut channel_state = ListState::default();
         let mut channels: Vec<String> = AVAILABLE_CHANNELS.iter().map(|c| c.to_string()).collect();
         channel_state.select(Some(channels.len()));

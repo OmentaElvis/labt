@@ -5,9 +5,9 @@ use fuzzy_matcher::clangd::fuzzy_match;
 use crate::config::repository::ChannelType;
 use crate::config::repository::RemotePackage;
 use crate::config::repository::RepositoryXml;
-use crate::submodules::sdk::InstalledPackage;
 
 use super::installed_list::InstalledList;
+use super::ToId;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub enum SdkFilters {
@@ -21,7 +21,7 @@ pub enum SdkFilters {
     Installed,
 }
 
-pub struct FilteredPackages<'a, 'repo> {
+pub struct FilteredPackages<'installer, 'repo> {
     /// The original repo to filter from
     pub repo: &'repo RepositoryXml,
     pub packages: Vec<&'repo RemotePackage>,
@@ -30,13 +30,13 @@ pub struct FilteredPackages<'a, 'repo> {
     /// These are singleton filters applied to all entries
     pub single_filters: HashSet<SdkFilters>,
 
-    pub installed: &'a InstalledList,
+    pub installed: &'installer InstalledList,
     /// The channel to show packages for. If set to None all channels are shown
     pub channel: Option<ChannelType>,
 }
 
-impl<'a, 'repo> FilteredPackages<'a, 'repo> {
-    pub fn new(repo: &'repo RepositoryXml, installed: &'a InstalledList) -> Self {
+impl<'installer, 'repo> FilteredPackages<'installer, 'repo> {
+    pub fn new(repo: &'repo RepositoryXml, installed: &'installer InstalledList) -> Self {
         Self {
             repo,
             installed,
@@ -108,14 +108,7 @@ impl<'a, 'repo> FilteredPackages<'a, 'repo> {
                         match filter {
                             SdkFilters::Installed => {
                                 // short circuit for installed
-                                if !installed_hash.contains_key(
-                                    &InstalledPackage::new(
-                                        p.get_path().clone(),
-                                        p.get_revision().clone(),
-                                        p.get_channel().clone(),
-                                    )
-                                    .to_id(),
-                                ) {
+                                if !installed_hash.contains_key(&p.to_id()) {
                                     return false;
                                 }
                             }

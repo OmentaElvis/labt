@@ -12,6 +12,8 @@ use std::{
 use anyhow::{bail, Context};
 use quick_xml::{events::Event, Reader};
 
+use crate::submodules::sdkmanager::ToId;
+
 mod tags {
     // pub const SDK_REPOSITORY: &[u8] = b"sdk-repository";
     pub const CHANNEL: &[u8] = b"channel";
@@ -156,6 +158,12 @@ pub struct RemotePackage {
     /// A list of file archives for this package.
     archives: Vec<Archive>,
     revision: Revision,
+}
+
+impl ToId for RemotePackage {
+    fn create_id(&self) -> (&String, &Revision, &ChannelType) {
+        (&self.path, &self.revision, &self.channel)
+    }
 }
 
 #[derive(Debug, Clone, Default, Hash, PartialEq, Eq)]

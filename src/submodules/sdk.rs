@@ -2,7 +2,7 @@ use core::panic;
 use std::{
     collections::HashMap,
     env,
-    fs::{self, create_dir, create_dir_all, remove_dir, remove_dir_all, remove_file, File},
+    fs::{self, create_dir, create_dir_all, remove_dir_all, remove_file, File},
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     process,
@@ -250,7 +250,6 @@ impl Sdk {
         }
     }
     pub fn start_tui<'a>(
-        &self,
         packages: &'a mut FilteredPackages<'a, 'a>,
     ) -> io::Result<HashMap<RemotePackage, PendingAction>> {
         let mut terminal: Tui = tui::init()?;
@@ -280,11 +279,11 @@ impl Sdk {
         Ok(actions)
     }
     /// Lists the available and installed packages
-    pub fn list_packages<'list_fn>(
+    pub fn list_packages(
         &self,
         args: &ListArgs,
-        repo: &'list_fn RepositoryXml,
-        installed: &'list_fn mut InstalledList,
+        repo: &RepositoryXml,
+        installed: &mut InstalledList,
     ) -> anyhow::Result<()> {
         // let installed = Rc::new(installed);
 
@@ -299,17 +298,8 @@ impl Sdk {
         }
         filtered.set_channel(args.channel.clone());
         filtered.apply();
-        if !args.no_interactive {
-            let actions = self.start_tui(&mut filtered)?;
-            if !actions.is_empty() {
-                let url = if let Some(url) = &args.url {
-                    url.clone()
-                } else {
-                    Url::parse(DEFAULT_URL)?
-                };
-                self.perform_actions(actions, repo, installed, url, &args.host_os, args.quiet)?;
-            }
-        } else {
+
+        if args.no_interactive {
             let pipe = style("|").dim();
             for package in filtered.get_packages() {
                 println!(
@@ -319,7 +309,22 @@ impl Sdk {
                     package.get_display_name(),
                 );
             }
+            return Ok(());
         }
+
+        let actions = Self::start_tui(&mut filtered)?;
+
+        if actions.is_empty() {
+            // nothing to do
+            return Ok(());
+        }
+
+        let url = if let Some(url) = &args.url {
+            url.clone()
+        } else {
+            Url::parse(DEFAULT_URL)?
+        };
+        self.perform_actions(actions, repo, installed, url, &args.host_os, args.quiet)?;
         Ok(())
     }
     /// performs all the pending actions
@@ -332,13 +337,17 @@ impl Sdk {
         host_os: &Option<String>,
         quiet: bool,
     ) -> anyhow::Result<()> {
-        let mut installed: Vec<RemotePackage> = Vec::new();
         let mut uninstaller = Uninstaller::new(quiet);
+        let (host_os, bits) = self.get_host_os_and_bits(host_os.to_owned())?;
+        let mut installer = Installer::new(url, bits, host_os, quiet);
 
         for (package, action) in actions.drain() {
             match action {
-                PendingAction::Install => installed.push(package),
-                PendingAction::Uninstall => {
+                PendingAction::Install => installer.add_package(package)?,
+                PendingAction::Uninstall
+                | PendingAction::Upgrade(_)
+                | PendingAction::Downgrade(_)
+                | PendingAction::Channel(_) => {
                     if let Some(p) = installed_list.contains_id(&InstalledPackage::new(
                         package.get_path().to_owned(),
                         package.get_revision().to_owned(),
@@ -359,17 +368,7 @@ impl Sdk {
             info!(target: SDKMANAGER_TARGET, "Removed package {} at ({:?})", package.path, dir);
             installed_list.remove_installed_package(&package);
         }
-
-        let (host_os, bits) = self.get_host_os_and_bits(host_os.to_owned())?;
-        let mut installer = if installed.len() > 1 {
-            Installer::new(InstallerMode::Parallel, url, bits, host_os, quiet)
-        } else {
-            Installer::new(InstallerMode::Sequential, url, bits, host_os, quiet)
-        };
-
-        for package in installed {
-            installer.add_package(package)?;
-        }
+        installed_list.save_to_file()?; // save after uninstall since next install process may fail leaving phantom packages
 
         installer.install()?;
         if !installer.install_targets.is_empty() {
@@ -1078,7 +1077,7 @@ impl Uninstaller {
                         }
                         #[cfg(not(test))]
                         {
-                            remove_dir(&dir)
+                            fs::remove_dir(&dir)
                                 .context(format!("Failed to remove directory ({:?})", dir))?;
                         }
                         dir.pop();
@@ -1142,19 +1141,21 @@ impl Uninstaller {
     }
 }
 
-/// How the installer should behave
-enum InstallerMode {
-    /// Turn on a tokio runtime to install everything concurrently. May avoid
-    /// using tokio if it is just a single package.
-    Parallel,
-    /// Install the packages sequentially
-    Sequential,
-}
+// /// How the installer should behave
+// enum InstallerMode {
+//     /// Turn on a tokio runtime to install everything concurrently. May avoid
+//     /// using tokio if it is just a single package.
+//     Parallel,
+//     /// Install the packages sequentially
+//     Sequential,
+//     /// Changes install mode according to current state
+//     Default,
+// }
 
 /// Manages the installation on packages
 struct Installer {
     /// The installer mode
-    mode: InstallerMode,
+    // pub mode: InstallerMode,
     install_targets: Vec<InstallerTarget>,
     complete_tasks: Vec<InstalledPackage>,
 
@@ -1177,15 +1178,8 @@ struct InstallerTarget {
 }
 
 impl Installer {
-    pub fn new(
-        mode: InstallerMode,
-        download_from: Url,
-        bits: BitSizeType,
-        host_os: String,
-        quiet: bool,
-    ) -> Self {
+    pub fn new(download_from: Url, bits: BitSizeType, host_os: String, quiet: bool) -> Self {
         Self {
-            mode,
             install_targets: Vec::new(),
             complete_tasks: Vec::new(),
             default_url: Arc::new(download_from),
@@ -1543,11 +1537,10 @@ impl Installer {
 
     /// Starts the installation process
     pub fn install(&mut self) -> anyhow::Result<()> {
-        match self.mode {
-            InstallerMode::Parallel => self.install_async()?,
-            InstallerMode::Sequential => {
-                self.install_sync()?;
-            }
+        if self.install_targets.len() > 1 {
+            self.install_async()?;
+        } else {
+            self.install_sync()?;
         }
 
         Ok(())
