@@ -737,6 +737,8 @@ struct AppState<'installed_list, 'repo> {
     pub show_full_details: bool,
     /// The pending actions to perform
     pub pending_actions: HashMap<RemotePackage, PendingAction>,
+    /// The current page being rendered
+    pub current_page: Pages,
 }
 
 impl<'installed_list, 'repo> AppState<'installed_list, 'repo> {
@@ -752,6 +754,7 @@ impl<'installed_list, 'repo> AppState<'installed_list, 'repo> {
             licenses: HashMap::new(),
             show_full_details: false,
             pending_actions: HashMap::new(),
+            current_page: Pages::MainList,
         }
     }
     /// Selects the next package. Wraps around if the end is reached
@@ -1011,8 +1014,6 @@ mod help_pages {
 pub struct SdkManager<'a> {
     exit: bool,
 
-    current_page: Pages,
-
     state: AppState<'a, 'a>,
     show_help: bool,
 
@@ -1036,7 +1037,6 @@ impl<'sdk> SdkManager<'sdk> {
 
         SdkManager {
             exit: false,
-            current_page: Pages::MainList,
             state,
             show_help: false,
             help_popup: HelpPopoup::new(80, 80),
@@ -1114,7 +1114,7 @@ impl<'sdk> SdkManager<'sdk> {
         )
         .split(frame.size());
 
-        match self.current_page {
+        match &self.state.current_page {
             Pages::MainList => {
                 frame.render_stateful_widget(&MainListPage::default(), layout[0], &mut self.state);
                 let spans: Vec<Span> = vec![
@@ -1264,15 +1264,29 @@ impl<'sdk> SdkManager<'sdk> {
                     },
                     Modes::Normal => match key.code {
                         // open details page
-                        KeyCode::Enter => {
-                            if !self.state.pending_actions.is_empty() {
-                                self.show_exit_dialog = true;
-                            } else {
-                                self.exit = true;
+                        KeyCode::Enter => match &self.state.current_page {
+                            Pages::MainList => {
+                                if !self.state.pending_actions.is_empty() {
+                                    self.show_exit_dialog = true;
+                                } else {
+                                    self.exit = true;
+                                }
                             }
-                        }
+                            Pages::AcceptLicense(id) => {
+                                self.state.pending_accepts.insert(id.clone());
+                                self.state.toggle_action();
+                                self.state.current_page = Pages::MainList;
+                            }
+                            Pages::License => {
+                                if let Ok(Some((id, _))) = self.state.get_selected_license() {
+                                    self.state.pending_accepts.insert(id);
+                                }
+                                self.state.current_page = Pages::MainList;
+                            }
+                            _ => {}
+                        },
                         // Up scroll movements
-                        KeyCode::Up => match self.current_page {
+                        KeyCode::Up => match self.state.current_page {
                             Pages::MainList => self.state.previous_package(),
                             Pages::License => {
                                 self.state.license_scroll_position =
@@ -1282,7 +1296,7 @@ impl<'sdk> SdkManager<'sdk> {
                         },
 
                         // Down scroll movements
-                        KeyCode::Down => match self.current_page {
+                        KeyCode::Down => match self.state.current_page {
                             Pages::MainList => self.state.next_package(),
                             Pages::License => {
                                 self.state.license_scroll_position =
@@ -1301,25 +1315,33 @@ impl<'sdk> SdkManager<'sdk> {
                             self.exit = true;
                         }
                         KeyCode::Char('L')
-                            if matches!(self.current_page, Pages::MainList | Pages::Details) =>
+                            if matches!(
+                                self.state.current_page,
+                                Pages::MainList | Pages::Details
+                            ) =>
                         {
-                            self.current_page = Pages::License;
+                            self.state.current_page = Pages::License;
                         }
                         KeyCode::Esc if self.show_help => {
                             self.show_help = false;
                         }
-                        KeyCode::Esc => match self.current_page {
+                        KeyCode::Esc => match self.state.current_page {
                             Pages::Details => {
-                                self.current_page = Pages::MainList;
+                                self.state.current_page = Pages::MainList;
                                 self.state.show_full_details = false;
                             }
-                            Pages::License if self.state.show_full_details => {
-                                self.current_page = Pages::Details;
+                            Pages::AcceptLicense(_) => {
+                                self.state.current_page = Pages::MainList;
                             }
-                            Pages::License => self.current_page = Pages::MainList,
+                            Pages::License if self.state.show_full_details => {
+                                self.state.current_page = Pages::Details;
+                            }
+                            Pages::License => self.state.current_page = Pages::MainList,
                             _ => {}
                         },
-                        KeyCode::Char('/') if matches!(self.current_page, Pages::MainList) => {
+                        KeyCode::Char('/')
+                            if matches!(self.state.current_page, Pages::MainList) =>
+                        {
                             self.state.current_mode = Modes::FilterInput;
                             if !self.state.filtered_packages.has_filters() {
                                 self.state
