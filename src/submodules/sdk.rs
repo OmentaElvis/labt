@@ -14,7 +14,7 @@ use clap::{Args, Subcommand};
 use console::style;
 use crossterm::style::Stylize;
 use futures_util::StreamExt;
-use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use log::{info, warn};
 use reqwest::Url;
 use sha1::{Digest, Sha1};
@@ -27,7 +27,7 @@ use crate::{
         Revision,
     },
     get_home,
-    submodules::sdkmanager::ToId,
+    submodules::sdkmanager::{installed_list::SDK_PATH_ERR_STRING, ToId},
     tui::{
         self,
         sdkmanager::{PendingAccepts, PendingAction, PendingActions, SdkManager},
@@ -433,7 +433,7 @@ impl Sdk {
         args: &InstallArgs,
         repo: RepositoryXml,
         installed: InstalledList,
-    ) -> anyhow::Result<InstalledPackage> {
+    ) -> anyhow::Result<()> {
         let mut installed = installed;
 
         let package = repo.get_remote_packages().iter().find(|p| {
@@ -487,27 +487,29 @@ impl Sdk {
         } else {
             Url::parse(DEFAULT_URL).context("Failed to parse default URL")?
         };
-        // obtain the installation directory
+        // update licenses
+        if !installed.has_accepted(package.get_uses_license()) {
+            let mut license_path = get_sdk_path().context(SDK_PATH_ERR_STRING)?;
+            license_path.push("licenses");
+            license_path.push(package.get_uses_license());
 
-        let path = package.get_path();
-        let dir: PathBuf = path.split(';').collect();
-        let sdk = get_sdk_path().context(super::sdkmanager::installed_list::SDK_PATH_ERR_STRING)?;
-        let target = sdk.join(dir);
-
-        // create a lock file to protect directory
-        let pid = process::id();
-        // lock will be released if it goes out of scope
-        let _lock = SdkLock::obtain(&target, pid)?;
-        // self.create_lock_file(&target, &pid)?;
-
-        let result = install_package(package, host_os, bits, &target, &url);
-
-        if let Ok(package) = &result {
-            installed.insert_installed_package(package.to_owned());
-            installed.save_to_file()?;
+            log::warn!(target: SDKMANAGER_TARGET, "Automatically accepted license for the package: ({}). Please review the license stored at ({:?})", package.to_id(), license_path);
+            installed.accept_license(package.get_uses_license().clone());
         }
 
-        result
+        let mut installer = Installer::new(url, bits, host_os, args.quiet);
+        installer.add_package(package.clone())?;
+
+        installer.install()?;
+
+        for package in installer.complete_tasks {
+            installed.add_installed_package(package);
+        }
+        installed
+            .save_to_file()
+            .context("Failed to update installed package list with installed packages")?;
+
+        Ok(())
     }
     pub fn get_url(&self) -> &String {
         &self.url
@@ -817,118 +819,6 @@ pub fn parse_repository_toml(path: &Path) -> anyhow::Result<RepositoryXml> {
     }
 
     Ok(repo)
-}
-
-/// Starts the installation process
-pub fn install_package(
-    package: &RemotePackage,
-    host_os: String,
-    bits: BitSizeType,
-    target_path: &Path,
-    download_url: &Url,
-) -> anyhow::Result<InstalledPackage> {
-    const NO_TARGET_ERR: &str = "No target to install";
-    // select the appropriate archive
-    let archives = package.get_archives();
-    if archives.is_empty() {
-        bail!(NO_TARGET_ERR);
-    }
-
-    let archives: Vec<&Archive> = archives
-        .iter()
-        .filter(|p| {
-            if p.get_host_os().is_empty() {
-                // os not set so include this
-                true
-            } else {
-                p.get_host_os().eq(&host_os)
-            }
-        })
-        .filter(|p| {
-            let b = p.get_host_bits();
-            if b == BitSizeType::Unset {
-                true
-            } else {
-                b == bits
-            }
-        })
-        .collect();
-
-    let archive = archives.first().context(NO_TARGET_ERR)?;
-    info!(target: SDKMANAGER_TARGET, "Downloading {} from {} with size {}", archive.get_url(), DEFAULT_URL, HumanBytes(archive.get_size() as u64));
-
-    let client = reqwest::blocking::ClientBuilder::new()
-        .user_agent(crate::USER_AGENT)
-        .build()?;
-
-    let url = download_url.join(archive.get_url())?;
-
-    let req = client.get(url.clone());
-    let res = req.send().context("Failed to complete request")?;
-
-    let mut output = target_path.to_path_buf();
-    output.push("package.tmp");
-    let file = File::create(&output).context("Failed to create download tmp file")?;
-    let mut writer = BufWriter::new(file);
-
-    let mut reader = BufReader::new(res);
-
-    let prog = indicatif::ProgressBar::new(archive.get_size() as u64).with_style(
-        ProgressStyle::with_template(
-            "{spinner}[{percent}%] {bar:40} {binary_bytes_per_sec} {duration}",
-        )
-        .unwrap(),
-    );
-    const BUFFER_LENGTH: usize = 8 * 1024;
-    let mut buf: [u8; BUFFER_LENGTH] = [0; BUFFER_LENGTH];
-    loop {
-        let read = reader.read(&mut buf)?;
-        if read == 0 {
-            break;
-        }
-
-        let written = writer.write(&buf[0..read])?;
-        if written != read {
-            return Err(anyhow!("Failed to copy all bytes from the network stream to a local file: read {}, written: {}", read, written));
-        }
-
-        prog.inc(read as u64);
-    }
-
-    prog.finish_and_clear();
-    drop(writer);
-    drop(reader);
-
-    // unzip
-    let file = File::open(&output).context("Failed to open download tmp file")?;
-    let mut archive = zip::ZipArchive::new(file)?;
-    let prog = indicatif::ProgressBar::new(archive.len() as u64)
-        .with_style(
-            ProgressStyle::with_template(
-                "{spinner} {msg} [{percent}%] {bar:40} {pos}/{len} {duration}",
-            )
-            .unwrap(),
-        )
-        .with_message("Extracting");
-    extract_with_progress(&mut archive, target_path, &prog).context(format!(
-        "Failed to unzip package archive to ({:?})",
-        target_path
-    ))?;
-    info!(target: SDKMANAGER_TARGET, "Extracted {} entries to ({:?}).", archive.len(), target_path);
-
-    log::trace!(target: SDKMANAGER_TARGET, "Removing download temp file ({:?})", output);
-    remove_file(&output).context(format!(
-        "Failed to remove download temp file at ({:?})",
-        output
-    ))?;
-
-    Ok(InstalledPackage {
-        path: package.get_path().to_owned(),
-        version: package.get_revision().to_owned(),
-        url: url.to_string(),
-        directory: Some(target_path.to_path_buf()),
-        channel: package.get_channel().to_owned(),
-    })
 }
 
 pub fn extract_with_progress<P: AsRef<Path>>(
