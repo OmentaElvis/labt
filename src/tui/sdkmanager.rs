@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::File,
     io::{self, Read},
     marker::PhantomData,
@@ -47,6 +47,7 @@ enum Pages {
     MainList,
     License,
     Details,
+    AcceptLicense(String),
     // Installed,
 }
 
@@ -337,6 +338,7 @@ impl<'a> StatefulWidget for &MainListPage<'a> {
 #[derive(Default)]
 struct LicensePage<'a> {
     _phantom: PhantomData<&'a ()>,
+    license_id: Option<String>,
 }
 
 impl<'a> StatefulWidget for &LicensePage<'a> {
@@ -352,39 +354,58 @@ impl<'a> StatefulWidget for &LicensePage<'a> {
             .padding(Padding::symmetric(2, 2))
             .borders(Borders::ALL);
 
-        match state.get_selected_license() {
-            Ok(Some((id, license))) => {
-                Paragraph::new(license.as_str())
-                    .block(block.title(id.as_str()))
-                    .wrap(Wrap { trim: true })
-                    .scroll((scroll, 0))
-                    .render(area, buf);
-            }
-            Ok(None) => {
-                // Either the licence or the package is unavailable
-                if let Some(p) = state.get_selected_package() {
-                    Paragraph::new(format!(
-                        "Licence {} not found for package {}",
-                        p.get_uses_license(),
-                        p.get_display_name()
-                    ))
-                    .block(block.title(p.get_uses_license().as_str()))
-                    .wrap(Wrap { trim: false })
-                    .render(area, buf);
-                } else {
-                    Paragraph::new("No package selected to view the license")
-                        .block(block)
+        if let Some(id) = &self.license_id {
+            match state.load_license(id.as_str()) {
+                Ok(license) => {
+                    Paragraph::new(license.as_str())
+                        .block(block.title(id.as_str()))
+                        .wrap(Wrap { trim: true })
+                        .scroll((scroll, 0))
+                        .render(area, buf);
+                }
+                Err(err) => {
+                    Paragraph::new(err.to_string())
+                        .block(block.title("Error loading license"))
                         .alignment(ratatui::layout::Alignment::Center)
                         .wrap(Wrap { trim: false })
                         .render(area, buf);
                 }
             }
-            Err(err) => {
-                Paragraph::new(err.to_string())
-                    .block(block.title("Error loading license"))
-                    .alignment(ratatui::layout::Alignment::Center)
-                    .wrap(Wrap { trim: false })
-                    .render(area, buf);
+        } else {
+            match state.get_selected_license() {
+                Ok(Some((id, license))) => {
+                    Paragraph::new(license.as_str())
+                        .block(block.title(id.as_str()))
+                        .wrap(Wrap { trim: true })
+                        .scroll((scroll, 0))
+                        .render(area, buf);
+                }
+                Ok(None) => {
+                    // Either the licence or the package is unavailable
+                    if let Some(p) = state.get_selected_package() {
+                        Paragraph::new(format!(
+                            "Licence {} not found for package {}",
+                            p.get_uses_license(),
+                            p.get_display_name()
+                        ))
+                        .block(block.title(p.get_uses_license().as_str()))
+                        .wrap(Wrap { trim: false })
+                        .render(area, buf);
+                    } else {
+                        Paragraph::new("No package selected to view the license")
+                            .block(block)
+                            .alignment(ratatui::layout::Alignment::Center)
+                            .wrap(Wrap { trim: false })
+                            .render(area, buf);
+                    }
+                }
+                Err(err) => {
+                    Paragraph::new(err.to_string())
+                        .block(block.title("Error loading license"))
+                        .alignment(ratatui::layout::Alignment::Center)
+                        .wrap(Wrap { trim: false })
+                        .render(area, buf);
+                }
             }
         }
     }
@@ -612,7 +633,8 @@ impl<'a> StatefulWidget for &DetailsWidget<'a> {
     }
 }
 
-type PendingActions = HashMap<RemotePackage, PendingAction>;
+pub(crate) type PendingActions = HashMap<RemotePackage, PendingAction>;
+pub(crate) type PendingAccepts = HashSet<String>;
 
 pub struct ConfirmActionPopup<'a> {
     actions: &'a PendingActions,
@@ -737,6 +759,8 @@ struct AppState<'installed_list, 'repo> {
     pub show_full_details: bool,
     /// The pending actions to perform
     pub pending_actions: HashMap<RemotePackage, PendingAction>,
+    /// The list of currently accepted licenses
+    pub pending_accepts: HashSet<String>,
     /// The current page being rendered
     pub current_page: Pages,
 }
@@ -754,6 +778,7 @@ impl<'installed_list, 'repo> AppState<'installed_list, 'repo> {
             licenses: HashMap::new(),
             show_full_details: false,
             pending_actions: HashMap::new(),
+            pending_accepts: HashSet::new(),
             current_page: Pages::MainList,
         }
     }
@@ -816,14 +841,12 @@ impl<'installed_list, 'repo> AppState<'installed_list, 'repo> {
     }
     /// Returns the license for current package
     pub fn get_selected_license(&mut self) -> anyhow::Result<Option<(String, &String)>> {
-        // Should fix this clone
-        if let Some(package) = self.get_selected_package().cloned() {
-            let id = package.get_uses_license();
-            self.load_license(id)
-                .map(|l| l.map(|license| (id.to_string(), license)))
-        } else {
-            Ok(None)
-        }
+        let Some(package) = self.get_selected_package() else {
+            return Ok(None);
+        };
+        let id = package.get_uses_license().clone();
+        self.load_license(id.as_str())
+            .map(|l| Some((id.to_string(), l)))
     }
     /// Moves the input cursor left
     pub fn move_cursor_left(&mut self) {
@@ -866,9 +889,9 @@ impl<'installed_list, 'repo> AppState<'installed_list, 'repo> {
         self.filtered_packages.apply();
     }
     /// Fetches license from sdkpath
-    fn load_license(&mut self, id: &str) -> anyhow::Result<Option<&String>> {
+    fn load_license(&mut self, id: &str) -> anyhow::Result<&String> {
         if self.licenses.contains_key(id) {
-            return Ok(self.licenses.get(id));
+            return Ok(self.licenses.get(id).unwrap());
         }
 
         let mut sdk = get_home().context("Failed to get LABt home while fetching licenses")?;
@@ -885,7 +908,7 @@ impl<'installed_list, 'repo> AppState<'installed_list, 'repo> {
 
         self.licenses.insert(id.to_string(), license);
 
-        Ok(self.licenses.get(id))
+        Ok(self.licenses.get(id).unwrap())
     }
     /// Sets a pending action for a particular package
     pub fn set_action(&mut self, package: RemotePackage, action: PendingAction) {
@@ -897,7 +920,7 @@ impl<'installed_list, 'repo> AppState<'installed_list, 'repo> {
     /// Repeating the action sets it to Noop
     /// Does nothing if there is no action set
     pub fn toggle_action(&mut self) {
-        let Some(package) = self.get_selected_package() else {
+        let Some(package) = self.get_selected_package().cloned() else {
             return;
         };
 
@@ -914,7 +937,6 @@ impl<'installed_list, 'repo> AppState<'installed_list, 'repo> {
             .is_some()
         {
             // it is installed
-            let package = package.clone();
             match self.pending_actions.get(&package) {
                 Some(PendingAction::Noop) => {
                     self.pending_actions
@@ -934,6 +956,16 @@ impl<'installed_list, 'repo> AppState<'installed_list, 'repo> {
                 }
             }
 
+            return;
+        }
+        // This now is the installation territory. we can now nag the user to accept license terms before completing this action.
+        if !self.pending_accepts.contains(package.get_uses_license())
+            && !self
+                .filtered_packages
+                .installed
+                .has_accepted(package.get_uses_license())
+        {
+            self.current_page = Pages::AcceptLicense(package.get_uses_license().clone());
             return;
         }
 
@@ -992,7 +1024,6 @@ impl<'installed_list, 'repo> AppState<'installed_list, 'repo> {
         }
 
         // not installed
-        let package = package.clone();
         if let Some(action) = self.pending_actions.get_mut(&package) {
             match action {
                 PendingAction::Noop => *action = PendingAction::Install,
@@ -1050,7 +1081,7 @@ impl<'sdk> SdkManager<'sdk> {
     ///  Entry point
     /// ===============
     /// Starts rendering sdkmanager tui and listening for key events
-    pub fn run(mut self, terminal: &mut Tui) -> io::Result<HashMap<RemotePackage, PendingAction>> {
+    pub fn run(mut self, terminal: &mut Tui) -> io::Result<(PendingActions, PendingAccepts)> {
         self.load_help();
         while !self.exit {
             terminal.draw(|frame| {
@@ -1058,7 +1089,7 @@ impl<'sdk> SdkManager<'sdk> {
             })?;
             self.handle_events()?;
         }
-        Ok(self.state.pending_actions)
+        Ok((self.state.pending_actions, self.state.pending_accepts))
     }
     /// Loads help popup with common help messages
     pub fn load_help(&mut self) {
@@ -1135,6 +1166,16 @@ impl<'sdk> SdkManager<'sdk> {
             }
             Pages::License => {
                 frame.render_stateful_widget(&LicensePage::default(), layout[0], &mut self.state);
+                if let Some(help) = self.help_popup.help.get_mut(help_pages::LICENSE) {
+                    frame.render_stateful_widget(HelpFooter::default(), layout[1], help);
+                }
+            }
+            Pages::AcceptLicense(id) => {
+                let page = LicensePage {
+                    license_id: Some(id.clone()),
+                    ..Default::default()
+                };
+                frame.render_stateful_widget(&page, layout[0], &mut self.state);
                 if let Some(help) = self.help_popup.help.get_mut(help_pages::LICENSE) {
                     frame.render_stateful_widget(HelpFooter::default(), layout[1], help);
                 }

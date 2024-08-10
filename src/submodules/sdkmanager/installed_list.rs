@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -16,6 +16,7 @@ use super::ToId;
 const INSTALLED_LIST: &str = "installed.toml";
 const INSTALLED_LIST_OPEN_ERR: &str = "Failed to open sdk installed.toml";
 const PACKAGE: &str = "package";
+const ACCEPTED_LICENSES: &str = "accepted_licenses";
 pub const SDK_PATH_ERR_STRING: &str = "Failed to get android sdk path";
 
 #[derive(Debug, Default, PartialEq, Eq, Hash, Clone)]
@@ -67,6 +68,8 @@ pub enum InstalledListErrKind {
     MissingKey(&'static str, usize),
     /// Failed converting a toml value to string
     ToStringErr(&'static str, usize),
+    /// Failed to read license id entry as string
+    LicenseIdStrError(&'static str, usize),
 }
 
 impl Display for InstalledListErr {
@@ -87,6 +90,13 @@ impl Display for InstalledListErr {
                 key,
                 position
             ),
+            InstalledListErrKind::LicenseIdStrError(key, index) => write!(
+                f,
+                "{}: Failed to parse {} value as string at index {}",
+                self.file.as_ref().map_or(UNKNOWN, |p| p.as_str()),
+                key,
+                index
+            ),
         }
     }
 }
@@ -95,6 +105,8 @@ impl std::error::Error for InstalledListErr {}
 
 #[derive(Default, Debug)]
 pub struct InstalledList {
+    /// A list of licenses that the user pressed accept
+    pub accepted_licenses: HashSet<String>,
     pub packages: Vec<InstalledPackage>,
 }
 
@@ -102,6 +114,7 @@ impl InstalledList {
     pub fn new() -> Self {
         Self {
             packages: Vec::new(),
+            accepted_licenses: HashSet::new(),
         }
     }
     /// Reads file from disk and parses it into an installed list struct
@@ -174,6 +187,15 @@ impl InstalledList {
             self.packages.remove(i);
         }
     }
+    /// Checks if user has already accepted a license.
+    /// This allows displaying of license for only one time
+    pub fn has_accepted(&self, license_id: &String) -> bool {
+        self.accepted_licenses.contains(license_id)
+    }
+    /// Marks a license as accepted so we don't have to nag the user again to accept
+    pub fn accept_license(&mut self, license_id: String) {
+        self.accepted_licenses.insert(license_id);
+    }
     pub fn save_to_file(&mut self) -> anyhow::Result<()> {
         let mut sdk = get_sdk_path().context(SDK_PATH_ERR_STRING)?;
         sdk.push(INSTALLED_LIST);
@@ -196,6 +218,24 @@ impl FromStr for InstalledList {
         let doc: Document = s
             .parse()
             .context(format!("Failed to parse {INSTALLED_LIST}"))?;
+
+        let mut accepted_licenses: HashSet<String> = HashSet::new();
+        if doc.contains_key(ACCEPTED_LICENSES) {
+            if let Some(list) = doc[ACCEPTED_LICENSES].as_array() {
+                for (i, value) in list.iter().enumerate() {
+                    let id = value
+                        .as_str()
+                        .ok_or_else(|| {
+                            InstalledListErr::new(
+                                InstalledListErrKind::LicenseIdStrError(ACCEPTED_LICENSES, i),
+                                Some(INSTALLED_LIST.to_string()),
+                            )
+                        })?
+                        .to_string();
+                    accepted_licenses.insert(id);
+                }
+            }
+        }
 
         let mut package_list: Vec<InstalledPackage> = Vec::new();
         if doc.contains_array_of_tables(PACKAGE) {
@@ -298,6 +338,7 @@ impl FromStr for InstalledList {
         }
         let installed = Self {
             packages: package_list,
+            accepted_licenses,
         };
         Ok(installed)
     }
@@ -308,6 +349,14 @@ impl Display for InstalledList {
         let mut doc = toml_edit::Document::new();
 
         let mut packages = toml_edit::ArrayOfTables::new();
+        let mut licenses: Vec<&String> = self.accepted_licenses.iter().collect();
+        licenses.sort_unstable();
+
+        let mut accepted = toml_edit::Array::new();
+        for id in licenses {
+            accepted.push(id);
+        }
+        doc.insert(ACCEPTED_LICENSES, toml_edit::value(accepted));
 
         for package in &self.packages {
             let mut table = toml_edit::Table::new();

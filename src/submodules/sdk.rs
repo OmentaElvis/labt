@@ -30,7 +30,7 @@ use crate::{
     submodules::sdkmanager::ToId,
     tui::{
         self,
-        sdkmanager::{PendingAction, SdkManager},
+        sdkmanager::{PendingAccepts, PendingAction, PendingActions, SdkManager},
         Tui,
     },
     MULTI_PROGRESS_BAR, USER_AGENT,
@@ -253,10 +253,10 @@ impl Sdk {
     }
     pub fn start_tui<'a>(
         packages: &'a mut FilteredPackages<'a, 'a>,
-    ) -> io::Result<HashMap<RemotePackage, PendingAction>> {
+    ) -> io::Result<(PendingActions, PendingAccepts)> {
         let mut terminal: Tui = tui::init()?;
         terminal.clear()?;
-        let actions = SdkManager::new(packages).run(&mut terminal)?;
+        let (actions, accepts) = SdkManager::new(packages).run(&mut terminal)?;
         tui::restore()?;
         for (key, action) in actions.iter() {
             match action {
@@ -277,8 +277,11 @@ impl Sdk {
                 _ => {}
             }
         }
+        for license in &accepts {
+            println!("Accepted license: {}", license);
+        }
 
-        Ok(actions)
+        Ok((actions, accepts))
     }
     /// Lists the available and installed packages
     pub fn list_packages(
@@ -314,7 +317,13 @@ impl Sdk {
             return Ok(());
         }
 
-        let actions = Self::start_tui(&mut filtered)?;
+        let (actions, accepts) = Self::start_tui(&mut filtered)?;
+        for license in accepts {
+            installed.accept_license(license);
+        }
+        installed
+            .save_to_file()
+            .context("Failed to update accepted licenses to installed list config.")?;
 
         if actions.is_empty() {
             // nothing to do
