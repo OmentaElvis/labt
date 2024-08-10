@@ -108,10 +108,6 @@ pub struct InstallArgs {
     /// The display name. Use this only to further disambiguate packages with same path and version.
     #[arg(long)]
     display_name: Option<String>,
-    /// Accept license if available
-    #[arg(long, action)]
-    accept: bool,
-    #[arg(long)]
     /// The host platform to select. Format: <Os[;bit]> e.g. linux;64. Defaults to native os.
     host_os: Option<String>,
     /// The base url to download this package from. The target archive file path is appended to the end of this.
