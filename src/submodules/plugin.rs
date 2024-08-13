@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     env::current_dir,
     fs::{create_dir_all, File},
     io::Write,
@@ -223,16 +224,10 @@ pub fn create_new_plugin(
     let plugin = PluginToml {
         name: name.clone(),
         version: version.clone(),
-        stage: crate::plugin::config::Stage {
-            pre: None,
-            aapt: None,
-            compile: None,
-            dex: None,
-            bundle: None,
-            post: None,
-        },
+        stages: HashMap::default(),
         path: PathBuf::new(),
         package_paths: None,
+        sdk: Vec::new(),
     };
 
     let mut path = if local_plugin {
@@ -255,7 +250,7 @@ pub fn create_new_plugin(
         }
     };
 
-    let doc = toml_edit::ser::to_document(&plugin).context("Failed to serialize plugin config")?;
+    let doc = plugin.to_string();
     path.push("plugin.toml");
     let mut file =
         File::create(&path).context(format!("Failed to create plugin file at {:?}", path))?;

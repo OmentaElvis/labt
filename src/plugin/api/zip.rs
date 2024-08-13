@@ -374,12 +374,8 @@ fn open(lua: &Lua, file: String) {
     Ok(zipinfo)
 }
 
-#[labt_lua]
-fn dump(_lua: &Lua, table: Table) {
-    println!("{:#?}", table);
-    Ok(())
-}
 /// Generates zip table and loads all its api functions
+
 ///
 /// # Errors
 ///
@@ -391,7 +387,6 @@ pub fn load_zip_table(lua: &mut Lua) -> anyhow::Result<()> {
     new(lua, &table)?;
     new_append(lua, &table)?;
     open(lua, &table)?;
-    dump(lua, &table)?;
 
     lua.globals().set("zip", table)?;
     Ok(())

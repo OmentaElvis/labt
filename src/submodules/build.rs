@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    fmt::Display,
     path::{Path, PathBuf},
 };
 
@@ -47,6 +48,18 @@ pub enum Step {
     /// POST compilation step. Run, create a release file, return results to
     /// CI/CD pipeline etc.
     POST,
+}
+impl Display for Step {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Step::PRE => write!(f, "pre"),
+            Step::AAPT => write!(f, "aapt"),
+            Step::COMPILE => write!(f, "compile"),
+            Step::DEX => write!(f, "dex"),
+            Step::BUNDLE => write!(f, "bundle"),
+            Step::POST => write!(f, "post"),
+        }
+    }
 }
 
 impl Build {

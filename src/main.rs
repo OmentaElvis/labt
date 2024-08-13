@@ -184,7 +184,7 @@ fn first_run(path: &mut PathBuf) -> anyhow::Result<()> {
     // create plugins
     path.pop();
     path.push("plugins");
-    create_dir(&path)?;
+    create_dir(path)?;
 
     Ok(())
 }

@@ -54,6 +54,19 @@ pub enum ChannelType {
     #[default]
     Unset,
 }
+impl FromStr for ChannelType {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            channel_strings::STABLE => Ok(ChannelType::Stable),
+            channel_strings::BETA => Ok(ChannelType::Beta),
+            channel_strings::DEV => Ok(ChannelType::Dev),
+            channel_strings::CANARY => Ok(ChannelType::Canary),
+            "" => Ok(ChannelType::Unset),
+            _ => Ok(ChannelType::Unknown(s.to_string())),
+        }
+    }
+}
 impl From<&str> for ChannelType {
     fn from(value: &str) -> Self {
         match value {

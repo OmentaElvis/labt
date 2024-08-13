@@ -1,16 +1,61 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, rc::Rc, sync::OnceLock};
 
 use anyhow::Context;
 
 use tokio::fs::read_to_string;
 
-use crate::{get_home, submodules::build::Step};
+use crate::{
+    get_home,
+    submodules::{
+        build::Step,
+        sdk::InstalledPackage,
+        sdkmanager::{installed_list::InstalledList, ToId},
+    },
+};
 
-use self::{config::PluginToml, executable::ExecutableLua};
+use self::{
+    config::{PluginToml, SdkEntry},
+    executable::ExecutableLua,
+};
 
 pub mod api;
 pub mod config;
 pub mod executable;
+
+/// A cached value of the InstalledList. It is initialized by get installed list
+static INSTALLED_LIST: OnceLock<InstalledList> = OnceLock::new();
+/// A cached value of the InstalledList in form of a hash map. It is initialized by get_installed_list_hash
+static INSTALLED_LIST_HASH: OnceLock<HashMap<String, &InstalledPackage>> = OnceLock::new();
+
+/// Returns the list of installed packages. Caches the return value for subsequent calls.
+/// Returns an error if we fail to parse installed list toml
+pub(super) fn get_installed_list() -> anyhow::Result<&'static InstalledList> {
+    if let Some(list) = INSTALLED_LIST.get() {
+        return Ok(list);
+    }
+    let list =
+        InstalledList::parse_from_sdk().context("Failed to parse Installed sdk packages list.")?;
+    Ok(INSTALLED_LIST.get_or_init(|| list))
+}
+
+/// Returns a hashmap of installed packages. Good for fast indexing.
+/// Returns an error if we fail to get underlying installed list from `get_installed_list`
+pub(super) fn get_installed_list_hash(
+) -> anyhow::Result<&'static HashMap<String, &'static InstalledPackage>> {
+    if let Some(list) = INSTALLED_LIST_HASH.get() {
+        return Ok(list);
+    }
+
+    let installed_list =
+        get_installed_list().context("Failed to get installed sdk packages list.")?;
+
+    let mut list = HashMap::with_capacity(installed_list.packages.len());
+    for package in &installed_list.packages {
+        list.insert(package.to_id(), package);
+    }
+
+    Ok(INSTALLED_LIST_HASH.get_or_init(|| list))
+}
 
 #[derive(Debug)]
 pub struct Plugin {
@@ -23,6 +68,7 @@ pub struct Plugin {
     pub dependents: Option<(Vec<PathBuf>, Vec<PathBuf>)>,
     /// package paths
     pub package_paths: Vec<PathBuf>,
+    pub sdk_dependencies: Rc<Vec<SdkEntry>>,
 }
 
 impl Plugin {
@@ -35,11 +81,18 @@ impl Plugin {
             priority: 0,
             dependents: None,
             package_paths: vec![],
+            sdk_dependencies: Rc::new(Vec::default()),
         }
     }
     pub fn load(&self) -> anyhow::Result<ExecutableLua> {
-        let mut exe = ExecutableLua::new(self.path.clone(), &self.package_paths);
+        let mut exe = ExecutableLua::new(
+            self.path.clone(),
+            &self.package_paths,
+            Rc::clone(&self.sdk_dependencies),
+        );
         exe.set_build_step(self.step);
+        exe.load_sdk_loader()
+            .context("Failed to inject LABt android sdk loader to lua require module.")?;
         exe.load_api_tables()
             .context("Error injecting api tables into lua context")?;
         Ok(exe)
@@ -55,7 +108,9 @@ async fn load(root: PathBuf) -> anyhow::Result<PluginToml> {
     let mut path = root.clone();
     path.push("plugin.toml");
     let file_string = read_to_string(&path).await?;
-    let mut plugin: PluginToml = toml_edit::de::from_str(file_string.as_str())?;
+    let mut plugin: PluginToml = file_string
+        .parse()
+        .context("Failed to parse plugin.toml file.")?;
     plugin.path = root;
 
     Ok(plugin)

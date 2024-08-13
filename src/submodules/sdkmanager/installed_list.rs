@@ -366,7 +366,7 @@ impl Display for InstalledList {
             if let Some(dir) = &package.directory {
                 table.insert(
                     toml_strings::DIRECTORY,
-                    value(&dir.to_string_lossy().to_string()),
+                    value(dir.to_string_lossy().to_string()),
                 );
             }
             table.insert(toml_strings::URL, value(&package.url));
@@ -402,7 +402,7 @@ pub fn write_installed_list(
         if let Some(dir) = package.directory {
             table.insert(
                 toml_strings::DIRECTORY,
-                value(&dir.to_string_lossy().to_string()),
+                value(dir.to_string_lossy().to_string()),
             );
         }
         table.insert(toml_strings::URL, value(package.url));
@@ -588,6 +588,8 @@ url = "http://example.com"
         list.add_installed_package(package.clone());
 
         let toml = r#"
+accepted_licenses = []
+
 [[package]]
 path = "extras;google;auto"
 version = "2.0.0.0"
