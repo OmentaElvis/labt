@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    fmt::Display,
     path::{Path, PathBuf},
 };
 
@@ -18,7 +19,7 @@ use super::Submodule;
 // temporary, will remove if a cleaner way of passing the current step
 // to plugins is achieved
 thread_local! {
-    pub static BUILD_STEP: RefCell<Step> = RefCell::new(Step::PRE);
+    pub static BUILD_STEP: RefCell<Step> = const { RefCell::new(Step::PRE) };
 }
 
 #[derive(Clone, Args)]
@@ -47,6 +48,18 @@ pub enum Step {
     /// POST compilation step. Run, create a release file, return results to
     /// CI/CD pipeline etc.
     POST,
+}
+impl Display for Step {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Step::PRE => write!(f, "pre"),
+            Step::AAPT => write!(f, "aapt"),
+            Step::COMPILE => write!(f, "compile"),
+            Step::DEX => write!(f, "dex"),
+            Step::BUNDLE => write!(f, "bundle"),
+            Step::POST => write!(f, "post"),
+        }
+    }
 }
 
 impl Build {

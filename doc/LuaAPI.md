@@ -74,6 +74,17 @@ name="example"
 version="0.1.0"
 author="omentum"
 
+[sdk]
+build = { path = "build-tools;33.0.2", version = "33.0.2.0", channel = "stable"}
+# or a full id in format (path:version:channel)
+platform = "platforms;android-33:3.0.0.0:stable"
+
+#or some toml dot table
+[sdk.cmdtools]
+path = "platforms;android-33"
+version = "16.0.0.1"
+channel = "stable"
+
 # pre build
 [stage.pre]
 file="pre.lua"
@@ -115,6 +126,97 @@ metadata. The plugin system is still on its infancy and more functionality
 will be added as it evolves. To supplement this, the Lua instance provided
 is not sand-boxed and the plugins can utilize the full power of the Lua standard
 API.
+
+## Sdkmanager
+LABt provides a custom Lua module loader that simplifies loading SDK modules with 
+the `require` statement.
+
+### Loading SDK Modules
+To load an SDK module, use the following syntax:
+
+```lua
+local build = require("sdk:build")
+local platform = require("sdk:platform")
+```
+
+The `require` argument must be prefixed with `sdk:` followed 
+by the package name as defined in `plugin.toml`. 
+
+```toml
+#plugin.toml
+#the other configs
+[sdk]
+build = { path = "build-tools;33.0.2", version = "33.0.2.0", channel = "stable"}
+platform = "platforms;android-33:3.0.0.0:stable"
+
+#the other configs
+
+```
+This will return a table representing a virtual module.
+
+
+### Executing SDK Commands
+You can execute functions on the returned module, which maps the function 
+name to an executable within the SDK's directory. For example:
+
+```lua
+local build = require("sdk:build")
+local ok, exitcode = build.aapt2("version")
+```
+
+This will look for an executable named `aapt2` in the `
+build-tools` package directory and run it with the argument `
+version` (i.e., `aapt2 version`). The output 
+is directed to the default `stdout` and `stderr`.
+
+### Capturing Command Output
+
+If you need to capture the output of an SDK tool, prefix 
+the function name with `get_`:
+
+```lua
+local build = require("sdk:build")
+local ok, stdout, stderr = build.get_aapt2("version")
+local version
+
+if ok then
+    version = stderr  -- Note: `aapt2` outputs to `stderr`
+else
+    error(stderr)
+end
+```
+
+### Retrieving File Paths
+
+To retrieve the path to a specific file within an SDK package, 
+use the `file` function:
+
+```lua
+local platform = require("sdk:platform")
+local android_jar = platform.file("android.jar")
+
+-- `android_jar` would expand to:
+-- $LABT_HOME/sdk/platforms/android-33/android.jar
+```
+
+### Fine-Grained SDK Directory Access
+
+You can also access specific sub directories within an SDK package:
+
+```lua
+local build = require("sdk:build/lib")
+-- SDK directory is set to 'lib'
+local d8_jar = build.file("d8.jar")
+
+-- `d8_jar` would expand to:
+-- $LABT_HOME/sdk/build-tools/33.0.2/lib/d8.jar
+```
+
+### Validation and Security
+LABt performs basic validation of function names before constructing the executable path. 
+For example, function names containing `/` or `\` are rejected. This 
+validation might be expanded in the future as we implement stricter sandboxing for 
+Lua plugins.
 
 ## `labt` table
 A table named labt is injected into the global context of the plugin. This table
@@ -285,7 +387,7 @@ Returns an error if:
 ***
 
 creates the directory specified and all its parent directories if they don't already exist.
-If the path provided is relative, this functioncreates the path relative to the project root.
+If the path provided is relative, this function creates the path relative to the project root.
 Returns an error if: 
 
 - obtaining the project root directory fails
@@ -294,7 +396,7 @@ Returns an error if:
 ***
 ### `exists`
 **stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
-**arguments**: None <br>
+**arguments**: string - path <br>
 **returns**: boolean
 ***
 
@@ -302,6 +404,25 @@ Returns true if file exists and false if does not exist.
 if the file/dir in question cannot be verified to exist or not exist due
 to file system related errors, the function errors instead.
 
+***
+### `is_newer`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string - path a, string path b <br>
+**returns**: boolean
+***
+
+Returns true if:
+- file a is newer than file b
+- file b does not exist
+
+Returns false if:
+- file a does not exist (Technically b should be newer if a is missing)
+
+Note: if a folder is provided, it just checks the modification time of the folder,
+therefore it would not pick changes made to internal files/folders. If you want to check
+if files change in a folder, then select required files using `fs.glob` and scan through them.
+
+Returns an error if we fail to get the metadata of the file
 
 ***
 ### `glob`
@@ -312,13 +433,13 @@ to file system related errors, the function errors instead.
 
 Returns all files that match a globbing pattern. It returns only files that are
 readable (did not return IO errors when trying to list them) and files whose path
-string representation is a valid unicode. If you specify a relative path, it is evaluated
+string representation is a valid Unicode. If you specify a relative path, it is evaluated
 from the root of the project. <br>
 Returns an error if:
 
 - failed to parse the globbing pattern;
 - Failed to get the project root for relative paths
-- Failed to convert project root + glob pattern into unicode
+- Failed to convert project root + glob pattern into Unicode
 
 ```lua
 local java = fs.glob("app/java/**/*.java")
@@ -361,3 +482,106 @@ Logs at the warn log level
 **returns**: nil
 ***
 Logs at the error log level
+
+## `sdk` Module
+
+The `sdk` module is returned by `require("sdk:<
+package_name>")` and provides access to various properties and functions associated with the 
+SDK package. This module includes both predefined fields and dynamic functions.
+
+### Fields
+
+- **`path`**:  
+  **Type**: `string`  
+  **Description**: The unique identifier for the SDK package, derived 
+	from the `repository.xml` schema. In LABt, this path is processed by replacing `;` 
+	with `/`, and the corresponding directory tree is created during package installation.
+
+- **`version`**:  
+  **Type**: `string`  
+  **Description**: The version of the SDK package, formatted as 
+	`major.minor.micro.preview`.
+
+- **`channel`**:  
+  **Type**: `string`  
+  **Description**: The release channel of the SDK package, such 
+	as `stable`, `beta`, etc.
+
+### Functions
+
+***
+#### `file`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`  
+**arguments**: `string`  
+**returns**: `string`  
+***
+
+**Description**:  
+Returns the full path to a specified file within the SDK package. 
+The path is relative to the package's root directory.
+
+**Example Usage**:
+
+```lua
+local platform = require("sdk:platforms")
+local android_jar = platform.file("android.jar")
+```
+
+***
+#### `<dynamic_function_name>`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`  
+**arguments**: variable (depends on the executable's requirements)  
+**returns**: `(bool, number|nil)`  
+***
+
+**Description**:  
+Represents a dynamic function call mapped to an executable within the SDK package 
+directory. The function name corresponds directly to the name of the executable.
+
+**Example Usage**:
+
+```lua
+local build = require("sdk:build")
+local ok, exitcode = build.aapt2("version")  -- Executes 'aapt2 version' in the build-tools package
+```
+
+**Returns**:
+- `bool`: `true` if the executable runs successfully, 
+	`false` otherwise.
+- `number|nil`: The exit code of the executable, 
+	or `nil` if the command failed to execute.
+
+***
+#### `get_<dynamic_function_name>`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`  
+**arguments**: variable (depends on the executable's requirements)  
+**returns**: `(bool, string, string)`  
+***
+
+**Description**:  
+A variant of `<dynamic_function_name>` that captures and returns the `stdout
+` and `stderr` output of the SDK tool as strings.
+
+**Example Usage**:
+
+```lua
+local build = require("sdk:build")
+local ok, stdout, stderr = build.get_aapt2("version")
+```
+
+**Returns**:
+- `bool`: `true` if the executable runs successfully, `false` otherwise.
+- `string`: `stdout` output from the command.
+- `string`: `stderr` output from the command.
+
+### Notes on Dynamic Functions
+
+- **Dynamic Function Names**: The function names are dynamic and correspond 
+	directly to the executables in the SDK package's directory. For 
+	example, if you require the `build` SDK, calling `
+	build.aapt2("version")` would map to the `aapt2` executable in the `build-tools` directory.
+
+- **Function Name Validation**: LABt currently performs basic validation on function 
+	names to prevent the use of illegal characters (e.g., 
+	`/` or `\`). This validation may be enhanced in future versions to support 
+	stricter sandboxing for Lua plugins.

@@ -13,7 +13,7 @@ use crate::config::lock::write_lock;
 use crate::config::{get_config, get_resolvers_from_config};
 use crate::pom::Scope;
 use crate::pom::{self, Project};
-use crate::{get_project_root, MULTI_PRPGRESS_BAR};
+use crate::{get_project_root, MULTI_PROGRESS_BAR};
 
 use super::resolvers::Resolver;
 use super::resolvers::ResolverErrorKind;
@@ -422,7 +422,7 @@ impl BuildTree for ProjectWrapper {
 
 #[allow(unused)]
 async fn fetch_async(project: Project) -> anyhow::Result<Project> {
-    let client = Client::builder().user_agent("Labt/1.1").build()?;
+    let client = Client::builder().user_agent(crate::USER_AGENT).build()?;
     let maven_url = format!(
         "https://repo1.maven.org/maven2/{0}/{1}/{2}/{1}-{2}.pom",
         project.get_group_id().replace('.', "/"),
@@ -490,7 +490,7 @@ pub fn resolve(
 
     // start a new spinner progress bar and add it to the global multi progress bar
     let spinner = Rc::new(RefCell::new(
-        MULTI_PRPGRESS_BAR.with(|multi| multi.borrow().add(ProgressBar::new_spinner())),
+        MULTI_PROGRESS_BAR.with(|multi| multi.borrow().add(ProgressBar::new_spinner())),
     ));
     spinner
         .borrow()
@@ -517,6 +517,7 @@ pub fn resolve(
         .write(true)
         .read(true)
         .create(true)
+        .truncate(true)
         .open(path)
         .context("Unable to open lock file")?;
     write_lock(&mut file, &resolved)?;
