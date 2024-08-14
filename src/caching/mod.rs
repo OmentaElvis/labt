@@ -225,8 +225,7 @@ pub fn save_dependencies(deps: &Vec<ProjectDep>) -> anyhow::Result<()> {
         write_properties(project)?;
     }
     // initialize a new progressbar
-    let pb =
-        MULTI_PROGRESS_BAR.with(|multi| multi.borrow().add(ProgressBar::new(deps.len() as u64)));
+    let pb = MULTI_PROGRESS_BAR.add(ProgressBar::new(deps.len() as u64));
     // begin the download  of the dependencies
     for project in deps {
         let mut cache = Cache::from(project);
