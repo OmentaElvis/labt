@@ -1,11 +1,10 @@
 use std::{
-    cell::RefCell,
     env::current_dir,
     ffi::OsStr,
     fs::{create_dir, create_dir_all},
     io::Write,
     path::PathBuf,
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
 };
 
 use anyhow::bail;
@@ -14,6 +13,7 @@ use console::style;
 use env_logger::Env;
 use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
+use lazy_static::lazy_static;
 use log::warn;
 
 use crate::envs::HOME;
@@ -27,8 +27,8 @@ pub mod submodules;
 pub mod templating;
 pub mod tui;
 
-thread_local! {
-    pub static MULTI_PROGRESS_BAR: RefCell<MultiProgress> = RefCell::new(MultiProgress::new());
+lazy_static! {
+    pub static ref MULTI_PROGRESS_BAR: Arc<MultiProgress> = Arc::new(MultiProgress::new());
 }
 /// Initialized by get_project_root. It caches the the
 /// result of the function to prevent extra system calls
@@ -233,8 +233,8 @@ fn main() -> anyhow::Result<()> {
         })
         .build();
 
-    let multi = MULTI_PROGRESS_BAR.with(|multi| multi.borrow().clone());
-    LogWrapper::new(multi.clone(), logger).try_init()?;
+    let multi = Arc::clone(&MULTI_PROGRESS_BAR);
+    LogWrapper::new((*multi).clone(), logger).try_init()?;
 
     parse_args();
 

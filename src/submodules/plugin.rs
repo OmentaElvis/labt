@@ -158,7 +158,7 @@ pub fn fetch_plugin(
     ))?;
 
     // start a new spinner progress bar and add it to the global multi progress bar
-    let spinner = MULTI_PROGRESS_BAR.with(|multi| multi.borrow().add(ProgressBar::new_spinner()));
+    let spinner = MULTI_PROGRESS_BAR.add(ProgressBar::new_spinner());
     spinner.enable_steady_tick(Duration::from_millis(100));
     spinner.set_style(ProgressStyle::with_template("{spinner} {prefix:.blue} {wide_msg}").unwrap());
     spinner.set_prefix("Plugin");

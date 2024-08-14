@@ -823,7 +823,7 @@ pub fn extract_with_progress<P: AsRef<Path>>(
     prog: &indicatif::ProgressBar,
 ) -> anyhow::Result<()> {
     prog.set_length(archive.len() as u64);
-    prog.reset();
+
     let make_writable_dir_all = |outpath: &dyn AsRef<Path>| -> Result<(), zip::result::ZipError> {
         create_dir_all(outpath.as_ref())?;
         #[cfg(unix)]
@@ -840,91 +840,34 @@ pub fn extract_with_progress<P: AsRef<Path>>(
         Ok(())
     };
 
-    // Patched from ZipArchive::extract function
-    // The MIT License (MIT)
-    // Copyright (C) 2014 Mathijs van de Nes
-    use std::fs;
-    #[cfg(unix)]
-    let mut files_by_unix_mode = Vec::new();
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
         prog.inc(1);
-        let filepath = file
-            .enclosed_name()
-            .ok_or(zip::result::ZipError::InvalidArchive("Invalid file path"))?;
+        let mut file = archive.by_index(i)?;
 
-        let outpath = directory.as_ref().join(filepath);
+        let outpath = match file.enclosed_name() {
+            Some(path) => directory.as_ref().join(path),
+            None => continue,
+        };
 
         if file.is_dir() {
             make_writable_dir_all(&outpath)?;
             continue;
         }
-        let symlink_target = if file.is_symlink() && (cfg!(unix) || cfg!(windows)) {
-            let mut target = Vec::with_capacity(file.size() as usize);
-            file.read_exact(&mut target)?;
-            Some(target)
-        } else {
-            None
-        };
-        drop(file);
+
         if let Some(p) = outpath.parent() {
-            make_writable_dir_all(&p)
-                .context(format!("Failed to make output path ({:?}) writable", p))?;
-        }
-        if let Some(target) = symlink_target {
-            #[cfg(unix)]
-            {
-                use std::os::unix::ffi::OsStringExt;
-                let target = std::ffi::OsString::from_vec(target);
-                let target_path = directory.as_ref().join(target);
-                std::os::unix::fs::symlink(target_path, outpath.as_path())?;
+            if !p.exists() {
+                make_writable_dir_all(&p)?;
             }
-            #[cfg(windows)]
-            {
-                let Ok(target) = String::from_utf8(target) else {
-                    return Err(ZipError::InvalidArchive("Invalid UTF-8 as symlink target"));
-                };
-                let target = target.into_boxed_str();
-                let target_is_dir_from_archive =
-                    archive.shared.files.contains_key(&target) && is_dir(&target);
-                let target_path = directory.as_ref().join(OsString::from(target.to_string()));
-                let target_is_dir = if target_is_dir_from_archive {
-                    true
-                } else if let Ok(meta) = std::fs::metadata(&target_path) {
-                    meta.is_dir()
-                } else {
-                    false
-                };
-                if target_is_dir {
-                    std::os::windows::fs::symlink_dir(target_path, outpath.as_path())?;
-                } else {
-                    std::os::windows::fs::symlink_file(target_path, outpath.as_path())?;
-                }
-            }
-            continue;
         }
-        let mut file = archive.by_index(i)?;
         let mut outfile = fs::File::create(&outpath)?;
         io::copy(&mut file, &mut outfile)?;
         #[cfg(unix)]
         {
-            // Check for real permissions, which we'll set in a second pass
-            if let Some(mode) = file.unix_mode() {
-                files_by_unix_mode.push((outpath.clone(), mode));
-            }
-        }
-    }
-    #[cfg(unix)]
-    {
-        use std::cmp::Reverse;
-        use std::os::unix::fs::PermissionsExt;
+            use std::os::unix::fs::PermissionsExt;
 
-        if files_by_unix_mode.len() > 1 {
-            // Ensure we update children's permissions before making a parent unwritable
-            files_by_unix_mode.sort_by_key(|(path, _)| Reverse(path.clone()));
-        }
-        for (path, mode) in files_by_unix_mode.into_iter() {
-            fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
+            if let Some(mode) = file.unix_mode() {
+                fs::set_permissions(&outpath, fs::Permissions::from_mode(mode)).unwrap();
+            }
         }
     }
     prog.finish_and_clear();
@@ -1014,7 +957,7 @@ impl Uninstaller {
             }
         }
         let prog = if !quiet {
-            let prog = MULTI_PROGRESS_BAR.with(|m| m.borrow().add(ProgressBar::new_spinner()));
+            let prog = MULTI_PROGRESS_BAR.add(ProgressBar::new_spinner());
             prog.set_message(format!("Removing {} at ({:?}).", package.path, dir));
             Some(prog)
         } else {
@@ -1177,6 +1120,9 @@ impl Installer {
                 prog.inc(n as u64);
             }
         }
+        if let Some(prog) = prog {
+            prog.finish_and_clear();
+        }
         let digest = sha.finalize();
         Ok(format!("{:x}", digest))
     }
@@ -1210,12 +1156,13 @@ impl Installer {
             ))?;
 
         let prog = if !self.quiet {
-            Some(indicatif::ProgressBar::new(archive.get_size() as u64).with_style(
+            let prog = indicatif::ProgressBar::new(archive.get_size() as u64).with_style(
                 ProgressStyle::with_template(
                     "{spinner}[{percent}%] {bar:40} {binary_bytes_per_sec} {duration} {wide_msg}",
                 )
                 .unwrap(),
-            ))
+            );
+            Some(MULTI_PROGRESS_BAR.add(prog))
         } else {
             None
         };
@@ -1251,7 +1198,6 @@ impl Installer {
 
                 prog.inc(read as u64);
             }
-            prog.finish_and_clear();
             writer.flush().context(format!(
                 "An error occured while trying to flush remaining bytes to disk at ({:?}) at {}",
                 &output,
@@ -1271,7 +1217,7 @@ impl Installer {
             drop(reader);
         }
         // calculate checksum
-        let checksum = Self::calculate_checksum(&output, prog.clone()).context(format!(
+        let checksum = Self::calculate_checksum(&output, prog).context(format!(
             "Failed to compute sha1 checksum for ({:?})",
             &output
         ))?;
@@ -1283,9 +1229,16 @@ impl Installer {
         // unzip
         let file = File::open(&output).context("Failed to open download tmp file")?;
         let mut archive = zip::ZipArchive::new(file)?;
-        if let Some(prog) = &prog {
+        if !self.quiet {
+            let prog = indicatif::ProgressBar::new(archive.len() as u64).with_style(
+                ProgressStyle::with_template(
+                    "{spinner}[{percent}%] {bar:40} {per_sec} {duration} {wide_msg}",
+                )
+                .unwrap(),
+            );
+            let prog = MULTI_PROGRESS_BAR.add(prog);
             prog.set_message(format!("Extracting {}", target.package.get_path()));
-            extract_with_progress(&mut archive, target_path, prog).context(format!(
+            extract_with_progress(&mut archive, target_path, &prog).context(format!(
                 "Failed to unzip package archive to ({:?})",
                 target_path
             ))?;
@@ -1315,6 +1268,7 @@ impl Installer {
         client: reqwest::Client,
         target: InstallerTarget,
         prog: Option<ProgressBar>,
+        quiet: bool,
     ) -> anyhow::Result<InstalledPackage> {
         use tokio::io::AsyncWriteExt;
         let archive =
@@ -1386,7 +1340,7 @@ impl Installer {
         tokio::task::spawn_blocking(move || {
             let prog = prog;
             // calculate checksum
-            let checksum = Self::calculate_checksum(&output_file, prog.clone()).context(format!(
+            let checksum = Self::calculate_checksum(&output_file, prog).context(format!(
                 "Failed to compute sha1 checksum for ({:?})",
                 &output_file
             ))?;
@@ -1401,10 +1355,16 @@ impl Installer {
                 "Failed to open downloaded zip archive ({:?}) for {}",
                 &output_file, package_path_name
             ))?;
-            if let Some(prog) = &prog {
-                prog.reset();
+            if !quiet {
+                let prog = indicatif::ProgressBar::new(archive.len() as u64).with_style(
+                    ProgressStyle::with_template(
+                        "{spinner}[{percent}%] {bar:40} {per_sec} {duration} {wide_msg}",
+                    )
+                    .unwrap(),
+                );
+                let prog = MULTI_PROGRESS_BAR.add(prog);
                 prog.set_message(format!("Extracting {}", &package_path_name));
-                extract_with_progress(&mut archive, &extract_path, prog).context(format!(
+                extract_with_progress(&mut archive, &extract_path, &prog).context(format!(
                     "Failed to unzip package archive to ({:?})",
                     extract_path
                 ))?;
@@ -1413,9 +1373,6 @@ impl Installer {
                     "Failed to open downloaded zip archive ({:?}) for {}",
                     &output_file, package_path_name
                 ))?;
-            }
-            if let Some(prog) = &prog {
-                prog.finish_and_clear();
             }
             info!(target: SDKMANAGER_TARGET, "Extracted {} entries to ({:?}).", archive.len(), extract_path);
             Ok::<_, anyhow::Error>(())
@@ -1455,24 +1412,31 @@ impl Installer {
             for target in &self.install_targets {
                 let prog = if !quiet {
                     let prog = indicatif::ProgressBar::new(0).with_style(
-                        ProgressStyle::with_template(
-                            "{spinner}[{percent}%] {bar:40} {binary_bytes_per_sec} {duration} {wide_msg}",
-                        )
-                        .unwrap(),
-                    ).with_message("Downloading");
-                    Some(MULTI_PROGRESS_BAR.with(|multi| multi.borrow().add(prog)))
+                                ProgressStyle::with_template(
+                                    "{spinner}[{percent}%] {bar:40} {binary_bytes_per_sec} {duration} {wide_msg}",
+                                )
+                                .unwrap(),
+                            ).with_message("Downloading");
+                    Some(MULTI_PROGRESS_BAR.add(prog))
                 } else {
                     None
                 };
-                tasks.push((target.package.to_id(), tokio::spawn(Self::download_package_async(
-                    client.clone(),
-                    target.clone(),
-                    prog,
-                ))));
+                tasks.push((
+                    target.package.to_id(),
+                    tokio::spawn(Self::download_package_async(
+                        client.clone(),
+                        target.clone(),
+                        prog,
+                        self.quiet,
+                    )),
+                ));
             }
             let mut result: Vec<anyhow::Result<InstalledPackage>> = Vec::new();
             for (target, task) in tasks {
-                result.push(task.await?.context(format!("Failed to install package: {}", target)));
+                result.push(
+                    task.await?
+                        .context(format!("Failed to install package: {}", target)),
+                );
             }
 
             Ok::<Vec<anyhow::Result<InstalledPackage>>, anyhow::Error>(result)

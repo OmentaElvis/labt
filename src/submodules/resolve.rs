@@ -490,7 +490,7 @@ pub fn resolve(
 
     // start a new spinner progress bar and add it to the global multi progress bar
     let spinner = Rc::new(RefCell::new(
-        MULTI_PROGRESS_BAR.with(|multi| multi.borrow().add(ProgressBar::new_spinner())),
+        MULTI_PROGRESS_BAR.add(ProgressBar::new_spinner()),
     ));
     spinner
         .borrow()
