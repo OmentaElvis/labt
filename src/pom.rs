@@ -4,6 +4,7 @@ use quick_xml::{events::Event, Reader};
 use serde::Serialize;
 use std::io::BufReader;
 use std::io::Read;
+use std::str::FromStr;
 use tokio::io::AsyncRead;
 
 /// constants for common tags
@@ -29,6 +30,224 @@ pub enum Scope {
     SYSTEM,
     PROVIDED,
     IMPORT,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum VersionRange {
+    Gt(String),
+    Ge(String),
+    Lt(String),
+    Le(String),
+    Eq(String),
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+/// Represents the different types of version requirements for dependencies.
+///  `(,1.0]`  x <= 1.0
+/// `1.0`  "Soft" requirement on 1.0 (just a recommendation - helps select the correct version if it matches all ranges)
+/// `[1.0]` Hard requirement on 1.0
+/// `[1.2,1.3]` is 1.2 <= x <= 1.3
+/// `[1.0,2.0)` is 1.0 <= x < 2.0
+/// `[1.5,)` is x >= 1.5
+/// `(,1.0],[1.2,)` is x <= 1.0 or x >= 1.2. Multiple sets are comma-separated
+/// `(,1.1),(1.1,)` is This excludes 1.1 if it is known not to work in combination with this library
+pub enum VersionRequirement {
+    /// Soft requirement for a specific version.
+    ///
+    /// This indicates a preference for the specified version, but allows
+    /// for other versions to be used if they are required by other dependencies.
+    ///
+    /// Example: `1.0`
+    Soft(String),
+
+    Hard(Vec<VersionRange>),
+
+    #[default]
+    // The version was never set, so we should try to use already available hard
+    // or the latest available
+    Unset,
+}
+
+impl FromStr for VersionRequirement {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> std::prelude::v1::Result<Self, Self::Err> {
+        let s = s.trim();
+
+        if s.is_empty() {
+            return Ok(VersionRequirement::Unset);
+        }
+        if !s.starts_with('(') && !s.starts_with('[') {
+            return Ok(VersionRequirement::Soft(s.to_string()));
+        }
+
+        let mut versions = Vec::new();
+
+        #[derive(Debug)]
+        enum VersionParserState {
+            InequalityStart,
+            EqualityStart,
+            Lt,
+            Gt,
+            Eq,
+            Start,
+        }
+
+        let mut current_state = VersionParserState::Start;
+        let mut start_index = 0;
+        println!(">>> {}", s);
+
+        for (i, c) in s.chars().enumerate() {
+            println!("{i} {} {:?}", c, current_state);
+            match current_state {
+                VersionParserState::Start => match c {
+                    '(' => current_state = VersionParserState::InequalityStart,
+                    '[' => current_state = VersionParserState::EqualityStart,
+                    _ => {}
+                },
+                VersionParserState::InequalityStart => match c {
+                    ',' => {
+                        current_state = VersionParserState::Lt;
+                        start_index = i + 1;
+                    }
+                    ' ' => {
+                        continue;
+                    }
+                    _ => {
+                        current_state = VersionParserState::Gt;
+                        start_index = i;
+                    }
+                },
+                VersionParserState::EqualityStart => match c {
+                    ' ' => {
+                        continue;
+                    }
+                    _ => {
+                        current_state = VersionParserState::Eq;
+                        start_index = i;
+                    }
+                },
+                VersionParserState::Eq => match c {
+                    ',' => {
+                        // peek on next char
+                        let chars = s.chars().skip(i + 1);
+
+                        for n in chars {
+                            if n == ' ' {
+                                continue;
+                            }
+                            if n != ')' {
+                                versions.push(VersionRange::Ge(
+                                    s[start_index..i]
+                                        .trim()
+                                        .trim_end_matches(',')
+                                        .trim_end()
+                                        .to_string(),
+                                ));
+                                current_state = VersionParserState::Lt;
+                                start_index = i + 1;
+                                break;
+                            }
+                        }
+                    }
+                    ')' => {
+                        versions.push(VersionRange::Ge(
+                            s[start_index..i - 1]
+                                .trim()
+                                .trim_end_matches(',')
+                                .trim_end()
+                                .to_string(),
+                        ));
+                        current_state = VersionParserState::Start;
+                    }
+                    // just eq =
+                    ']' => {
+                        versions.push(VersionRange::Eq(
+                            s[start_index..i]
+                                .trim()
+                                .trim_end_matches(',')
+                                .trim_end()
+                                .to_string(),
+                        ));
+                        current_state = VersionParserState::Start;
+                    }
+                    _ => {}
+                },
+                VersionParserState::Lt => match c {
+                    // just <
+                    ')' => {
+                        versions.push(VersionRange::Lt(
+                            s[start_index..i]
+                                .trim()
+                                .trim_end_matches(',')
+                                .trim_end()
+                                .to_string(),
+                        ));
+                        current_state = VersionParserState::Start; // reset
+                    }
+                    // just <=
+                    ']' => {
+                        versions.push(VersionRange::Le(
+                            s[start_index..i]
+                                .trim()
+                                .trim_end_matches(',')
+                                .trim_end()
+                                .to_string(),
+                        ));
+                        current_state = VersionParserState::Start; // reset
+                    }
+                    _ => {}
+                },
+                VersionParserState::Gt => match c {
+                    ',' => {
+                        // peak on next character, but the next character might be space
+                        let chars = s.chars().skip(i + 1);
+                        for n in chars {
+                            if n == ' ' {
+                                continue; // a whitespace
+                            }
+                            if n != ')' {
+                                versions.push(VersionRange::Gt(
+                                    s[start_index..i]
+                                        .trim()
+                                        .trim_end_matches(',')
+                                        .trim_end()
+                                        .to_string(),
+                                ));
+                                current_state = VersionParserState::Lt;
+                                start_index = i + 1;
+                                break;
+                            }
+                        }
+                    }
+                    // just >
+                    ')' => {
+                        versions.push(VersionRange::Gt(
+                            s[start_index..i - 1]
+                                .trim()
+                                .trim_end_matches(',')
+                                .trim_end()
+                                .to_string(),
+                        ));
+                        current_state = VersionParserState::Start; // reset
+                    }
+                    // just >=
+                    ']' => {
+                        versions.push(VersionRange::Ge(
+                            s[start_index..i]
+                                .trim()
+                                .trim_end_matches(',')
+                                .trim_end()
+                                .to_string(),
+                        ));
+                        current_state = VersionParserState::Start;
+                    }
+                    _ => {}
+                },
+            }
+        }
+
+        Ok(VersionRequirement::Hard(versions))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -524,5 +743,271 @@ pub async fn parse_pom_async<R: AsyncRead + Unpin>(
     }
 
     Ok(parser.project)
+}
+
+#[test]
+fn parse_pom_version_requirements() {
+    let soft = "1.0";
+    let lt = "(,1.0)";
+    let le = "(,1.0]";
+    let gt = "(1.0,)";
+    let ge = "[1.0,)";
+    let eq = "[1.0]";
+    let incle = "[1.0,2.0]";
+    let inc2 = "[1.0,2.0)";
+    let inc3 = "(1.0,2.0]";
+    let incl = "(1.0,2.0)";
+    let or = "(,1.0],[1.2,)";
+    let not = "(,1.1),(1.1,)";
+
+    assert_eq!(
+        soft.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Soft(String::from("1.0"))
+    );
+
+    assert_eq!(
+        lt.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Lt(String::from("1.0"))])
+    );
+    assert_eq!(
+        le.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Le(String::from("1.0"))])
+    );
+    assert_eq!(
+        gt.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Gt(String::from("1.0"))])
+    );
+    assert_eq!(
+        ge.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Ge(String::from("1.0"))])
+    );
+    assert_eq!(
+        eq.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Eq(String::from("1.0"))])
+    );
+    assert_eq!(
+        incle.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Ge(String::from("1.0")),
+            VersionRange::Le(String::from("2.0"))
+        ])
+    );
+    assert_eq!(
+        incl.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Gt(String::from("1.0")),
+            VersionRange::Lt(String::from("2.0"))
+        ])
+    );
+    assert_eq!(
+        inc2.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Ge(String::from("1.0")),
+            VersionRange::Lt(String::from("2.0"))
+        ])
+    );
+    assert_eq!(
+        inc3.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Gt(String::from("1.0")),
+            VersionRange::Le(String::from("2.0"))
+        ])
+    );
+    assert_eq!(
+        or.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Le(String::from("1.0")),
+            VersionRange::Ge(String::from("1.2"))
+        ])
+    );
+    assert_eq!(
+        not.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Lt(String::from("1.1")),
+            VersionRange::Gt(String::from("1.1"))
+        ])
+    );
+
+    // with spaces
+    let inc2 = "[1.0,2.0)";
+    let inc3 = "(1.0,2.0]";
+    let incl = "(1.0,2.0)";
+    let or = "( , 1.0] , [1.2 , )";
+    let not = "( , 1.1) , (1.1 , )";
+
+    // softies
+    let soft = "   1.0";
+    let soft2 = "1.0   ";
+    let soft3 = "   1.0   ";
+
+    assert_eq!(
+        soft.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Soft(String::from("1.0"))
+    );
+    assert_eq!(
+        soft2.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Soft(String::from("1.0"))
+    );
+    assert_eq!(
+        soft3.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Soft(String::from("1.0"))
+    );
+
+    // lt
+    let lt = "(, 1.0)";
+    let lt2 = "(,1.0  )";
+    let lt3 = "(  ,1.0  )";
+    assert_eq!(
+        lt.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Lt(String::from("1.0"))])
+    );
+    assert_eq!(
+        lt2.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Lt(String::from("1.0"))])
+    );
+    assert_eq!(
+        lt3.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Lt(String::from("1.0"))])
+    );
+
+    // le
+    let le = "(, 1.0]";
+    let le2 = "(,1.0 ] ";
+    let le3 = "(  ,1.0  ]";
+
+    assert_eq!(
+        le.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Le(String::from("1.0"))])
+    );
+    assert_eq!(
+        le2.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Le(String::from("1.0"))])
+    );
+    assert_eq!(
+        le3.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Le(String::from("1.0"))])
+    );
+
+    // gt
+    let gt = "( 1.0,)";
+    let gt2 = "(1.0,  )";
+    let gt3 = "(  1.0 , )";
+
+    assert_eq!(
+        gt.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Gt(String::from("1.0"))])
+    );
+    assert_eq!(
+        gt2.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Gt(String::from("1.0"))])
+    );
+    assert_eq!(
+        gt3.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Gt(String::from("1.0"))])
+    );
+
+    // ge
+    let ge = "[  1.0,)  ";
+
+    assert_eq!(
+        ge.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Ge(String::from("1.0"))])
+    );
+    let ge = "[1.0,  )";
+    assert_eq!(
+        ge.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Ge(String::from("1.0"))])
+    );
+    let ge = "[  1.0,  )";
+    assert_eq!(
+        ge.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Ge(String::from("1.0"))])
+    );
+
+    // eq
+    let eq = "[ 1.0]";
+    assert_eq!(
+        eq.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Eq(String::from("1.0"))])
+    );
+    let eq = "[1.0  ]";
+    assert_eq!(
+        eq.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Eq(String::from("1.0"))])
+    );
+    let eq = "[  1.0  ]";
+    assert_eq!(
+        eq.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![VersionRange::Eq(String::from("1.0"))])
+    );
+
+    let incle = "[  1.0,2.0]";
+    assert_eq!(
+        incle.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Ge(String::from("1.0")),
+            VersionRange::Le(String::from("2.0"))
+        ])
+    );
+    let incle = "[  1.0,  2.0]";
+    assert_eq!(
+        incle.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Ge(String::from("1.0")),
+            VersionRange::Le(String::from("2.0"))
+        ])
+    );
+    let incle = "[  1.0,  2.0  ]";
+    assert_eq!(
+        incle.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Ge(String::from("1.0")),
+            VersionRange::Le(String::from("2.0"))
+        ])
+    );
+    let incle = "[  1.0,2.0  ]";
+    assert_eq!(
+        incle.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Ge(String::from("1.0")),
+            VersionRange::Le(String::from("2.0"))
+        ])
+    );
+    assert_eq!(
+        incl.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Gt(String::from("1.0")),
+            VersionRange::Lt(String::from("2.0"))
+        ])
+    );
+
+    assert_eq!(
+        inc2.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Ge(String::from("1.0")),
+            VersionRange::Lt(String::from("2.0"))
+        ])
+    );
+    assert_eq!(
+        inc3.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Gt(String::from("1.0")),
+            VersionRange::Le(String::from("2.0"))
+        ])
+    );
+    assert_eq!(
+        or.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Le(String::from("1.0")),
+            VersionRange::Ge(String::from("1.2"))
+        ])
+    );
+    assert_eq!(
+        not.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Lt(String::from("1.1")),
+            VersionRange::Gt(String::from("1.1"))
+        ])
+    );
 }
 // su
