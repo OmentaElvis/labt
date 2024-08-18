@@ -1,7 +1,10 @@
 use std::io::{BufReader, Read};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use quick_xml::{events::Event, Reader};
+use version_compare::Cmp;
+
+use crate::pom::VersionRequirement;
 
 const METADATA: &[u8] = b"metadata";
 const GROUP_ID: &[u8] = b"groupId";
@@ -11,6 +14,8 @@ const LATEST: &[u8] = b"latest";
 const RELEASE: &[u8] = b"release";
 const VERSIONS: &[u8] = b"versions";
 const VERSION: &[u8] = b"version";
+const NO_SELECTABLE_VERSION_ERROR: &str =
+    "No appropriate version could be selected from maven-metadata.xml";
 
 /// The maven metadata xml object
 /// check more at [maven repository metadata reference](https://maven.apache.org/ref/3.9.6/maven-repository-metadata/repository-metadata.html)
@@ -18,22 +23,22 @@ const VERSION: &[u8] = b"version";
 pub struct MavenMetadata {
     /// group id under
     ///<groupId></groupId>
-    group_id: String,
+    pub group_id: String,
     /// artifact id under
     ///<artifactId></artifactId>
-    artifact_id: String,
+    pub artifact_id: String,
     /// versions under
     /// <versions></versions>
-    versions: Vec<String>,
+    pub versions: Vec<String>,
     /// version number under metadata
     /// <version></version>
-    version: Option<String>,
+    pub version: Option<String>,
     /// The latest version
     /// <latest></latest>
-    latest: Option<String>,
+    pub latest: Option<String>,
     /// The release version
     /// <release></release>
-    release: Option<String>,
+    pub release: Option<String>,
 }
 
 impl MavenMetadata {
@@ -45,6 +50,141 @@ impl MavenMetadata {
             version: None,
             latest: None,
             release: None,
+        }
+    }
+    /// chooses appropriate version based on constraints
+    /// If a soft version is specified, we immediately return it
+    /// If no target version is select, we return release version or latest version if release is not set.
+    /// If a hard version is specified we match through all available versions and filter out unwanted versions
+    /// If no appropriate version is found we return an error
+    pub fn select_version(&self, constraints: &VersionRequirement) -> anyhow::Result<String> {
+        match constraints {
+            VersionRequirement::Soft(version) => Ok(version.clone()),
+            VersionRequirement::Unset => {
+                if let Some(release) = &self.release {
+                    Ok(release.clone())
+                } else if let Some(latest) = &self.latest {
+                    return Ok(latest.clone());
+                } else if self.versions.is_empty() {
+                    bail!(NO_SELECTABLE_VERSION_ERROR);
+                } else {
+                    // try to select the latest version
+                    let mut versions = self.versions.clone();
+                    versions.sort_unstable_by(|a, b| match version_compare::compare(b, a) {
+                        Ok(order) => match order {
+                            Cmp::Eq | Cmp::Le | Cmp::Ge => std::cmp::Ordering::Equal,
+                            Cmp::Lt => std::cmp::Ordering::Less,
+                            Cmp::Gt => std::cmp::Ordering::Greater,
+                            Cmp::Ne => {
+                                // what ami supposed to do with this,
+                                std::cmp::Ordering::Less
+                            }
+                        },
+                        Err(_) => {
+                            //TODO very unfortunate we have to panic
+                            unreachable!();
+                        }
+                    });
+
+                    return Ok(versions.first().unwrap().to_owned());
+                }
+            }
+            VersionRequirement::Hard(hard_constraints) => {
+                // filter through versions while short circuiting to reduce checks
+                let mut versions: Vec<&String> = self
+                    .versions
+                    .iter()
+                    .filter(|version| {
+                        // for each version check that it matches all constraints. Reject it on first failure.
+                        for c in hard_constraints {
+                            // version compare does return a Result for invalid versions. for now ignore the error and filter out the package
+                            match c {
+                                crate::pom::VersionRange::Eq(target_version) => {
+                                    if !version_compare::compare_to(
+                                        version,
+                                        target_version,
+                                        Cmp::Eq,
+                                    )
+                                    .unwrap_or(false)
+                                    {
+                                        return false;
+                                    }
+                                }
+                                crate::pom::VersionRange::Gt(target_version) => {
+                                    if !version_compare::compare_to(
+                                        version,
+                                        target_version,
+                                        Cmp::Gt,
+                                    )
+                                    .unwrap_or(false)
+                                    {
+                                        return false;
+                                    }
+                                }
+                                crate::pom::VersionRange::Ge(target_version) => {
+                                    if !version_compare::compare_to(
+                                        version,
+                                        target_version,
+                                        Cmp::Ge,
+                                    )
+                                    .unwrap_or(false)
+                                    {
+                                        return false;
+                                    }
+                                }
+                                crate::pom::VersionRange::Lt(target_version) => {
+                                    if !version_compare::compare_to(
+                                        version,
+                                        target_version,
+                                        Cmp::Lt,
+                                    )
+                                    .unwrap_or(false)
+                                    {
+                                        return false;
+                                    }
+                                }
+                                crate::pom::VersionRange::Le(target_version) => {
+                                    if !version_compare::compare_to(
+                                        version,
+                                        target_version,
+                                        Cmp::Le,
+                                    )
+                                    .unwrap_or(false)
+                                    {
+                                        return false;
+                                    }
+                                }
+                            }
+                        }
+                        true
+                    })
+                    .collect();
+
+                if versions.is_empty() {
+                    bail!("No appropriate version could be selected from maven-metadata.xml");
+                }
+
+                versions.sort_unstable_by(|a, b| match version_compare::compare(b, a) {
+                    Ok(order) => match order {
+                        Cmp::Eq | Cmp::Le | Cmp::Ge => std::cmp::Ordering::Equal,
+                        Cmp::Lt => std::cmp::Ordering::Less,
+                        Cmp::Gt => std::cmp::Ordering::Greater,
+                        Cmp::Ne => {
+                            // what ami supposed to do with this,
+                            std::cmp::Ordering::Less
+                        }
+                    },
+                    Err(_) => {
+                        //TODO very unfortunate we have to panic
+                        unreachable!();
+                    }
+                });
+
+                // select the latest of the selected.
+                let first = versions.first().unwrap().to_owned();
+
+                Ok(first.clone())
+            }
         }
     }
 }
@@ -306,4 +446,88 @@ fn maven_metadata_parsing() {
     };
 
     assert_eq!(metadata, expected);
+}
+
+#[test]
+fn maven_metadata_select_version() {
+    let metadata = MavenMetadata {
+        group_id: "com.gitlab.labt".to_string(),
+        artifact_id: "labt".to_string(),
+        version: Some("6.9.0".to_string()),
+        latest: Some("6.9.1-SNAPSHOT".to_string()),
+        release: Some("6.9.0".to_string()),
+        versions: vec![
+            "6.9.1-SNAPSHOT".to_string(),
+            "6.9.0".to_string(),
+            "6.8.4".to_string(),
+            "6.8.2".to_string(),
+            "6.8.0".to_string(),
+            "6.7.0".to_string(),
+            "6.6.0".to_string(),
+            "5.9.0".to_string(),
+            "5.8.4".to_string(),
+            "5.8.2".to_string(),
+            "5.8.0".to_string(),
+            "5.7.0".to_string(),
+            "5.6.0".to_string(),
+            "4.9.0".to_string(),
+            "4.8.4".to_string(),
+            "4.8.2".to_string(),
+            "4.8.0".to_string(),
+            "4.7.0".to_string(),
+            "4.6.0".to_string(),
+        ],
+    };
+
+    assert_eq!(
+        metadata
+            .select_version(&"5.9".parse::<VersionRequirement>().unwrap())
+            .unwrap(),
+        "5.9".to_string()
+    );
+    // eq
+    assert_eq!(
+        metadata
+            .select_version(&"[5.9]".parse::<VersionRequirement>().unwrap())
+            .unwrap(),
+        "5.9.0".to_string()
+    );
+    // Le
+    assert_eq!(
+        metadata
+            .select_version(&"(,5.9]".parse::<VersionRequirement>().unwrap())
+            .unwrap(),
+        "5.9.0".to_string()
+    );
+    // Lt
+    assert_eq!(
+        metadata
+            .select_version(&"(,5.9)".parse::<VersionRequirement>().unwrap())
+            .unwrap(),
+        "5.8.4".to_string()
+    );
+    // Ge
+    assert_eq!(
+        metadata
+            .select_version(&"[5.9,)".parse::<VersionRequirement>().unwrap())
+            .unwrap(),
+        "6.9.1-SNAPSHOT".to_string()
+    );
+
+    // Gt
+    assert_eq!(
+        metadata
+            .select_version(&"(5.9,)".parse::<VersionRequirement>().unwrap())
+            .unwrap(),
+        "6.9.1-SNAPSHOT".to_string()
+    );
+    // impossible
+    assert!(metadata
+        .select_version(&"(6.9.1,)".parse::<VersionRequirement>().unwrap())
+        .is_err());
+
+    assert_eq!(
+        metadata.select_version(&VersionRequirement::Unset).unwrap(),
+        "6.9.0".to_string()
+    );
 }

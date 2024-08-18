@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::fs::File;
-use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -15,23 +14,18 @@ use crate::pom::Scope;
 use crate::pom::{self, Project};
 use crate::{get_project_root, MULTI_PROGRESS_BAR};
 
-use super::resolvers::Resolver;
 use super::resolvers::ResolverErrorKind;
+use super::resolvers::{Resolver, CACHE_REPO_STR};
 use super::Submodule;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
 use anyhow::Result;
 use clap::Args;
-use futures_util::TryStreamExt;
 use indicatif::ProgressBar;
 use indicatif::ProgressStyle;
 use log::info;
-use pom::parse_pom_async;
-use reqwest::Client;
 use serde::Serialize;
-use tokio::io::BufReader;
-use tokio_util::io::StreamReader;
 
 #[derive(Args, Clone)]
 pub struct ResolveArgs {
@@ -56,7 +50,9 @@ impl Submodule for Resolve {
             let dependencies: Vec<Project> = deps
                 .iter()
                 .map(|(artifact_id, table)| {
-                    Project::new(&table.group_id, artifact_id, &table.version)
+                    let mut p = Project::new(&table.group_id, artifact_id, &table.version);
+                    p.set_selected_version(Some(table.version.clone()));
+                    p
                 })
                 .collect();
             let resolvers =
@@ -115,28 +111,31 @@ impl PartialOrd for ProjectDep {
     }
 }
 
-impl From<&Project> for ProjectDep {
-    fn from(project: &Project) -> Self {
-        ProjectDep {
+impl TryFrom<&Project> for ProjectDep {
+    type Error = anyhow::Error;
+    fn try_from(project: &Project) -> std::prelude::v1::Result<Self, Self::Error> {
+        let mut deps = Vec::new();
+        for p in project.get_dependencies() {
+            deps.push(p.qualified_name().context(format!(
+                "Version not resolved for package {}:{} on dependency {}:{}",
+                project.get_group_id(),
+                p.get_artifact_id(),
+                p.get_group_id(),
+                p.get_artifact_id()
+            ))?);
+        }
+        Ok(ProjectDep {
             artifact_id: project.get_artifact_id(),
             group_id: project.get_group_id(),
-            version: project.get_version(),
+            version: project
+                .get_selected_version()
+                .clone()
+                .context("Version not set for package")?,
             scope: project.get_scope(),
             packaging: project.get_packaging(),
-            dependencies: project
-                .get_dependencies()
-                .iter()
-                .map(|dep| {
-                    format!(
-                        "{}:{}:{}",
-                        dep.get_group_id(),
-                        dep.get_artifact_id(),
-                        dep.get_version()
-                    )
-                })
-                .collect(),
+            dependencies: deps,
             ..Default::default()
-        }
+        })
     }
 }
 
@@ -230,7 +229,7 @@ impl ProjectWrapper {
                 Ok(base_url) => {
                     url = base_url;
                     found = true;
-                    cache_hit = resolver.get_name() == *"cache";
+                    cache_hit = resolver.get_name() == CACHE_REPO_STR;
                     break;
                 }
             }
@@ -240,11 +239,61 @@ impl ProjectWrapper {
         if !found {
             bail!(
                 "Dependency \"{}\" not found on all configured resolvers",
-                self.project.qualified_name()
+                self.project.qualified_name()?
             );
         }
 
         Ok((url, cache_hit))
+    }
+
+    fn compute_version(
+        resolvers: Rc<RefCell<Vec<Box<dyn Resolver>>>>,
+        dep: &Project,
+    ) -> anyhow::Result<String> {
+        let mut found = false;
+        let mut version = String::new();
+
+        for resolver in resolvers.borrow_mut().iter() {
+            match resolver.calculate_version(dep) {
+                Err(err) => match err.kind() {
+                    ResolverErrorKind::NotFound => continue,
+                    ResolverErrorKind::NoSelectedVersion => {
+                        // metadata was found but no correct version was found
+                        if resolver.get_name() == CACHE_REPO_STR {
+                            // Maybe the cache is stale, ignore this and continue to net resolvers
+                            continue;
+                        } else {
+                            // now this is an error
+                            return Err(anyhow!(err).context("Failed to select correct version."));
+                        }
+                    }
+                    _ => {
+                        return Err(anyhow!(err).context(format!(
+                            "Error while trying to compute dependency version on {} resolver",
+                            resolver.get_name()
+                        )));
+                    }
+                },
+                Ok(m_version) => {
+                    found = true;
+                    if resolver.get_name() == CACHE_REPO_STR {
+                        log::trace!(target: "fetch", "Version for {}:{} resolved from cache as {m_version}. ", dep.get_group_id(), dep.get_artifact_id());
+                    }
+                    version = m_version;
+                    break;
+                }
+            }
+        }
+        // we failed to fetch dependency across all configured resolvers
+        if !found {
+            bail!(
+                "No correct version could be selected for \"{}:{}\" on all configured resolvers",
+                dep.get_group_id(),
+                dep.get_artifact_id()
+            );
+        }
+
+        Ok(version)
     }
 }
 
@@ -263,17 +312,36 @@ impl BuildTree for ProjectWrapper {
         resolved: &mut Vec<ProjectDep>,
         unresolved: &mut Vec<String>,
     ) -> anyhow::Result<()> {
-        // push this project to unresolved
-        unresolved.push(self.project.qualified_name());
-        if let Some(prog) = &self.progress {
-            let prog = prog.borrow();
-            prog.set_message(format!(" {} ", self.project.qualified_name()));
-            prog.set_prefix("Fetching");
-        }
-        info!(target: "fetch", "{}:{}:{} scope {:?}",
+        let selected_version_err = |group_id, artifact_id| {
+            anyhow!(
+                "No selected version set for package {}:{}",
+                group_id,
+                artifact_id
+            )
+        };
+        let qualified_name = self.project.qualified_name().context(selected_version_err(
             self.project.get_group_id(),
             self.project.get_artifact_id(),
-            self.project.get_version(),
+        ))?;
+        let version = self
+            .project
+            .get_selected_version()
+            .clone()
+            .context(selected_version_err(
+                self.project.get_group_id(),
+                self.project.get_artifact_id(),
+            ))?;
+
+        // push this project to unresolved
+        unresolved.push(qualified_name.clone());
+
+        if let Some(prog) = &self.progress {
+            let prog = prog.borrow();
+            prog.set_message(format!(" {} ", qualified_name));
+            prog.set_prefix("Fetching");
+        }
+        info!(target: "fetch", "{} scope {:?}",
+            qualified_name,
             self.project.get_scope(),
         );
         // before we even proceed to do this "expensive" fetch just confirm this isn't a
@@ -283,7 +351,7 @@ impl BuildTree for ProjectWrapper {
                 && res.artifact_id == self.project.get_artifact_id()
         }) {
             // now check version for possible conflicts
-            match version_compare::compare(&res.version, self.project.get_version()) {
+            match version_compare::compare(&res.version, &version) {
                 Ok(v) => match v {
                     version_compare::Cmp::Eq => {
                         // the versions are same, so skip resolving
@@ -299,14 +367,13 @@ impl BuildTree for ProjectWrapper {
                     version_compare::Cmp::Lt | version_compare::Cmp::Le => {
                         // dependency version conflict, so replace the already resolved version with the latesr
                         // version and proceed to resolve for this version
-                        resolved[index].version = self.project.get_version();
+                        resolved[index].version = version;
                     }
                 },
                 Err(_) => {
                     return Err(anyhow!(format!(
                         "Invalid versions string. Either {} or {} is invalid",
-                        res.version,
-                        self.project.get_version()
+                        res.version, version
                     )));
                 }
             }
@@ -314,7 +381,7 @@ impl BuildTree for ProjectWrapper {
         // fetch the dependencies of this project
         let (url, cache_hit) = self.fetch().context(format!(
             "Error fetching {} scope {:?}",
-            self.project.qualified_name(),
+            qualified_name,
             self.project.get_scope(),
         ))?;
 
@@ -361,13 +428,25 @@ impl BuildTree for ProjectWrapper {
             true // this particular guy survived, such a waster of clock cycles, good for it
         });
 
-        for dep in self.project.get_dependencies() {
+        for dep in self.project.get_dependencies_mut() {
+            // use version resolvers to compute the version of this dependency if needed
+            let version =
+                Self::compute_version(Rc::clone(&self.resolvers), dep).context(format!(
+                    "Failed to calculate a version for dependency {}:{}.", // the artifact might even not exist
+                    dep.get_group_id(),
+                    dep.get_artifact_id()
+                ))?;
+            // from here now on we have a version for even the recursive calls, therefore there should be no complaints
+            dep.set_selected_version(Some(version.clone()));
+
             // TODO remove this since it is redundant, but for some reason it breaks everything
             if let Some((index, res)) = resolved.iter_mut().enumerate().find(|(_, res)| {
                 res.group_id == dep.get_group_id() && res.artifact_id == dep.get_artifact_id()
             }) {
+                // if the incoming dependency version is soft override
+
                 // now check version for possible conflicts
-                match version_compare::compare(&res.version, dep.get_version()) {
+                match version_compare::compare(&res.version, &version) {
                     Ok(v) => match v {
                         version_compare::Cmp::Eq => {
                             // the versions are same, so skip resolving
@@ -383,20 +462,19 @@ impl BuildTree for ProjectWrapper {
                         version_compare::Cmp::Lt | version_compare::Cmp::Le => {
                             // dependency version conflict, so replace the already resolved version with the latesr
                             // version and proceed to resolve for this version
-                            resolved[index].version = dep.get_version();
+                            resolved[index].version = version;
                         }
                     },
                     Err(_) => {
                         return Err(anyhow!(format!(
                             "Invalid versions string. Either {} or {} is invalid",
-                            res.version,
-                            dep.get_version()
+                            res.version, version
                         )));
                     }
                 }
             }
 
-            if unresolved.contains(&dep.qualified_name()) {
+            if unresolved.contains(&dep.qualified_name()?) {
                 // Circular dep, if encountered,
                 // TODO check config for ignore, warn, or Error
                 return Ok(());
@@ -412,47 +490,14 @@ impl BuildTree for ProjectWrapper {
         unresolved.pop();
 
         // add this project to list of resolved
-        let mut project = ProjectDep::from(&self.project);
+        let mut project = ProjectDep::try_from(&self.project).context(selected_version_err(
+            self.project.get_group_id(),
+            self.project.get_artifact_id(),
+        ))?;
         project.base_url = url;
         project.cache_hit = cache_hit;
         resolved.push(project);
         Ok(())
-    }
-}
-
-#[allow(unused)]
-async fn fetch_async(project: Project) -> anyhow::Result<Project> {
-    let client = Client::builder().user_agent(crate::USER_AGENT).build()?;
-    let maven_url = format!(
-        "https://repo1.maven.org/maven2/{0}/{1}/{2}/{1}-{2}.pom",
-        project.get_group_id().replace('.', "/"),
-        project.get_artifact_id(),
-        project.get_version(),
-    );
-    let _google_url = format!(
-        "https://maven.google.com/{0}/{1}/{2}/{1}-{2}.pom",
-        project.get_group_id().replace('.', "/"),
-        project.get_artifact_id(),
-        project.get_version(),
-    );
-
-    let response = client.get(maven_url).send().await?;
-
-    if response.status().is_success() {
-        let stream = response
-            .bytes_stream()
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err));
-        let reader = BufReader::new(StreamReader::new(stream));
-        let p = parse_pom_async(reader, project).await?;
-        Ok(p)
-    } else {
-        Err(anyhow!(format!(
-            "{} Failed to resolve: {}:{}:{}",
-            response.status(),
-            project.get_artifact_id(),
-            project.get_group_id(),
-            project.get_version()
-        )))
     }
 }
 

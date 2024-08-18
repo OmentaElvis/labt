@@ -174,12 +174,10 @@ fn get_project_root_recursive(current_dir: PathBuf) -> std::io::Result<PathBuf> 
 /// it is assumed to be a first run if labt home does not exist
 fn first_run(path: &mut PathBuf) -> anyhow::Result<()> {
     path.push(".labt");
-    // create .labt folder
-    create_dir_all(&path)?;
-
-    // create cache dir
     path.push("cache");
-    create_dir(&path)?;
+    // create .labt folder and
+    // create cache dir
+    create_dir_all(path.clone())?;
 
     // create plugins
     path.pop();

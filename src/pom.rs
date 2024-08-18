@@ -32,7 +32,7 @@ pub enum Scope {
     IMPORT,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum VersionRange {
     Gt(String),
     Ge(String),
@@ -41,7 +41,7 @@ pub enum VersionRange {
     Eq(String),
 }
 
-#[derive(Default, Debug, PartialEq, Eq)]
+#[derive(Default, Debug, PartialEq, Eq, Clone)]
 /// Represents the different types of version requirements for dependencies.
 ///  `(,1.0]`  x <= 1.0
 /// `1.0`  "Soft" requirement on 1.0 (just a recommendation - helps select the correct version if it matches all ranges)
@@ -94,10 +94,8 @@ impl FromStr for VersionRequirement {
 
         let mut current_state = VersionParserState::Start;
         let mut start_index = 0;
-        println!(">>> {}", s);
 
         for (i, c) in s.chars().enumerate() {
-            println!("{i} {} {:?}", c, current_state);
             match current_state {
                 VersionParserState::Start => match c {
                     '(' => current_state = VersionParserState::InequalityStart,
@@ -255,7 +253,9 @@ pub struct Project {
     /// The actual project name
     artifact_id: String,
     /// The project version number
-    version: String,
+    version: VersionRequirement,
+    /// The selected version. This was what was resolved
+    selected_version: Option<String>,
     /// The organization name/package name
     group_id: String,
     /// The project main dependencies
@@ -291,7 +291,8 @@ impl Default for Project {
         // FIXME remove these funny default and use ones provided by maven
         Project {
             artifact_id: "my_app".to_string(),
-            version: "1.0.0".to_string(),
+            version: VersionRequirement::Unset,
+            selected_version: None,
             group_id: "com.my_organization.name".to_string(),
             dependencies: vec![],
             excludes: vec![],
@@ -307,7 +308,7 @@ impl Project {
         Project {
             group_id: String::from(group_id),
             artifact_id: String::from(artifact_id),
-            version: String::from(version),
+            version: version.parse().unwrap(),
             ..Default::default()
         }
     }
@@ -316,8 +317,16 @@ impl Project {
         self.artifact_id.clone()
     }
     /// Returns the version of the project
-    pub fn get_version(&self) -> String {
-        self.version.clone()
+    pub fn get_version(&self) -> &VersionRequirement {
+        &self.version
+    }
+    /// Returns the version of the project
+    pub fn get_selected_version(&self) -> &Option<String> {
+        &self.selected_version
+    }
+    /// Selects a version calculated from version requirements
+    pub fn set_selected_version(&mut self, version: Option<String>) {
+        self.selected_version = version;
     }
     /// Returns the group id of the project
     pub fn get_group_id(&self) -> String {
@@ -333,8 +342,15 @@ impl Project {
     pub fn get_dependencies_mut(&mut self) -> &mut Vec<Project> {
         &mut self.dependencies
     }
-    pub fn qualified_name(&self) -> String {
-        format!("{}:{}:{}", self.group_id, self.artifact_id, self.version)
+    pub fn qualified_name(&self) -> anyhow::Result<String> {
+        let version = self
+            .selected_version
+            .clone()
+            .context("The package has no resolved version.")?;
+        Ok(format!(
+            "{}:{}:{}",
+            self.group_id, self.artifact_id, version
+        ))
     }
     pub fn get_excludes(&self) -> &Vec<Exclusion> {
         &self.excludes
@@ -505,7 +521,7 @@ impl Parser {
                 }
                 Event::Text(e) => {
                     if let Some(dep) = &mut self.current_dependency {
-                        dep.version = e.unescape()?.to_string();
+                        dep.version = e.unescape()?.to_string().parse()?;
                     }
                     DependencyState::ReadVersion
                 }
@@ -659,7 +675,7 @@ impl Parser {
                     ParserState::Project
                 }
                 Event::Text(e) => {
-                    self.project.version = e.unescape()?.to_string();
+                    self.project.selected_version = Some(e.unescape()?.to_string());
                     ParserState::ReadVersion
                 }
                 _ => ParserState::ReadVersion,
@@ -759,6 +775,15 @@ fn parse_pom_version_requirements() {
     let incl = "(1.0,2.0)";
     let or = "(,1.0],[1.2,)";
     let not = "(,1.1),(1.1,)";
+
+    assert_eq!(
+        "".parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Unset
+    );
+    assert_eq!(
+        "  ".parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Unset
+    );
 
     assert_eq!(
         soft.parse::<VersionRequirement>().unwrap(),
