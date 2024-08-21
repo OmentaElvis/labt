@@ -6,12 +6,12 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::caching::save_dependencies;
-use crate::config::lock::load_lock_dependencies;
 use crate::config::lock::strings::LOCK_FILE;
 use crate::config::lock::write_lock;
+use crate::config::lock::{load_labt_lock, LabtLock};
 use crate::config::{get_config, get_resolvers_from_config};
-use crate::pom::Scope;
-use crate::pom::{self, Project};
+use crate::pom::{self, Project, VersionRange};
+use crate::pom::{Scope, VersionRequirement};
 use crate::{get_project_root, MULTI_PROGRESS_BAR};
 
 use super::resolvers::ResolverErrorKind;
@@ -25,7 +25,6 @@ use clap::Args;
 use indicatif::ProgressBar;
 use indicatif::ProgressStyle;
 use log::info;
-use serde::Serialize;
 
 #[derive(Args, Clone)]
 pub struct ResolveArgs {
@@ -63,7 +62,7 @@ impl Submodule for Resolve {
         Ok(())
     }
 }
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Clone)]
 pub struct ProjectDep {
     pub artifact_id: String,
     pub group_id: String,
@@ -73,6 +72,32 @@ pub struct ProjectDep {
     pub base_url: String,
     pub packaging: String,
     pub cache_hit: bool,
+    pub constraints: Option<Constraint>,
+}
+
+/// This is a summary of all dependency constraints that we need to
+/// prevent conflicts and other crazy stuff
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Constraint {
+    /// The minimum allowed version
+    pub min: Option<(bool, String)>,
+    /// The minimum allowed version
+    pub max: Option<(bool, String)>,
+    /// An exact version version
+    pub exact: Option<String>,
+    /// Exclusions
+    pub exclusions: Vec<(VersionRange, VersionRange)>,
+}
+
+impl From<&Constraint> for Constraint {
+    fn from(value: &Constraint) -> Self {
+        Constraint {
+            min: value.min.clone(),
+            max: value.max.clone(),
+            exact: value.exact.clone(),
+            exclusions: value.exclusions.clone(),
+        }
+    }
 }
 
 impl PartialEq for ProjectDep {
@@ -186,6 +211,633 @@ impl ProjectDep {
         };
 
         self.base_url = url.replace(path.as_str(), "");
+    }
+}
+
+impl Constraint {
+    /// checks if a version requirement falls in this current constraint
+    pub fn within<'version>(&self, versions: &'version VersionRequirement) -> anyhow::Result<bool> {
+        let version_parse_error = |a: &'version String, b| {
+            anyhow!("Failed to compare versions \"{}\" and \"{}\". Unable to parse one of the versions.", a, b)
+        };
+        match versions {
+            // version was not set, so it falls within
+            VersionRequirement::Unset => Ok(true),
+            // Soft version
+            VersionRequirement::Soft(version) => {
+                // if an exact version is specified, lock on it
+                if let Some(exact) = &self.exact {
+                    return version_compare::compare_to(version, exact, version_compare::Cmp::Eq)
+                        .map_err(|_| version_parse_error(version, exact));
+                }
+                // Min
+                if let Some((inclusive, min)) = &self.min {
+                    // reject any version below this number
+                    if *inclusive {
+                        if !version_compare::compare_to(version, min, version_compare::Cmp::Ge)
+                            .map_err(|_| version_parse_error(version, min))?
+                        {
+                            return Ok(false);
+                        }
+                    } else if !version_compare::compare_to(version, min, version_compare::Cmp::Gt)
+                        .map_err(|_| version_parse_error(version, min))?
+                    {
+                        return Ok(false);
+                    }
+                }
+                // Max
+                if let Some((inclusive, max)) = &self.max {
+                    // reject any versions above this version
+                    if *inclusive {
+                        if !version_compare::compare_to(version, max, version_compare::Cmp::Le)
+                            .map_err(|_| version_parse_error(version, max))?
+                        {
+                            return Ok(false);
+                        }
+                    } else if !version_compare::compare_to(version, max, version_compare::Cmp::Lt)
+                        .map_err(|_| version_parse_error(version, max))?
+                    {
+                        return Ok(false);
+                    }
+                }
+
+                // Exclusions
+                for (start, end) in &self.exclusions {
+                    if Self::within_range(version, start, end) {
+                        return Ok(false);
+                    }
+                }
+
+                Ok(true)
+            }
+            VersionRequirement::Hard(hard_constraints) => {
+                // short circuit of first musmatch
+                for c in hard_constraints {
+                    match c {
+                        // check if these fall below the maximum version.
+                        pom::VersionRange::Ge(version) => {
+                            // if an exact version is specified, lock on it
+                            if let Some(exact) = &self.exact {
+                                return version_compare::compare_to(
+                                    version,
+                                    exact,
+                                    version_compare::Cmp::Eq,
+                                )
+                                .map_err(|_| version_parse_error(version, exact));
+                            }
+                            if let Some((inclusive, max)) = &self.max {
+                                if *inclusive {
+                                    if !version_compare::compare_to(
+                                        version,
+                                        max,
+                                        version_compare::Cmp::Le,
+                                    )
+                                    .map_err(|_| version_parse_error(version, max))?
+                                    {
+                                        return Ok(false);
+                                    }
+                                } else if !version_compare::compare_to(
+                                    version,
+                                    max,
+                                    version_compare::Cmp::Lt,
+                                )
+                                .map_err(|_| version_parse_error(version, max))?
+                                {
+                                    return Ok(false);
+                                }
+                            }
+                        }
+                        pom::VersionRange::Gt(version) => {
+                            // if an exact version is specified, lock on it
+                            if let Some(exact) = &self.exact {
+                                return version_compare::compare_to(
+                                    version,
+                                    exact,
+                                    version_compare::Cmp::Eq,
+                                )
+                                .map_err(|_| version_parse_error(version, exact));
+                            }
+                            if let Some((_, max)) = &self.max {
+                                if !version_compare::compare_to(
+                                    version,
+                                    max,
+                                    version_compare::Cmp::Lt,
+                                )
+                                .map_err(|_| version_parse_error(version, max))?
+                                {
+                                    return Ok(false);
+                                }
+                            }
+                        }
+                        // check if these fall above the minimum version.
+                        pom::VersionRange::Lt(version) => {
+                            // if an exact version is specified, lock on it
+                            if let Some(exact) = &self.exact {
+                                return version_compare::compare_to(
+                                    version,
+                                    exact,
+                                    version_compare::Cmp::Eq,
+                                )
+                                .map_err(|_| version_parse_error(version, exact));
+                            }
+                            if let Some((_, min)) = &self.min {
+                                if !version_compare::compare_to(
+                                    version,
+                                    min,
+                                    version_compare::Cmp::Gt,
+                                )
+                                .map_err(|_| version_parse_error(version, min))?
+                                {
+                                    return Ok(false);
+                                }
+                            }
+                        }
+                        pom::VersionRange::Le(version) => {
+                            // if an exact version is specified, lock on it
+                            if let Some(exact) = &self.exact {
+                                return version_compare::compare_to(
+                                    version,
+                                    exact,
+                                    version_compare::Cmp::Eq,
+                                )
+                                .map_err(|_| version_parse_error(version, exact));
+                            }
+                            if let Some((inclusive, min)) = &self.min {
+                                if *inclusive {
+                                    if !version_compare::compare_to(
+                                        version,
+                                        min,
+                                        version_compare::Cmp::Ge,
+                                    )
+                                    .map_err(|_| version_parse_error(version, min))?
+                                    {
+                                        return Ok(false);
+                                    }
+                                } else if !version_compare::compare_to(
+                                    version,
+                                    min,
+                                    version_compare::Cmp::Gt,
+                                )
+                                .map_err(|_| version_parse_error(version, min))?
+                                {
+                                    return Ok(false);
+                                }
+                            }
+                        }
+                        // Make sure the version matches exact if set and lies within the min max
+                        pom::VersionRange::Eq(version) => {
+                            // if an exact version is specified, lock on it
+                            if let Some(exact) = &self.exact {
+                                return version_compare::compare_to(
+                                    version,
+                                    exact,
+                                    version_compare::Cmp::Eq,
+                                )
+                                .map_err(|_| version_parse_error(version, exact));
+                            }
+                            // just to confirm this lies within boundaries
+                            // Min
+                            if let Some((inclusive, min)) = &self.min {
+                                // reject any version below this number
+                                if *inclusive {
+                                    if !version_compare::compare_to(
+                                        version,
+                                        min,
+                                        version_compare::Cmp::Ge,
+                                    )
+                                    .map_err(|_| version_parse_error(version, min))?
+                                    {
+                                        return Ok(false);
+                                    }
+                                } else if !version_compare::compare_to(
+                                    version,
+                                    min,
+                                    version_compare::Cmp::Gt,
+                                )
+                                .map_err(|_| version_parse_error(version, min))?
+                                {
+                                    return Ok(false);
+                                }
+                            }
+                            // Max
+                            if let Some((inclusive, max)) = &self.max {
+                                // reject any versions above this version
+                                if *inclusive {
+                                    if !version_compare::compare_to(
+                                        version,
+                                        max,
+                                        version_compare::Cmp::Le,
+                                    )
+                                    .map_err(|_| version_parse_error(version, max))?
+                                    {
+                                        return Ok(false);
+                                    }
+                                } else if !version_compare::compare_to(
+                                    version,
+                                    max,
+                                    version_compare::Cmp::Lt,
+                                )
+                                .map_err(|_| version_parse_error(version, max))?
+                                {
+                                    return Ok(false);
+                                }
+                            }
+                            // Exclusions
+                            for (start, end) in &self.exclusions {
+                                if Self::within_range(version, start, end) {
+                                    return Ok(false);
+                                }
+                            }
+
+                            return Ok(true);
+                        }
+                    }
+                }
+
+                Ok(true)
+            }
+        }
+    }
+    fn within_range(target: &String, start: &VersionRange, end: &VersionRange) -> bool {
+        // if a version is on the left of the start, then it is out of range
+        // if version is on right of the end, then it is out of range
+        //
+        match start {
+            VersionRange::Gt(v) => {
+                if !version_compare::compare_to(target, v, version_compare::Cmp::Gt).unwrap() {
+                    return false;
+                }
+            }
+            VersionRange::Ge(v) => {
+                if !version_compare::compare_to(target, v, version_compare::Cmp::Ge).unwrap() {
+                    return false;
+                }
+            }
+            // The value is within this v and -ve Infinity
+            VersionRange::Lt(v) => {
+                if !version_compare::compare_to(target, v, version_compare::Cmp::Lt).unwrap() {
+                    return false;
+                }
+            }
+            VersionRange::Le(v) => {
+                if !version_compare::compare_to(target, v, version_compare::Cmp::Le).unwrap() {
+                    return false;
+                }
+            }
+            VersionRange::Eq(v) => {
+                if !version_compare::compare_to(target, v, version_compare::Cmp::Eq).unwrap() {
+                    return false;
+                }
+            }
+        }
+
+        match end {
+            VersionRange::Lt(v) => {
+                if !version_compare::compare_to(target, v, version_compare::Cmp::Lt).unwrap() {
+                    return false;
+                }
+            }
+            VersionRange::Le(v) => {
+                if !version_compare::compare_to(target, v, version_compare::Cmp::Le).unwrap() {
+                    return false;
+                }
+            }
+            // The value is within this v and +ve infinity
+            VersionRange::Gt(v) => {
+                if !version_compare::compare_to(target, v, version_compare::Cmp::Gt).unwrap() {
+                    return false;
+                }
+            }
+            VersionRange::Ge(v) => {
+                if !version_compare::compare_to(target, v, version_compare::Cmp::Ge).unwrap() {
+                    return false;
+                }
+            }
+            VersionRange::Eq(v) => {
+                if !version_compare::compare_to(target, v, version_compare::Cmp::Eq).unwrap() {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+    /// Will try to contain the extremes of incoming version constraints.
+    /// If it cant fit then that is a version conflict. An error is thrown.
+    pub fn contain(&self, versions: &VersionRequirement) -> anyhow::Result<Constraint> {
+        match versions {
+            VersionRequirement::Soft(_) => {
+                // doesnt really matter since its a suggestion
+                Ok(self.into())
+            }
+            VersionRequirement::Unset => {
+                // Looks good since we did not choose a version then the constraint does not need tampering
+                Ok(self.into())
+            }
+            VersionRequirement::Hard(hard_constraints) => {
+                // The critical stuff we care about.
+                let mut number_line = Vec::new(); // a virtual number line for detection of exclusions or breaks.
+
+                // if we have a min and max add them to the number line to serve as a guardrails
+                if let Some((inclusive, min)) = &self.min {
+                    if *inclusive {
+                        number_line.push(VersionRange::Ge(min.to_string()));
+                    } else {
+                        number_line.push(VersionRange::Gt(min.to_string()));
+                    }
+                }
+
+                if let Some((inclusive, max)) = &self.max {
+                    if *inclusive {
+                        number_line.push(VersionRange::Le(max.to_string()));
+                    } else {
+                        number_line.push(VersionRange::Lt(max.to_string()));
+                    }
+                }
+
+                // add the rest of the constraints and sort them
+                number_line.extend(hard_constraints.iter().cloned());
+                // sort
+                number_line.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+                // let mut version_eq = |v| {
+                //     if let Some(exact) = &self.exact {
+                //         // This is an error. We are conflicting very hard
+                //         bail!("Conflicting exact versions set with existing ={exact} and incomming ={v}");
+                //     } else {
+                //         self.exact = Some(v);
+                //     }
+                //     Ok(())
+                // };
+
+                enum Edges {
+                    Infinity,
+                    Bound(VersionRange),
+                }
+
+                // holds the encountered Ge & Gt
+                let mut stack: Vec<VersionRange> = Vec::new();
+                // Holds  >/>= , </<= pairs
+                let mut pairs: Vec<(Edges, Edges)> = Vec::with_capacity(number_line.len() / 2);
+                // Holds encountered '=' which will be used to check if falls within min/max and lock it.
+                let mut exacts: Vec<String> = Vec::new();
+
+                // Holds a new constraint defination that we are building
+                let mut constraint = Constraint::default();
+
+                // collect all the pairs of inequalities
+                for c in number_line {
+                    match c {
+                        VersionRange::Ge(_) | VersionRange::Gt(_) => {
+                            stack.push(c);
+                        }
+                        VersionRange::Le(_) | VersionRange::Lt(_) => {
+                            if let Some(open) = stack.pop() {
+                                // We have a matching pair
+                                pairs.push((Edges::Bound(open), Edges::Bound(c)));
+                            } else {
+                                // Missing a partner pair Mark it as Negative Infinity
+                                pairs.push((Edges::Infinity, Edges::Bound(c)));
+                            }
+                        }
+                        VersionRange::Eq(v) => {
+                            // pile up all exacts and check for boundaries when done
+                            exacts.push(v);
+                        }
+                    }
+                }
+
+                // check for struglers
+                if !stack.is_empty() {
+                    // if no pairs was collected then the last element is the minimum bound
+                    if pairs.is_empty() {
+                        match stack.last() {
+                            Some(VersionRange::Lt(v)) => {
+                                constraint.min = Some((false, v.clone()));
+                            }
+                            Some(VersionRange::Le(v)) => {
+                                constraint.min = Some((true, v.clone()));
+                            }
+                            _ => {
+                                unreachable!();
+                            }
+                        }
+                    } else {
+                        // We have a non empty pairs and this is still pointing to infinity
+                        // check if it we already had a maximum defined
+                        if let Some((inclusive, max)) = &self.max {
+                            // if this last value can fall within the maximum value set.
+                            let c = stack.last().unwrap();
+
+                            let max_version = if *inclusive {
+                                VersionRange::Ge(max.clone())
+                            } else {
+                                VersionRange::Gt(max.clone())
+                            };
+
+                            match c.partial_cmp(&max_version) {
+                                Some(std::cmp::Ordering::Greater) => {
+                                    // Definately a conflict.
+                                    // First we already have a max set and we sorted everything by version. If it was within
+                                    // range of the max, it would have auto closed but now its orphaned since no one is big enough to be parent.
+                                    bail!("An orphan version out of allowed range.");
+                                }
+                                Some(std::cmp::Ordering::Less) => {
+                                    // within the desired range
+                                    pairs.push((Edges::Bound(c.clone()), Edges::Infinity));
+                                }
+                                Some(std::cmp::Ordering::Equal) => {
+                                    // TODO Not entirely sure about this section. Should be reviewed
+                                    // This should be checked since we can have conflicting ranges such as >5.6 & <5.6
+                                    // You may think of this example as excluding 5.6 but a max was already set regardless
+                                    match (c, max_version) {
+                                        // |--------------| 
+                                        // >5.6          <5.6
+                                        (VersionRange::Gt(_) , VersionRange::Lt(_)) |
+                                        // |--------------|
+                                        // >=5.6          <5.6
+                                        (VersionRange::Ge(_), VersionRange::Lt(_)) |
+                                        // |--------------|
+                                        // >5.6          <=5.6
+                                        (VersionRange::Gt(_), VersionRange::Le(_)) |
+                                        // |--------------|
+                                        // >=5.6          <=5.6
+                                        (VersionRange::Ge(_), VersionRange::Le(_)) => {
+                                            // conflict
+                                            bail!("A version is pointing out of currently allowed range set by other dependencies");
+                                        }
+                                        _ => {
+                                            // not possible combinations
+                                        }
+                                    }
+                                }
+                                None => {
+                                    unreachable!();
+                                }
+                            }
+                        } else {
+                            // no max was defined earlier so this is bounded by infinity
+                            // Why i ignored the rest of the stack? Is because the last value is the largest so it negates all other
+                            // previous >/>= by moving the lower limit to a larger value.
+                            let v = stack.last().unwrap();
+                            pairs.push((Edges::Bound(v.clone()), Edges::Infinity));
+                            // to infinity and beyond
+                        }
+                    }
+                }
+
+                // loop through the pair updating the min/max
+                pairs.into_iter().for_each(|(start, end)| {
+                    // if start
+                    match start {
+                        Edges::Infinity => {
+                            // Our bound is -ve infinity
+                        }
+                        Edges::Bound(c) => {
+                            // This is our lower bound.
+                            if let Some((inclusive, min)) = &constraint.min {
+                                let range = if *inclusive {
+                                    VersionRange::Ge(min.to_string())
+                                } else {
+                                    VersionRange::Gt(min.to_string())
+                                };
+
+                                if c > range {
+                                    // Sign of an exclusion.
+                                    if let Some((inclusive_max, max)) = &constraint.max {
+                                        // we are fliping the inequalities to encasulate the bounded region
+                                        let exclusion_end = match c {
+                                            VersionRange::Gt(v) => VersionRange::Le(v),
+                                            VersionRange::Ge(v) => VersionRange::Lt(v),
+                                            _ => {
+                                                unreachable!();
+                                            }
+                                        };
+                                        let exclusion_start = if *inclusive_max {
+                                            VersionRange::Gt(max.clone())
+                                        } else {
+                                            VersionRange::Ge(max.clone())
+                                        };
+
+                                        constraint
+                                            .exclusions
+                                            .push((exclusion_start, exclusion_end));
+
+                                        // update the new max version
+                                        if let Edges::Bound(candidate_max) = &end {
+                                            match candidate_max {
+                                                VersionRange::Lt(v) => {
+                                                    constraint.max = Some((false, v.clone()))
+                                                }
+                                                VersionRange::Le(v) => {
+                                                    constraint.max = Some((true, v.clone()))
+                                                }
+                                                _ => unreachable!(),
+                                            }
+                                        }
+                                    }
+                                }
+                                // else branch -> We ignore it since we cannot push the lower limit back.
+                                //
+                            } else {
+                                // if we have no min then set this as our new lower limit.
+                                match c {
+                                    VersionRange::Gt(v) => {
+                                        constraint.min = Some((false, v));
+                                    }
+                                    VersionRange::Ge(v) => {
+                                        constraint.min = Some((true, v));
+                                    }
+                                    _ => {
+                                        unreachable!();
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    match end {
+                        Edges::Infinity => {
+                            // Our bound is -ve infinity
+                        }
+                        Edges::Bound(c) => {
+                            if constraint.max.is_none() {
+                                // max was not set, use this
+                                match c {
+                                    VersionRange::Lt(v) => {
+                                        constraint.max = Some((false, v));
+                                    }
+                                    VersionRange::Le(v) => {
+                                        constraint.max = Some((true, v));
+                                    }
+                                    _ => {
+                                        unreachable!();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
+                constraint.exact = self.exact.clone();
+
+                // Now compute the exacts. If we have more than one exact, that is just an error
+                for c in exacts {
+                    // check if we already have an exact set.
+                    if let Some(exact) = &constraint.exact {
+                        // We have an exact, they must be equal before we proceed
+                        if !version_compare::compare_to(&c, exact, version_compare::Cmp::Eq)
+                            .unwrap()
+                        {
+                            // This is an error. We are conflicting very hard
+                            bail!("Conflicting exact versions set with existing ={exact} and incomming ={c}");
+                        }
+                    } else {
+                        // no exact was set. so set it
+                        // but before doind so, confirm it is in range
+                        if !constraint.within(&VersionRequirement::Hard(vec![VersionRange::Eq(c.clone())])).context(format!("Failed to check if version ={} is within allowed min and max range.", c))? {
+                            bail!("A set hard version is out of allowed range of {} and {}.", constraint.min.map_or("-Inf>=".to_string(), |(inclusive, v)|{
+                                if inclusive {
+                                    format!("{v}>=")
+                                }else{
+                                    format!("{v}>")
+                                }
+                            }), constraint.max.map_or("<=+Inf".to_string(), |(inclusive, v)|{
+                                if inclusive {
+                                    format!("<={v}")
+                                }else{
+                                    format!("<{v}")
+                                }
+                            }));
+                        }
+
+                        constraint.exact = Some(c);
+                    }
+                }
+
+                // Go through our excludes one last time to see if everything fits in perfectly
+                for (start, end) in &constraint.exclusions {
+                    // check exact
+                    if let Some(exact) = &constraint.exact {
+                        if Self::within_range(exact, start, end) {
+                            bail!("An exact version was specified which was later explicitly excluded");
+                        }
+                    }
+                    // Confirm that min and max are not inside the exclusion zone
+                    if let (Some((_inclusive_min, min)), Some((_inclusive_max, max))) =
+                        (&constraint.min, &constraint.max)
+                    {
+                        if Self::within_range(min, start, end)
+                            && Self::within_range(max, start, end)
+                        {
+                            // Falls within the excluded region so this is a conflict.
+                            bail!("The min and max of this constraint falls between an exclusion region.");
+                        }
+                    }
+                }
+
+                Ok(constraint)
+            }
+        }
     }
 }
 
@@ -526,10 +1178,10 @@ pub fn resolve(
     let resolvers = Rc::new(RefCell::new(resolvers));
 
     // load resolved dependencies from lock file
-    let mut resolved: Vec<ProjectDep> = if path.exists() {
-        load_lock_dependencies()?
+    let mut lock: LabtLock = if path.exists() {
+        load_labt_lock()?
     } else {
-        vec![]
+        LabtLock::default()
     };
     let mut unresolved = vec![];
 
@@ -552,7 +1204,7 @@ pub fn resolve(
         wrapper.set_progress_bar(Some(spinner.clone()));
 
         // walk the dependency tree
-        wrapper.build_tree(&mut resolved, &mut unresolved)?;
+        wrapper.build_tree(&mut lock.resolved, &mut unresolved)?;
         resolved_projects.push(wrapper.project);
     }
     // clear progressbar
@@ -565,8 +1217,8 @@ pub fn resolve(
         .truncate(true)
         .open(path)
         .context("Unable to open lock file")?;
-    write_lock(&mut file, &resolved)?;
-    save_dependencies(&resolved).context("Failed downloading saved dependencies")?;
+    write_lock(&mut file, &lock)?;
+    save_dependencies(&lock.resolved).context("Failed downloading saved dependencies")?;
     Ok(resolved_projects)
 }
 
@@ -589,4 +1241,494 @@ fn check_base_url_conversion() {
     dep.set_base_url_from_root(expected);
 
     assert_eq!(dep.base_url, base);
+}
+
+#[test]
+fn constraint_check_version_ranges() {
+    let constraint = Constraint {
+        min: Some((true, String::from("1.5.0"))),
+        max: Some((true, String::from("5.8.0"))),
+        exact: None,
+        exclusions: Vec::new(),
+    };
+
+    assert!(constraint.within(&VersionRequirement::Unset).unwrap());
+
+    assert!(constraint
+        .within(&VersionRequirement::Soft(String::from("4.0")))
+        .unwrap());
+
+    assert!(!constraint
+        .within(&VersionRequirement::Soft(String::from("1.0")))
+        .unwrap());
+
+    assert!(constraint
+        .within(&"[1.5]".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"[1.0]".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(constraint
+        .within(&"[1.5,)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(constraint
+        .within(&"(1.5,)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(constraint
+        .within(&"[1.0,)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(constraint
+        .within(&"(1.0,)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"(,1.5)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(constraint
+        .within(&"(,1.5]".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(constraint
+        .within(&"(,5.8)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(constraint
+        .within(&"(,5.8]".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(constraint
+        .within(&"(,6.8]".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(constraint
+        .within(&"(1.5,6.8]".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"(,1.5),(1.5,)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"(,5.8),(5.8,)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    // makes sense from logical standpoint where v5 is within limits
+    assert!(constraint
+        .within(&"(,5.0),(5.0)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    let constraint = Constraint {
+        min: Some((false, String::from("1.5.0"))),
+        max: Some((false, String::from("5.8.0"))),
+        exact: Some(String::from("5.5")), // anything that is not this should fail
+        exclusions: Vec::new(),
+    };
+    assert!(constraint.within(&VersionRequirement::Unset).unwrap());
+
+    assert!(!constraint
+        .within(&VersionRequirement::Soft(String::from("4.0")))
+        .unwrap());
+
+    assert!(constraint
+        .within(&VersionRequirement::Soft(String::from("5.5")))
+        .unwrap());
+
+    assert!(!constraint
+        .within(&VersionRequirement::Soft(String::from("1.0")))
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"[1.5]".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(constraint
+        .within(&"[5.5]".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"[1.0]".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"[1.5,)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"(1.5,)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"[1.0,)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"(1.0,)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"(,1.5)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"(,1.5]".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"(,5.8)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"(,5.8]".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"(,6.8]".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"(1.5,6.8]".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"(,1.5),(1.5,)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"(,5.8),(5.8,)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    // makes sense from logical standpoint where v5 is within limits
+    assert!(!constraint
+        .within(&"(,5.0),(5.0,)".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    // Exclusions
+    let mut c = Constraint::from(&constraint);
+    c.exclusions.push((
+        VersionRange::Gt(String::from("2.0")),
+        VersionRange::Lt(String::from("3.0")),
+    )); // 2.0>x<3.0
+
+    assert!(!constraint
+        .within(&"2.1".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+
+    assert!(!constraint
+        .within(&"[2.1]".parse::<VersionRequirement>().unwrap())
+        .unwrap());
+}
+
+#[test]
+fn constraint_contain_version_ranges() {
+    let constraint = Constraint {
+        min: Some((true, String::from("1.5.0"))),
+        max: Some((true, String::from("5.8.0"))),
+        exact: None,
+        exclusions: Vec::new(),
+    };
+
+    // min exclusive
+    let constraint2 = Constraint {
+        min: Some((false, String::from("1.5.0"))),
+        max: Some((true, String::from("5.8.0"))),
+        exact: None,
+        exclusions: Vec::new(),
+    };
+    // max exclusive
+    let constraint3 = Constraint {
+        min: Some((true, String::from("1.5.0"))),
+        max: Some((false, String::from("5.8.0"))),
+        exact: None,
+        exclusions: Vec::new(),
+    };
+
+    // soft
+    assert_eq!(
+        constraint
+            .contain(&"1.2".parse::<VersionRequirement>().unwrap())
+            .unwrap(),
+        constraint
+    );
+    // unset
+    assert_eq!(
+        constraint
+            .contain(&"".parse::<VersionRequirement>().unwrap())
+            .unwrap(),
+        constraint
+    );
+
+    // exact version
+    let c = constraint
+        .contain(&"[2.0]".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(c.exact, Some("2.0".to_string()));
+
+    // exact version that is out of bounds
+    let c = constraint.contain(&"[5.9]".parse::<VersionRequirement>().unwrap());
+    assert!(c.is_err());
+
+    let c = constraint.contain(&"[1.5]".parse::<VersionRequirement>().unwrap());
+    assert!(c.is_ok());
+
+    let c = constraint2.contain(&"[1.5]".parse::<VersionRequirement>().unwrap());
+    assert!(c.is_err());
+
+    let c = constraint3.contain(&"[5.8]".parse::<VersionRequirement>().unwrap());
+    assert!(c.is_err());
+
+    let c = constraint.contain(&"[5.5],[1.5]".parse::<VersionRequirement>().unwrap()); // an incorrect conflicting input
+    assert!(c.is_err());
+
+    // Exact was already set
+    let mut c = Constraint::from(&constraint);
+    c.exact = Some(String::from("4.0"));
+    assert!(c
+        .contain(&"[5.8]".parse::<VersionRequirement>().unwrap())
+        .is_err());
+
+    // Shrink the min max boundary
+    let c = constraint
+        .contain(&"[2.0, 3.0]".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(c.min, Some((true, String::from("2.0"))));
+    assert_eq!(c.max, Some((true, String::from("3.0"))));
+
+    // Shrink the min max boundary
+    let c = constraint
+        .contain(&"(2.0, 3.0)".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(c.min, Some((false, String::from("2.0"))));
+    assert_eq!(c.max, Some((false, String::from("3.0"))));
+
+    let c = constraint
+        .contain(&"[2.0, 6.0]".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(c.min, Some((true, String::from("2.0"))));
+    assert_eq!(c.max, Some((true, String::from("5.8.0"))));
+
+    let c = constraint
+        .contain(&"(2.0, 6.0)".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(c.min, Some((false, String::from("2.0"))));
+    assert_eq!(c.max, Some((true, String::from("5.8.0"))));
+
+    let c = constraint
+        .contain(&"(,6.0]".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(c.min, Some((true, String::from("1.5.0"))));
+    assert_eq!(c.max, Some((true, String::from("5.8.0"))));
+
+    let c = constraint
+        .contain(&"(,6.0)".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(c.min, Some((true, String::from("1.5.0"))));
+    assert_eq!(c.max, Some((true, String::from("5.8.0"))));
+    // double move
+    let c = constraint
+        .contain(&"(,6.0),(,5.5.0)".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(c.min, Some((true, String::from("1.5.0"))));
+    assert_eq!(c.max, Some((false, String::from("5.5.0"))));
+
+    // moves the max bound by making them exclusive
+    let c = constraint
+        .contain(&"(,5.8)".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(c.min, Some((true, String::from("1.5.0"))));
+    assert_eq!(c.max, Some((false, String::from("5.8"))));
+
+    // Push the min up
+    let c = constraint
+        .contain(&"[2.0,)".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(c.min, Some((true, String::from("2.0"))));
+    assert_eq!(c.max, Some((true, String::from("5.8.0"))));
+
+    let c = constraint
+        .contain(&"(3.0,)".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(c.min, Some((false, String::from("3.0"))));
+    assert_eq!(c.max, Some((true, String::from("5.8.0"))));
+
+    // moves the max bound by making them exclusive
+    let c = constraint
+        .contain(&"(1.5,)".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(c.min, Some((false, String::from("1.5"))));
+    assert_eq!(c.max, Some((true, String::from("5.8.0"))));
+    // Double move
+    let c = constraint
+        .contain(&"(1.5,),(1.8,)".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(c.min, Some((false, String::from("1.8"))));
+    assert_eq!(c.max, Some((true, String::from("5.8.0"))));
+
+    // Excludes
+    let c = constraint
+        .contain(&"(,2.0),(2.0,)".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(c.min, Some((true, String::from("1.5.0"))));
+    assert_eq!(c.max, Some((true, String::from("5.8.0"))));
+    assert_eq!(
+        c.exclusions,
+        vec![(
+            VersionRange::Ge(String::from("2.0")),
+            VersionRange::Le(String::from("2.0"))
+        )]
+    );
+    let c = constraint
+        .contain(&"(,2.0],[2.0,)".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(c.min, Some((true, String::from("1.5.0"))));
+    assert_eq!(c.max, Some((true, String::from("5.8.0"))));
+    assert_eq!(
+        c.exclusions,
+        vec![(
+            VersionRange::Gt(String::from("2.0")),
+            VersionRange::Lt(String::from("2.0"))
+        )]
+    );
+
+    let c = constraint
+        .contain(
+            &"[1.8, 3.0],(,2.0),(2.0,)"
+                .parse::<VersionRequirement>()
+                .unwrap(),
+        )
+        .unwrap();
+
+    assert_eq!(c.min, Some((true, String::from("1.8"))));
+    assert_eq!(c.max, Some((true, String::from("3.0"))));
+    assert_eq!(
+        c.exclusions,
+        vec![(
+            VersionRange::Ge(String::from("2.0")),
+            VersionRange::Le(String::from("2.0"))
+        )]
+    );
+
+    let c = constraint
+        .contain(
+            &"[1.8,),(,2.0),(2.0,)"
+                .parse::<VersionRequirement>()
+                .unwrap(),
+        )
+        .unwrap();
+
+    assert_eq!(c.min, Some((true, String::from("1.8"))));
+    assert_eq!(c.max, Some((true, String::from("5.8.0"))));
+    assert_eq!(
+        c.exclusions,
+        vec![(
+            VersionRange::Ge(String::from("2.0")),
+            VersionRange::Le(String::from("2.0"))
+        )]
+    );
+    let c = constraint
+        .contain(
+            &"[1.8,),(,2.0),(2.0,)(,4.0),(5.0,)"
+                .parse::<VersionRequirement>()
+                .unwrap(),
+        )
+        .unwrap();
+
+    assert_eq!(c.min, Some((true, String::from("1.8"))));
+    assert_eq!(c.max, Some((true, String::from("5.8.0"))));
+    assert_eq!(
+        c.exclusions,
+        vec![
+            (
+                VersionRange::Ge(String::from("2.0")),
+                VersionRange::Le(String::from("2.0"))
+            ),
+            (
+                VersionRange::Ge(String::from("4.0")),
+                VersionRange::Le(String::from("5.0"))
+            )
+        ]
+    );
+    assert!(constraint
+        .contain(&"[2.0],(,2.0),(2.0,)".parse::<VersionRequirement>().unwrap(),)
+        .is_err());
+
+    assert!(constraint
+        .contain(&"[2.1],(,2.0),(3.0,)".parse::<VersionRequirement>().unwrap(),)
+        .is_err());
+}
+
+#[test]
+fn constraint_within_range() {
+    assert!(Constraint::within_range(
+        &String::from("2.0"),
+        &VersionRange::Ge(String::from("2.0")),
+        &VersionRange::Le(String::from("2.0"))
+    ));
+    assert!(!Constraint::within_range(
+        &String::from("2.0"),
+        &VersionRange::Gt(String::from("2.0")),
+        &VersionRange::Le(String::from("2.0"))
+    ));
+    assert!(!Constraint::within_range(
+        &String::from("2.0"),
+        &VersionRange::Ge(String::from("2.0")),
+        &VersionRange::Lt(String::from("2.0"))
+    ));
+    assert!(!Constraint::within_range(
+        &String::from("2.0"),
+        &VersionRange::Gt(String::from("2.0")),
+        &VersionRange::Lt(String::from("2.0"))
+    ));
+
+    assert!(!Constraint::within_range(
+        &String::from("3.0"),
+        &VersionRange::Ge(String::from("2.0")),
+        &VersionRange::Le(String::from("2.0"))
+    ));
+
+    assert!(Constraint::within_range(
+        &String::from("1.0"),
+        &VersionRange::Lt(String::from("2.0")),
+        &VersionRange::Le(String::from("3.0"))
+    ));
+    assert!(!Constraint::within_range(
+        &String::from("1.0"),
+        &VersionRange::Lt(String::from("2.0")),
+        &VersionRange::Ge(String::from("3.0"))
+    ));
+    assert!(Constraint::within_range(
+        &String::from("7.0"),
+        &VersionRange::Gt(String::from("2.0")),
+        &VersionRange::Ge(String::from("3.0"))
+    ));
+    assert!(!Constraint::within_range(
+        &String::from("7.0"),
+        &VersionRange::Lt(String::from("2.0")),
+        &VersionRange::Ge(String::from("3.0"))
+    ));
+    assert!(!Constraint::within_range(
+        &String::from("1.0"),
+        &VersionRange::Gt(String::from("2.0")),
+        &VersionRange::Ge(String::from("3.0"))
+    ));
 }

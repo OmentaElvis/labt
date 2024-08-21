@@ -2,10 +2,12 @@ use anyhow::Context;
 use anyhow::Result;
 use quick_xml::{events::Event, Reader};
 use serde::Serialize;
+use std::fmt::Display;
 use std::io::BufReader;
 use std::io::Read;
 use std::str::FromStr;
 use tokio::io::AsyncRead;
+use version_compare::Version;
 
 /// constants for common tags
 mod tags {
@@ -41,6 +43,138 @@ pub enum VersionRange {
     Eq(String),
 }
 
+impl PartialOrd for VersionRange {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        let version_a = match self {
+            VersionRange::Gt(v)
+            | VersionRange::Ge(v)
+            | VersionRange::Lt(v)
+            | VersionRange::Le(v)
+            | VersionRange::Eq(v) => v,
+        };
+        let version_b = match other {
+            VersionRange::Gt(v)
+            | VersionRange::Ge(v)
+            | VersionRange::Lt(v)
+            | VersionRange::Le(v)
+            | VersionRange::Eq(v) => v,
+        };
+
+        let a = Version::from(version_a).unwrap();
+        let b = Version::from(version_b).unwrap();
+
+        // Since we are working with a virtual number line here, inequality symbols should be taken into account.
+        // > is greater that >= as it moves up by 1
+        // < is less than <= as it moves down
+        // |------|------|------|------|
+        // >=     >             <      <=
+
+        match a.partial_cmp(&b) {
+            Some(std::cmp::Ordering::Equal) => {
+                // differentiate between symbols
+                match (self, other) {
+                    (VersionRange::Gt(_), VersionRange::Ge(_)) => Some(std::cmp::Ordering::Greater),
+                    (VersionRange::Ge(_), VersionRange::Gt(_)) => Some(std::cmp::Ordering::Less),
+                    (VersionRange::Le(_), VersionRange::Lt(_)) => Some(std::cmp::Ordering::Greater),
+                    (VersionRange::Lt(_), VersionRange::Le(_)) => Some(std::cmp::Ordering::Less),
+                    _ => Some(std::cmp::Ordering::Equal),
+                }
+            }
+            other => other,
+        }
+    }
+}
+
+impl Display for VersionRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gt(v) => write!(f, ">{v}"),
+            Self::Ge(v) => write!(f, ">={v}"),
+            Self::Lt(v) => write!(f, "<{v}"),
+            Self::Le(v) => write!(f, "<={v}"),
+            Self::Eq(v) => write!(f, "{v}"),
+        }
+    }
+}
+
+impl FromStr for VersionRange {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> std::prelude::v1::Result<Self, Self::Err> {
+        enum VersionRangeState {
+            Start,
+            Gt,
+            Lt,
+            Ge,
+            Le,
+            Eq,
+        }
+        let mut current_state = VersionRangeState::Start;
+        let mut start_index = 0;
+
+        for (i, c) in s.chars().enumerate() {
+            match current_state {
+                VersionRangeState::Start => match c {
+                    ' ' => {
+                        continue;
+                    }
+                    '>' => {
+                        current_state = VersionRangeState::Gt;
+                        start_index = i + 1;
+                    }
+                    '<' => {
+                        current_state = VersionRangeState::Lt;
+                        start_index = i + 1;
+                    }
+                    '=' => {
+                        current_state = VersionRangeState::Eq;
+                        start_index = i + 1;
+                    }
+                    _ => {
+                        current_state = VersionRangeState::Eq;
+                        start_index = i;
+                    }
+                },
+                VersionRangeState::Gt => match c {
+                    '=' => {
+                        current_state = VersionRangeState::Ge;
+                        start_index = i + 1;
+                    }
+                    _ => continue,
+                },
+                VersionRangeState::Lt => match c {
+                    '=' => {
+                        current_state = VersionRangeState::Le;
+                        start_index = i + 1;
+                    }
+                    _ => {
+                        continue;
+                    }
+                },
+                _ => {}
+            }
+        }
+        if start_index < s.len() {
+            let version = s[start_index..].trim();
+
+            if version.is_empty() {
+                anyhow::bail!("An empty version was encountered which is invalid. ");
+            }
+            match current_state {
+                VersionRangeState::Start => {
+                    unreachable!(); // we already errored out above
+                }
+                VersionRangeState::Gt => Ok(Self::Gt(version.to_string())),
+                VersionRangeState::Ge => Ok(Self::Ge(version.to_string())),
+                VersionRangeState::Lt => Ok(Self::Lt(version.to_string())),
+                VersionRangeState::Le => Ok(Self::Le(version.to_string())),
+                VersionRangeState::Eq => Ok(Self::Eq(version.to_string())),
+            }
+        } else {
+            anyhow::bail!("Encountered an inequality symbol without a version. ");
+        }
+    }
+}
+
 #[derive(Default, Debug, PartialEq, Eq, Clone)]
 /// Represents the different types of version requirements for dependencies.
 ///  `(,1.0]`  x <= 1.0
@@ -66,6 +200,18 @@ pub enum VersionRequirement {
     // The version was never set, so we should try to use already available hard
     // or the latest available
     Unset,
+}
+
+impl VersionRequirement {
+    pub fn is_soft(&self) -> bool {
+        matches!(self, Self::Soft(_))
+    }
+    pub fn is_hard(&self) -> bool {
+        matches!(self, Self::Hard(_))
+    }
+    pub fn is_unset(&self) -> bool {
+        matches!(self, Self::Unset)
+    }
 }
 
 impl FromStr for VersionRequirement {
@@ -133,18 +279,20 @@ impl FromStr for VersionRequirement {
                             if n == ' ' {
                                 continue;
                             }
-                            if n != ')' {
-                                versions.push(VersionRange::Ge(
-                                    s[start_index..i]
-                                        .trim()
-                                        .trim_end_matches(',')
-                                        .trim_end()
-                                        .to_string(),
-                                ));
+                            versions.push(VersionRange::Ge(
+                                s[start_index..i]
+                                    .trim()
+                                    .trim_end_matches(',')
+                                    .trim_end()
+                                    .to_string(),
+                            ));
+                            if n == ')' {
+                                current_state = VersionParserState::Start;
+                            } else {
                                 current_state = VersionParserState::Lt;
-                                start_index = i + 1;
-                                break;
                             }
+                            start_index = i + 1;
+                            break;
                         }
                     }
                     ')' => {
@@ -203,18 +351,20 @@ impl FromStr for VersionRequirement {
                             if n == ' ' {
                                 continue; // a whitespace
                             }
-                            if n != ')' {
-                                versions.push(VersionRange::Gt(
-                                    s[start_index..i]
-                                        .trim()
-                                        .trim_end_matches(',')
-                                        .trim_end()
-                                        .to_string(),
-                                ));
+                            versions.push(VersionRange::Gt(
+                                s[start_index..i]
+                                    .trim()
+                                    .trim_end_matches(',')
+                                    .trim_end()
+                                    .to_string(),
+                            ));
+                            if n == ')' {
+                                current_state = VersionParserState::Start;
+                            } else {
                                 current_state = VersionParserState::Lt;
-                                start_index = i + 1;
-                                break;
                             }
+                            start_index = i + 1;
+                            break;
                         }
                     }
                     // just >
@@ -765,10 +915,15 @@ pub async fn parse_pom_async<R: AsyncRead + Unpin>(
 fn parse_pom_version_requirements() {
     let soft = "1.0";
     let lt = "(,1.0)";
+    let ltlt = "(,1.0),(,2.0)";
     let le = "(,1.0]";
+    let lele = "(,1.0],(,2.0]";
     let gt = "(1.0,)";
+    let gtgt = "(1.0,),(2.0,)";
     let ge = "[1.0,)";
+    let gege = "[1.0,),[2.0,)";
     let eq = "[1.0]";
+    let eqeq = "[1.0],[2.0]";
     let incle = "[1.0,2.0]";
     let inc2 = "[1.0,2.0)";
     let inc3 = "(1.0,2.0]";
@@ -795,20 +950,55 @@ fn parse_pom_version_requirements() {
         VersionRequirement::Hard(vec![VersionRange::Lt(String::from("1.0"))])
     );
     assert_eq!(
+        ltlt.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Lt(String::from("1.0")),
+            VersionRange::Lt(String::from("2.0"))
+        ])
+    );
+    assert_eq!(
         le.parse::<VersionRequirement>().unwrap(),
         VersionRequirement::Hard(vec![VersionRange::Le(String::from("1.0"))])
+    );
+    assert_eq!(
+        lele.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Le(String::from("1.0")),
+            VersionRange::Le(String::from("2.0"))
+        ])
     );
     assert_eq!(
         gt.parse::<VersionRequirement>().unwrap(),
         VersionRequirement::Hard(vec![VersionRange::Gt(String::from("1.0"))])
     );
     assert_eq!(
+        gtgt.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Gt(String::from("1.0")),
+            VersionRange::Gt(String::from("2.0"))
+        ])
+    );
+    assert_eq!(
         ge.parse::<VersionRequirement>().unwrap(),
         VersionRequirement::Hard(vec![VersionRange::Ge(String::from("1.0"))])
     );
     assert_eq!(
+        gege.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Ge(String::from("1.0")),
+            VersionRange::Ge(String::from("2.0"))
+        ])
+    );
+    assert_eq!(
         eq.parse::<VersionRequirement>().unwrap(),
         VersionRequirement::Hard(vec![VersionRange::Eq(String::from("1.0"))])
+    );
+    assert_eq!(
+        eqeq.parse::<VersionRequirement>().unwrap(),
+        VersionRequirement::Hard(vec![
+            VersionRange::Eq(String::from("1.0")),
+            VersionRange::Eq(String::from("2.0"))
+        ])
     );
     assert_eq!(
         incle.parse::<VersionRequirement>().unwrap(),
@@ -1033,6 +1223,62 @@ fn parse_pom_version_requirements() {
             VersionRange::Lt(String::from("1.1")),
             VersionRange::Gt(String::from("1.1"))
         ])
+    );
+}
+
+#[test]
+fn version_range_from_string() {
+    assert_eq!(
+        ">20.0".parse::<VersionRange>().unwrap(),
+        VersionRange::Gt("20.0".to_string())
+    );
+    assert_eq!(
+        ">=20.0".parse::<VersionRange>().unwrap(),
+        VersionRange::Ge("20.0".to_string())
+    );
+    assert_eq!(
+        "<20.0".parse::<VersionRange>().unwrap(),
+        VersionRange::Lt("20.0".to_string())
+    );
+    assert_eq!(
+        "<=20.0".parse::<VersionRange>().unwrap(),
+        VersionRange::Le("20.0".to_string())
+    );
+    assert_eq!(
+        "=20.0".parse::<VersionRange>().unwrap(),
+        VersionRange::Eq("20.0".to_string())
+    );
+    assert_eq!(
+        "20.0".parse::<VersionRange>().unwrap(),
+        VersionRange::Eq("20.0".to_string())
+    );
+    assert!(">".parse::<VersionRange>().is_err(),);
+    assert!(">=".parse::<VersionRange>().is_err(),);
+    assert!("<".parse::<VersionRange>().is_err(),);
+    assert!("<=".parse::<VersionRange>().is_err(),);
+    assert!("   ".parse::<VersionRange>().is_err(),);
+}
+#[test]
+fn version_range_to_string() {
+    assert_eq!(
+        VersionRange::Eq("2.0".to_string()).to_string().as_str(),
+        "2.0"
+    );
+    assert_eq!(
+        VersionRange::Gt("2.0".to_string()).to_string().as_str(),
+        ">2.0"
+    );
+    assert_eq!(
+        VersionRange::Ge("2.0".to_string()).to_string().as_str(),
+        ">=2.0"
+    );
+    assert_eq!(
+        VersionRange::Lt("2.0".to_string()).to_string().as_str(),
+        "<2.0"
+    );
+    assert_eq!(
+        VersionRange::Le("2.0".to_string()).to_string().as_str(),
+        "<=2.0"
     );
 }
 // su
