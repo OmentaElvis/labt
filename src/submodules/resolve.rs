@@ -1221,6 +1221,8 @@ pub fn resolve(
     save_dependencies(&lock.resolved).context("Failed downloading saved dependencies")?;
     Ok(resolved_projects)
 }
+#[cfg(test)]
+use pretty_assertions::assert_eq;
 
 #[test]
 fn check_base_url_conversion() {

@@ -910,6 +910,8 @@ pub async fn parse_pom_async<R: AsyncRead + Unpin>(
 
     Ok(parser.project)
 }
+#[cfg(test)]
+use pretty_assertions::assert_eq;
 
 #[test]
 fn parse_pom_version_requirements() {

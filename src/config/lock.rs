@@ -320,6 +320,8 @@ impl From<&toml_edit::Value> for Scope {
         }
     }
 }
+#[cfg(test)]
+use pretty_assertions::assert_eq;
 
 #[test]
 fn labt_lock_from_string() {
