@@ -1828,3 +1828,591 @@ fn constraint_within_range() {
         &VersionRange::Ge(String::from("3.0"))
     ));
 }
+
+#[cfg(test)]
+mod pom_faker {
+    use std::{
+        collections::HashMap,
+        io::{BufRead, BufReader, BufWriter, Write},
+        net::{TcpListener, TcpStream},
+        sync::{Arc, Mutex},
+        thread,
+    };
+
+    use regex::Regex;
+
+    use crate::pom::Scope;
+
+    struct MetadataEntry<'a> {
+        latest: &'a str,
+        release: &'a str,
+        versions: Vec<&'a str>,
+    }
+
+    #[derive(Default, Debug, Clone)]
+    pub struct ProjectEntry {
+        artifact_id: String,
+        group_id: String,
+        version: String,
+        dependencies: Vec<ProjectEntry>,
+        scope: Scope,
+    }
+
+    impl ProjectEntry {
+        pub fn new(group_id: &str, artifact_id: &str, version: &str) -> Self {
+            Self {
+                group_id: group_id.to_string(),
+                artifact_id: artifact_id.to_string(),
+                version: version.to_string(),
+                ..Default::default()
+            }
+        }
+        pub fn get_id(&self) -> String {
+            format!("{}:{}:{}", self.group_id, self.artifact_id, self.version)
+        }
+        pub fn add_dependency(mut self, dep: ProjectEntry) -> Self {
+            self.dependencies.push(dep);
+            self
+        }
+    }
+
+    static REPO: std::sync::LazyLock<
+        HashMap<(&'static str, &'static str), MetadataEntry<'static>>,
+    > = std::sync::LazyLock::new(init_metadata_repo);
+
+    fn init_metadata_repo<'a>() -> HashMap<(&'a str, &'a str), MetadataEntry<'a>> {
+        let mut metadata = HashMap::new();
+
+        metadata.insert(
+            ("com.example", "module-a"),
+            MetadataEntry {
+                latest: "1.5.0",
+                release: "1.5.0",
+                versions: vec!["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-b"),
+            MetadataEntry {
+                latest: "2.1.0",
+                release: "2.1.0",
+                versions: vec!["1.0.0", "1.1.0", "1.2.0", "2.0.0", "2.1.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-c"),
+            MetadataEntry {
+                latest: "3.0.0",
+                release: "3.0.0",
+                versions: vec!["1.0.0", "2.0.0", "2.1.0", "2.2.0", "3.0.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-d"),
+            MetadataEntry {
+                latest: "1.2.0",
+                release: "1.2.0",
+                versions: vec!["1.0.0", "1.1.0", "1.2.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-e"),
+            MetadataEntry {
+                latest: "4.0.0",
+                release: "4.0.0",
+                versions: vec!["1.0.0", "2.0.0", "3.0.0", "4.0.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-f"),
+            MetadataEntry {
+                latest: "1.1.0",
+                release: "1.1.0",
+                versions: vec!["1.0.0", "1.1.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-g"),
+            MetadataEntry {
+                latest: "1.1.0",
+                release: "1.1.0",
+                versions: vec!["1.0.0", "1.1.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-h"),
+            MetadataEntry {
+                latest: "2.0.0",
+                release: "2.0.0",
+                versions: vec!["1.0.0", "2.0.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-i"),
+            MetadataEntry {
+                latest: "3.0.0",
+                release: "3.0.0",
+                versions: vec!["1.0.0", "2.0.0", "3.0.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-j"),
+            MetadataEntry {
+                latest: "1.2.0",
+                release: "1.2.0",
+                versions: vec!["1.0.0", "1.1.0", "1.2.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-k"),
+            MetadataEntry {
+                latest: "2.1.0",
+                release: "2.1.0",
+                versions: vec!["1.0.0", "2.0.0", "2.1.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-l"),
+            MetadataEntry {
+                latest: "3.0.0",
+                release: "3.0.0",
+                versions: vec!["1.0.0", "2.0.0", "3.0.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-m"),
+            MetadataEntry {
+                latest: "1.1.0",
+                release: "1.1.0",
+                versions: vec!["1.0.0", "1.1.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-n"),
+            MetadataEntry {
+                latest: "2.0.0",
+                release: "2.0.0",
+                versions: vec!["1.0.0", "2.0.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-o"),
+            MetadataEntry {
+                latest: "1.2.0",
+                release: "1.2.0",
+                versions: vec!["1.0.0", "1.1.0", "1.2.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-p"),
+            MetadataEntry {
+                latest: "3.0.0",
+                release: "3.0.0",
+                versions: vec!["1.0.0", "2.0.0", "3.0.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-q"),
+            MetadataEntry {
+                latest: "2.1.0",
+                release: "2.1.0",
+                versions: vec!["1.0.0", "2.0.0", "2.1.0"],
+            },
+        );
+
+        metadata.insert(
+            ("com.example", "module-r"),
+            MetadataEntry {
+                latest: "1.1.0",
+                release: "1.1.0",
+                versions: vec!["1.0.0", "1.1.0"],
+            },
+        );
+
+        metadata
+    }
+
+    type Repository = Arc<Mutex<HashMap<String, ProjectEntry>>>;
+
+    pub struct PomServer {
+        pub port: u16,
+        pub repo: Repository,
+    }
+
+    impl PomServer {
+        pub fn new() -> anyhow::Result<Self> {
+            let listener = TcpListener::bind("127.0.0.1:0")?;
+            let port = listener.local_addr()?.port();
+            let repo = Arc::new(Mutex::new(HashMap::new()));
+
+            let r = Arc::clone(&repo);
+
+            thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let stream = stream.unwrap();
+                    let mut buffer = [0; 512];
+                    stream.peek(&mut buffer).unwrap();
+
+                    if buffer.starts_with(b"CLOSE") {
+                        break;
+                    }
+                    Self::handle_request(&stream, r.clone()).unwrap();
+                }
+            });
+
+            Ok(Self { port, repo })
+        }
+
+        pub fn close(&self) {
+            if let Ok(mut stream) = TcpStream::connect(format!("127.0.0.1:{}", self.port)) {
+                stream.write_all(b"CLOSE").unwrap();
+                stream.flush().unwrap();
+            }
+        }
+
+        /// spawns a new thread to handle response of this request
+        pub fn handle_request(stream: &TcpStream, repo: Repository) -> anyhow::Result<()> {
+            let stream = stream.try_clone()?;
+
+            thread::spawn(move || {
+                let mut writer = BufWriter::new(stream.try_clone().unwrap());
+                // get request method and url
+                let mut reader = BufReader::new(stream);
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+
+                let sections: Vec<&str> = header.split_whitespace().collect();
+                let mut iter = sections.iter();
+                let _method = iter.next().expect("Missing http method");
+                let uri = iter.next().expect("Request missing its uri");
+                let _version = iter.next().expect("Request missing its version");
+
+                // we mostly just need method and uri. we dont need a body
+
+                // break down the uri into correct segments using regex
+                let repo_re = Regex::new(
+                    r"^\/(?<group_id>.*)\/(?<artifact_id>.*)\/(?<version>.*)\/(.*)\.pom$",
+                )
+                .unwrap();
+
+                let metadata_re =
+                    Regex::new("^/(?<group_id>.*)/(?<artifact_id>.*)/maven-metadata.xml$").unwrap();
+
+                if let Some(m) = repo_re.captures(uri) {
+                    let group_id = m.name("group_id").unwrap().as_str().replace('/', ".");
+                    let artifact_id = m.name("artifact_id").unwrap();
+                    let version = m.name("version").unwrap();
+
+                    if let Some(resp) = Self::create_pom(
+                        repo,
+                        group_id.as_str(),
+                        artifact_id.as_str(),
+                        version.as_str(),
+                    ) {
+                        writer
+                            .write_all(Self::create_response(200, resp.as_str()).as_bytes())
+                            .unwrap();
+                    } else {
+                        writer
+                            .write_all(Self::create_response(404, "").as_bytes())
+                            .unwrap();
+                    }
+                } else if let Some(m) = metadata_re.captures(uri) {
+                    let group_id = m.name("group_id").unwrap().as_str().replace('/', ".");
+                    let artifact_id = m.name("artifact_id").unwrap();
+
+                    if let Some(resp) =
+                        Self::create_metadata(group_id.as_str(), artifact_id.as_str())
+                    {
+                        writer
+                            .write_all(Self::create_response(200, resp.as_str()).as_bytes())
+                            .unwrap();
+                    } else {
+                        writer
+                            .write_all(Self::create_response(404, "").as_bytes())
+                            .unwrap();
+                    }
+                } else {
+                    writer
+                        .write_all(Self::create_response(404, "").as_bytes())
+                        .unwrap();
+                }
+                writer.flush().unwrap();
+            });
+
+            Ok(())
+        }
+
+        fn create_response(code: u16, body: &str) -> String {
+            let reason = match code {
+                200 => "Ok",
+                404 => "Not Found",
+                500 => "Internal Server Error",
+                _ => "",
+            };
+
+            let mut resp = format!("HTTP/1.1 {} {} \r\n", code, reason);
+            resp.push_str("\r\n");
+            resp.push_str(body);
+
+            resp
+        }
+
+        /// Responds with pom.xml if repo is available. Otherwise None is just 404
+        fn create_pom(
+            repo: Repository,
+            group_id: &str,
+            artifact_id: &str,
+            version: &str,
+        ) -> Option<String> {
+            let proj = ProjectEntry::new(group_id, artifact_id, version);
+            if let Ok(repo) = repo.lock() {
+                let proj = if let Some(proj) = repo.get(&proj.get_id()) {
+                    proj.clone()
+                } else {
+                    // try to gen from metadata
+                    if let Some(meta) = REPO.get(&(group_id, artifact_id)) {
+                        if meta.versions.contains(&version) {
+                            ProjectEntry::new(group_id, artifact_id, version)
+                        } else {
+                            return None;
+                        }
+                    } else {
+                        return None;
+                    }
+                };
+
+                let mut body = String::new();
+                body.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>\n"#);
+                body.push_str(r#"<project xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd" xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">\n"#);
+                body.push_str(r#" <modelVersion>4.0.0</modelVersion>\n"#);
+                body.push_str(&format!(" <groupId>{}</groupId>\n", group_id));
+                body.push_str(&format!(" <artifactId>{}</artifactId>\n", artifact_id));
+                body.push_str(&format!(" <version>{}</version>\n", version));
+                body.push_str(&format!(" <name>{}:{}</name>\n", group_id, artifact_id));
+                body.push_str("  <dependencies>\n");
+                for dep in proj.dependencies {
+                    body.push_str("    <dependency>\n");
+                    body.push_str(&format!("      <groupId>{}</groupId>\n", dep.group_id));
+                    body.push_str(&format!(
+                        "      <artifactId>{}</artifactId>\n",
+                        dep.artifact_id
+                    ));
+                    body.push_str(&format!("      <version>{}</version>\n", dep.version));
+                    body.push_str(&format!("      <scope>{}</scope>\n", dep.scope));
+                    body.push_str("    </dependency>\n");
+                }
+                body.push_str("  </dependencies>\n");
+                body.push_str("</project>");
+                Some(body)
+            } else {
+                None
+            }
+        }
+        fn create_metadata(group_id: &str, artifact_id: &str) -> Option<String> {
+            if let Some(meta) = REPO.get(&(group_id, artifact_id)) {
+                let mut body = String::new();
+                body.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>\n"#);
+                body.push_str(r#"<metadata modelVersion="1.1.0">"#);
+                body.push_str(format!("\n<groupId>{}</groupId>\n", group_id).as_str());
+                body.push_str(format!("<artifactId>{}</artifactId>\n", artifact_id).as_str());
+                body.push_str(format!("<version>{}</version>\n", meta.latest).as_str());
+                body.push_str("<versioning>\n".to_string().as_str());
+                body.push_str(format!("\t<latest>{}</latest>\n", meta.latest).as_str());
+                body.push_str(format!("\t<release>{}</release>\n", meta.release).as_str());
+                body.push_str("\t\t<versions>\n".to_string().as_str());
+                for v in &meta.versions {
+                    body.push_str(format!("\t\t  <version>{}</version>\n", v).as_str())
+                }
+                body.push_str("\t\t</versions>\n".to_string().as_str());
+                body.push_str("\t</versioning>\n".to_string().as_str());
+                body.push_str("</metadata>".to_string().as_str());
+
+                Some(body)
+            } else {
+                None
+            }
+        }
+        // Adds a project to the list available packages
+        pub fn add_project(&self, project: ProjectEntry) {
+            if let Ok(mut repo) = self.repo.lock() {
+                repo.insert(project.get_id(), project);
+            }
+        }
+        pub fn get_port(&self) -> u16 {
+            self.port
+        }
+    }
+
+    impl Drop for PomServer {
+        fn drop(&mut self) {
+            self.close()
+        }
+    }
+}
+
+#[test]
+fn some_test() {
+    let server = pom_faker::PomServer::new().unwrap();
+    server.add_project(pom_faker::ProjectEntry::new(
+        "com.example",
+        "module-a",
+        "1.0.0",
+    ));
+    let port = server.get_port();
+
+    let base_url = format!("http://localhost:{port}");
+    let res = reqwest::blocking::get(format!(
+        "{0}/{1}/{2}/{3}/{2}-{3}.pom",
+        base_url, "com/example", "module-a", "1.0.0"
+    ))
+    .unwrap();
+
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+}
+#[cfg(test)]
+mod test {
+    use std::{cell::RefCell, rc::Rc};
+
+    // use pretty_assertions::assert_eq;
+
+    use pretty_assertions::assert_eq;
+
+    use crate::{
+        pom::Project,
+        submodules::resolvers::{NetResolver, Resolver},
+    };
+
+    use super::{
+        pom_faker::{PomServer, ProjectEntry},
+        BuildTree, ProjectDep, ProjectWrapper,
+    };
+
+    pub fn resolve(
+        dependencies: Vec<Project>,
+        mut resolved: Vec<ProjectDep>,
+        resolvers: Rc<RefCell<Vec<Box<dyn Resolver>>>>,
+    ) -> anyhow::Result<Vec<Project>> {
+        let mut resolved_projects = Vec::new();
+        let mut unresolved = Vec::new();
+
+        for project in dependencies {
+            // create a new project wrapper for dependency resolution
+            let mut wrapper = ProjectWrapper::new(project.clone(), Rc::clone(&resolvers));
+            // walk the dependency tree
+            wrapper.build_tree(&mut resolved, &mut unresolved)?;
+            resolved_projects.push(wrapper.project);
+        }
+        Ok(resolved_projects)
+    }
+
+    pub fn create_resolver(
+        port: u16,
+    ) -> std::vec::Vec<std::boxed::Box<dyn crate::submodules::resolvers::Resolver>> {
+        let base_url = format!("http://localhost:{port}");
+        let resolver: Vec<Box<dyn Resolver>> =
+            vec![Box::new(NetResolver::init("test", &base_url).unwrap())];
+        resolver
+    }
+
+    #[test]
+    fn resolver_single_dependency() {
+        let server = PomServer::new().unwrap();
+        server.add_project(ProjectEntry::new("com.example", "module-a", "1.0.0"));
+
+        let port = server.get_port();
+
+        let base_url = format!("http://localhost:{port}");
+        let resolver: Vec<Box<dyn Resolver>> =
+            vec![Box::new(NetResolver::init("test", &base_url).unwrap())];
+
+        // now create some fake dependencies
+        let dependencies = vec![Project::new("com.example", "module-a", "1.0.0")];
+
+        let resolved = resolve(dependencies, Vec::new(), Rc::new(RefCell::new(resolver))).unwrap();
+        let mut iter = resolved.iter();
+        let project = iter.next();
+        assert_eq!(
+            project,
+            Some(&Project::new("com.example", "module-a", "1.0.0"))
+        );
+    }
+
+    #[test]
+    fn resolver_multiple_dependencies() {
+        let server = PomServer::new().unwrap();
+        server.add_project(ProjectEntry::new("com.example", "module-a", "1.0.0"));
+        server.add_project(ProjectEntry::new("com.example", "module-b", "2.0.0"));
+
+        let port = server.get_port();
+
+        // now create some fake dependencies
+        let dependencies = vec![
+            Project::new("com.example", "module-a", "1.0.0"),
+            Project::new("com.example", "module-b", "2.0.0"),
+        ];
+
+        let resolved = resolve(
+            dependencies,
+            Vec::new(),
+            Rc::new(RefCell::new(create_resolver(port))),
+        )
+        .unwrap();
+        assert_eq!(resolved.len(), 2);
+        let mut iter = resolved.iter();
+        let project = iter.next();
+        assert_eq!(
+            project,
+            Some(&Project::new("com.example", "module-a", "1.0.0"))
+        );
+        let project = iter.next();
+        assert_eq!(
+            project,
+            Some(&Project::new("com.example", "module-b", "2.0.0"))
+        );
+    }
+    #[test]
+    fn direct_version_conflict() {
+        let server = PomServer::new().unwrap();
+        let port = server.get_port();
+
+        server.add_project(ProjectEntry::new("com.example", "module-a", "1.0.0"));
+        server.add_project(ProjectEntry::new("com.example", "module-a", "2.0.0"));
+
+        // Project declares dependencies on module-a:1.0 and module-a:2.0 directly.
+        let dependencies = vec![
+            Project::new("com.example", "module-a", "1.0.0"),
+            Project::new("com.example", "module-a", "2.0.0"),
+        ];
+
+        let resolved = resolve(
+            dependencies,
+            Vec::new(),
+            Rc::new(RefCell::new(create_resolver(port))),
+        )
+        .unwrap();
+
+        // Expected: only 1  choosed with highest version
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(
+            resolved[0],
+            Project::new("com.example", "module-a", "2.0.0")
+        );
+    }
+}
