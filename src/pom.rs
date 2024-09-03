@@ -21,6 +21,12 @@ mod tags {
     pub const EXCLUSION: &[u8] = b"exclusion";
     pub const PACKAGING: &[u8] = b"packaging";
     pub const SCOPE: &[u8] = b"scope";
+    pub const COMPILE: &[u8] = b"compile";
+    pub const TEST: &[u8] = b"test";
+    pub const PROVIDED: &[u8] = b"provided";
+    pub const IMPORT: &[u8] = b"import";
+    pub const SYSTEM: &[u8] = b"system";
+    pub const RUNTIME: &[u8] = b"runtime";
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize)]
@@ -32,6 +38,38 @@ pub enum Scope {
     SYSTEM,
     PROVIDED,
     IMPORT,
+    UNKOWN(String),
+}
+impl FromStr for Scope {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> std::prelude::v1::Result<Self, Self::Err> {
+        match s.as_bytes() {
+            tags::COMPILE => Ok(Scope::COMPILE),
+            tags::TEST => Ok(Scope::TEST),
+            tags::PROVIDED => Ok(Scope::PROVIDED),
+            tags::IMPORT => Ok(Scope::IMPORT),
+            tags::SYSTEM => Ok(Scope::SYSTEM),
+            tags::RUNTIME => Ok(Scope::RUNTIME),
+            b"" => Ok(Scope::COMPILE),
+            _ => Ok(Self::UNKOWN(s.to_string())),
+        }
+    }
+}
+
+impl Display for Scope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let scope = match self {
+            Scope::COMPILE => tags::COMPILE,
+            Scope::TEST => tags::TEST,
+            Scope::PROVIDED => tags::PROVIDED,
+            Scope::IMPORT => tags::IMPORT,
+            Scope::SYSTEM => tags::SYSTEM,
+            Scope::RUNTIME => tags::RUNTIME,
+            Self::UNKOWN(s) => return write!(f, "{}", s),
+        };
+
+        write!(f, "{}", String::from_utf8_lossy(scope))
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -455,10 +493,29 @@ impl Default for Project {
 impl Project {
     /// Initializes a new project with the provided arguments
     pub fn new(group_id: &str, artifact_id: &str, version: &str) -> Self {
+        let version: VersionRequirement = version.parse().unwrap();
+        // temporarily try to select a suitable version while waiting for version calculation
+        let selected = match &version {
+            VersionRequirement::Soft(v) => Some(v.clone()),
+            VersionRequirement::Unset => None,
+            VersionRequirement::Hard(hard) => {
+                if hard.len() == 1 {
+                    if let Some(VersionRange::Eq(v)) = hard.first() {
+                        Some(v.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        };
+
         Project {
             group_id: String::from(group_id),
             artifact_id: String::from(artifact_id),
-            version: version.parse().unwrap(),
+            version,
+            selected_version: selected,
             ..Default::default()
         }
     }
@@ -686,17 +743,7 @@ impl Parser {
                 Event::Text(e) => {
                     if let Some(dep) = &mut self.current_dependency {
                         let scope = e.unescape()?;
-                        // FIXME fix this conversion from Cow<_, str> to str without
-                        // unnecessary cloning
-                        dep.scope = match scope.to_string().as_str() {
-                            "compile" => Scope::COMPILE,
-                            "test" => Scope::TEST,
-                            "provided" => Scope::PROVIDED,
-                            "import" => Scope::IMPORT,
-                            "system" => Scope::SYSTEM,
-                            "runtime" => Scope::RUNTIME,
-                            _ => Scope::COMPILE,
-                        }
+                        dep.scope = scope.parse::<Scope>()?;
                     }
                     DependencyState::ReadScope
                 }

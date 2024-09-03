@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::fmt::Display;
 use std::fs::File;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -40,7 +41,9 @@ impl Resolve {
         Resolve { args: args.clone() }
     }
 }
-
+// =================
+// Entry point
+// =================
 impl Submodule for Resolve {
     fn run(&mut self) -> Result<()> {
         // try reading toml file
@@ -87,6 +90,36 @@ pub struct Constraint {
     pub exact: Option<String>,
     /// Exclusions
     pub exclusions: Vec<(VersionRange, VersionRange)>,
+}
+
+impl Display for Constraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some((inclusive, min)) = &self.min {
+            if *inclusive {
+                write!(f, "{min}>=")?;
+            } else {
+                write!(f, "{min}>")?;
+            }
+        }
+        write!(f, "v")?;
+        if let Some((inclusive, max)) = &self.max {
+            if *inclusive {
+                write!(f, "<={max}")?;
+            } else {
+                write!(f, "<{max}")?;
+            }
+        }
+        if let Some(exact) = &self.exact {
+            write!(f, "={exact}")?;
+        }
+        if !self.exclusions.is_empty() {
+            write!(f, " with exclusions.")?;
+            for (start, end) in &self.exclusions {
+                write!(f, "({start}, {end}), ")?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl From<&Constraint> for Constraint {
@@ -1002,24 +1035,91 @@ impl BuildTree for ProjectWrapper {
             res.group_id == self.project.get_group_id()
                 && res.artifact_id == self.project.get_artifact_id()
         }) {
+            // We have already seen this package with same group and artifact id.
+            // but are the versions the same?
+
             // now check version for possible conflicts
             match version_compare::compare(&res.version, &version) {
                 Ok(v) => match v {
                     version_compare::Cmp::Eq => {
-                        // the versions are same, so skip resolving
+                        // the versions are same, so skip resolving as it has already been resolved
                         return Ok(());
                     }
                     version_compare::Cmp::Ne => {
                         // TODO not really sure of what to do with this
                     }
-                    version_compare::Cmp::Gt | version_compare::Cmp::Ge => {
-                        // dependency conflict, so use the latest version which happens to be already resolved
-                        return Ok(());
-                    }
-                    version_compare::Cmp::Lt | version_compare::Cmp::Le => {
-                        // dependency version conflict, so replace the already resolved version with the latesr
-                        // version and proceed to resolve for this version
-                        resolved[index].version = version;
+                    conflict => {
+                        // we have encountered two different versions.
+                        // so try to go back in time and see what sort of constraints were set earlier.
+                        if let Some(constraints) = &res.constraints {
+                            // This will be used to see if it is safe to proceed or this is irrecoverable.
+                            let c = self.project.get_version();
+                            match c {
+                                VersionRequirement::Soft(v) => {
+                                    // A soft version has been suggested. We can override it at will.
+                                    // always prefer a more later version
+                                    if constraints.within(c).unwrap() {
+                                        if !version_compare::compare_to(
+                                            &version,
+                                            &res.version,
+                                            version_compare::Cmp::Gt,
+                                        )
+                                        .unwrap()
+                                        {
+                                            resolved[index].version = v.clone();
+                                        } else {
+                                            // we don't need this tree direction, its older
+                                            return Ok(());
+                                        }
+                                    } else {
+                                        // It is a softie and out of range; we dont need you
+                                        return Ok(());
+                                    }
+                                }
+                                VersionRequirement::Unset => {
+                                    // Someone did not bother choosing a version, so any can do. In this case just use the already resolved one.
+                                    return Ok(());
+                                }
+                                VersionRequirement::Hard(v) => {
+                                    // These are commandments. If we cannot fit within, then this is not recoverable at all.
+                                    if constraints.within(c).unwrap() {
+                                        // we can fit within, so make the version more strict than ever
+                                        let containment =
+                                            constraints.contain(c).context(format!(
+                                                "Failed to contain {:?} within {constraints}",
+                                                v,
+                                            ))?;
+                                        // If containment has an exact value set, update it and resolve
+                                        if let Some(exact) = &containment.exact {
+                                            resolved[index].version = exact.to_string();
+                                        } else {
+                                            // No exact value set, so we will prefer the latest
+                                            match conflict {
+                                                version_compare::Cmp::Le
+                                                | version_compare::Cmp::Lt => {
+                                                    resolved[index].version = version;
+                                                }
+                                                version_compare::Cmp::Ge
+                                                | version_compare::Cmp::Gt => {
+                                                    return Ok(());
+                                                }
+                                                _ => {
+                                                    //strange
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        // the constraint cannot fit in this. This is fatal.
+                                        bail!(
+                                            "Dependency version conflict. {}:{} as hard set version requirements as {} which does not fit within previously set constraint of {constraints}. Canceling the resolution.",
+                                            self.project.get_group_id(),
+                                            self.project.get_artifact_id(),
+                                            v.iter().map(|k| k.to_string()).collect::<Vec<String>>().join(", ")
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                 },
                 Err(_) => {
@@ -1210,13 +1310,7 @@ pub fn resolve(
     // clear progressbar
     spinner.borrow().finish_and_clear();
 
-    let mut file = File::options()
-        .write(true)
-        .read(true)
-        .create(true)
-        .truncate(true)
-        .open(path)
-        .context("Unable to open lock file")?;
+    let mut file = File::create(path).context("Unable to open lock file")?;
     write_lock(&mut file, &lock)?;
     save_dependencies(&lock.resolved).context("Failed downloading saved dependencies")?;
     Ok(resolved_projects)

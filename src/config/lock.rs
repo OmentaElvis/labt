@@ -295,29 +295,14 @@ pub fn write_lock(file: &mut File, lock: &LabtLock) -> anyhow::Result<()> {
 
 impl From<&Scope> for toml_edit::Value {
     fn from(scope: &Scope) -> Self {
-        match scope {
-            Scope::COMPILE => Self::from("compile"),
-            Scope::TEST => Self::from("test"),
-            Scope::RUNTIME => Self::from("runtime"),
-            Scope::SYSTEM => Self::from("system"),
-            Scope::PROVIDED => Self::from("provided"),
-            Scope::IMPORT => Self::from("import"),
-        }
+        Self::from(scope.to_string())
     }
 }
 
 impl From<&toml_edit::Value> for Scope {
     fn from(value: &toml_edit::Value) -> Self {
         let scope = value.as_str().unwrap_or("compile").to_lowercase();
-        match scope.as_str() {
-            "compile" => Self::COMPILE,
-            "test" => Self::TEST,
-            "runtime" => Self::RUNTIME,
-            "system" => Self::SYSTEM,
-            "provided" => Self::PROVIDED,
-            "import" => Self::IMPORT,
-            _ => Self::COMPILE,
-        }
+        scope.parse::<Scope>().unwrap()
     }
 }
 #[cfg(test)]
