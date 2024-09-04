@@ -555,17 +555,22 @@ impl Constraint {
 
         true
     }
+    pub fn contain(&self, versions: &VersionRequirement) -> anyhow::Result<Constraint> {
+        let mut c = self.clone();
+        c.contain_mut(versions)?;
+        Ok(c)
+    }
     /// Will try to contain the extremes of incoming version constraints.
     /// If it cant fit then that is a version conflict. An error is thrown.
-    pub fn contain(&self, versions: &VersionRequirement) -> anyhow::Result<Constraint> {
+    pub fn contain_mut(&mut self, versions: &VersionRequirement) -> anyhow::Result<()> {
         match versions {
             VersionRequirement::Soft(_) => {
                 // doesnt really matter since its a suggestion
-                Ok(self.into())
+                Ok(())
             }
             VersionRequirement::Unset => {
                 // Looks good since we did not choose a version then the constraint does not need tampering
-                Ok(self.into())
+                Ok(())
             }
             VersionRequirement::Hard(hard_constraints) => {
                 // The critical stuff we care about.
@@ -615,7 +620,12 @@ impl Constraint {
                 let mut exacts: Vec<String> = Vec::new();
 
                 // Holds a new constraint defination that we are building
-                let mut constraint = Constraint::default();
+                // let mut constraint = Constraint::default();
+                *self = Constraint {
+                    exact: self.exact.clone(),
+                    exclusions: self.exclusions.clone(),
+                    ..Default::default()
+                };
 
                 // collect all the pairs of inequalities
                 for c in number_line {
@@ -645,10 +655,10 @@ impl Constraint {
                     if pairs.is_empty() {
                         match stack.last() {
                             Some(VersionRange::Lt(v)) => {
-                                constraint.min = Some((false, v.clone()));
+                                self.min = Some((false, v.clone()));
                             }
                             Some(VersionRange::Le(v)) => {
-                                constraint.min = Some((true, v.clone()));
+                                self.min = Some((true, v.clone()));
                             }
                             _ => {
                                 unreachable!();
@@ -727,7 +737,7 @@ impl Constraint {
                         }
                         Edges::Bound(c) => {
                             // This is our lower bound.
-                            if let Some((inclusive, min)) = &constraint.min {
+                            if let Some((inclusive, min)) = &self.min {
                                 let range = if *inclusive {
                                     VersionRange::Ge(min.to_string())
                                 } else {
@@ -736,7 +746,7 @@ impl Constraint {
 
                                 if c > range {
                                     // Sign of an exclusion.
-                                    if let Some((inclusive_max, max)) = &constraint.max {
+                                    if let Some((inclusive_max, max)) = &self.max {
                                         // we are fliping the inequalities to encasulate the bounded region
                                         let exclusion_end = match c {
                                             VersionRange::Gt(v) => VersionRange::Le(v),
@@ -751,18 +761,16 @@ impl Constraint {
                                             VersionRange::Ge(max.clone())
                                         };
 
-                                        constraint
-                                            .exclusions
-                                            .push((exclusion_start, exclusion_end));
+                                        self.exclusions.push((exclusion_start, exclusion_end));
 
                                         // update the new max version
                                         if let Edges::Bound(candidate_max) = &end {
                                             match candidate_max {
                                                 VersionRange::Lt(v) => {
-                                                    constraint.max = Some((false, v.clone()))
+                                                    self.max = Some((false, v.clone()))
                                                 }
                                                 VersionRange::Le(v) => {
-                                                    constraint.max = Some((true, v.clone()))
+                                                    self.max = Some((true, v.clone()))
                                                 }
                                                 _ => unreachable!(),
                                             }
@@ -775,10 +783,10 @@ impl Constraint {
                                 // if we have no min then set this as our new lower limit.
                                 match c {
                                     VersionRange::Gt(v) => {
-                                        constraint.min = Some((false, v));
+                                        self.min = Some((false, v));
                                     }
                                     VersionRange::Ge(v) => {
-                                        constraint.min = Some((true, v));
+                                        self.min = Some((true, v));
                                     }
                                     _ => {
                                         unreachable!();
@@ -793,14 +801,14 @@ impl Constraint {
                             // Our bound is -ve infinity
                         }
                         Edges::Bound(c) => {
-                            if constraint.max.is_none() {
+                            if self.max.is_none() {
                                 // max was not set, use this
                                 match c {
                                     VersionRange::Lt(v) => {
-                                        constraint.max = Some((false, v));
+                                        self.max = Some((false, v));
                                     }
                                     VersionRange::Le(v) => {
-                                        constraint.max = Some((true, v));
+                                        self.max = Some((true, v));
                                     }
                                     _ => {
                                         unreachable!();
@@ -811,12 +819,12 @@ impl Constraint {
                     }
                 });
 
-                constraint.exact = self.exact.clone();
+                self.exact = self.exact.clone();
 
                 // Now compute the exacts. If we have more than one exact, that is just an error
                 for c in exacts {
                     // check if we already have an exact set.
-                    if let Some(exact) = &constraint.exact {
+                    if let Some(exact) = &self.exact {
                         // We have an exact, they must be equal before we proceed
                         if !version_compare::compare_to(&c, exact, version_compare::Cmp::Eq)
                             .unwrap()
@@ -827,14 +835,14 @@ impl Constraint {
                     } else {
                         // no exact was set. so set it
                         // but before doind so, confirm it is in range
-                        if !constraint.within(&VersionRequirement::Hard(vec![VersionRange::Eq(c.clone())])).context(format!("Failed to check if version ={} is within allowed min and max range.", c))? {
-                            bail!("A set hard version is out of allowed range of {} and {}.", constraint.min.map_or("-Inf>=".to_string(), |(inclusive, v)|{
+                        if !self.within(&VersionRequirement::Hard(vec![VersionRange::Eq(c.clone())])).context(format!("Failed to check if version ={} is within allowed min and max range.", c))? {
+                            bail!("A set hard version is out of allowed range of {} and {}.", self.min.clone().map_or("-Inf>=".to_string(), |(inclusive, v)|{
                                 if inclusive {
                                     format!("{v}>=")
                                 }else{
                                     format!("{v}>")
                                 }
-                            }), constraint.max.map_or("<=+Inf".to_string(), |(inclusive, v)|{
+                            }), self.max.clone().map_or("<=+Inf".to_string(), |(inclusive, v)|{
                                 if inclusive {
                                     format!("<={v}")
                                 }else{
@@ -843,21 +851,21 @@ impl Constraint {
                             }));
                         }
 
-                        constraint.exact = Some(c);
+                        self.exact = Some(c);
                     }
                 }
 
                 // Go through our excludes one last time to see if everything fits in perfectly
-                for (start, end) in &constraint.exclusions {
+                for (start, end) in &self.exclusions {
                     // check exact
-                    if let Some(exact) = &constraint.exact {
+                    if let Some(exact) = &self.exact {
                         if Self::within_range(exact, start, end) {
                             bail!("An exact version was specified which was later explicitly excluded");
                         }
                     }
                     // Confirm that min and max are not inside the exclusion zone
                     if let (Some((_inclusive_min, min)), Some((_inclusive_max, max))) =
-                        (&constraint.min, &constraint.max)
+                        (&self.min, &self.max)
                     {
                         if Self::within_range(min, start, end)
                             && Self::within_range(max, start, end)
@@ -868,7 +876,7 @@ impl Constraint {
                     }
                 }
 
-                Ok(constraint)
+                Ok(())
             }
         }
     }
@@ -1020,6 +1028,9 @@ impl BuildTree for ProjectWrapper {
         // push this project to unresolved
         unresolved.push(qualified_name.clone());
 
+        // Version was resolved earlier and this is just a version conflict
+        let mut resolved_earlier = false;
+
         if let Some(prog) = &self.progress {
             let prog = prog.borrow();
             prog.set_message(format!(" {} ", qualified_name));
@@ -1043,6 +1054,7 @@ impl BuildTree for ProjectWrapper {
                 Ok(v) => match v {
                     version_compare::Cmp::Eq => {
                         // the versions are same, so skip resolving as it has already been resolved
+                        unresolved.pop();
                         return Ok(());
                     }
                     version_compare::Cmp::Ne => {
@@ -1067,17 +1079,25 @@ impl BuildTree for ProjectWrapper {
                                         .unwrap()
                                         {
                                             resolved[index].version = v.clone();
+                                            // shrink the constraint to fit
+                                            if let Some(con) = &mut resolved[index].constraints {
+                                                con.contain_mut(c)?;
+                                            }
+                                            resolved_earlier = true;
                                         } else {
                                             // we don't need this tree direction, its older
+                                            unresolved.pop();
                                             return Ok(());
                                         }
                                     } else {
                                         // It is a softie and out of range; we dont need you
+                                        unresolved.pop();
                                         return Ok(());
                                     }
                                 }
                                 VersionRequirement::Unset => {
                                     // Someone did not bother choosing a version, so any can do. In this case just use the already resolved one.
+                                    unresolved.pop();
                                     return Ok(());
                                 }
                                 VersionRequirement::Hard(v) => {
@@ -1092,12 +1112,14 @@ impl BuildTree for ProjectWrapper {
                                         // If containment has an exact value set, update it and resolve
                                         if let Some(exact) = &containment.exact {
                                             resolved[index].version = exact.to_string();
+                                            resolved_earlier = true;
                                         } else {
                                             // No exact value set, so we will prefer the latest
                                             match conflict {
                                                 version_compare::Cmp::Le
                                                 | version_compare::Cmp::Lt => {
                                                     resolved[index].version = version;
+                                                    resolved_earlier = true;
                                                 }
                                                 version_compare::Cmp::Ge
                                                 | version_compare::Cmp::Gt => {
@@ -1117,6 +1139,50 @@ impl BuildTree for ProjectWrapper {
                                             v.iter().map(|k| k.to_string()).collect::<Vec<String>>().join(", ")
                                         );
                                     }
+                                }
+                            }
+                        } else {
+                            // constraint was not set back in time.
+                            // ideally we should not be here, all projectdep should include a set constraint
+                            // maybe leave this for backward compatibility
+                            let c = self.project.get_version();
+
+                            match c {
+                                VersionRequirement::Unset => {
+                                    // No version set, so just use already resolved
+                                    unresolved.pop();
+                                    return Ok(());
+                                }
+                                VersionRequirement::Soft(v) => {
+                                    // two softies, prefer the latest
+                                    if let Ok(cmp) = version_compare::compare(v, &res.version) {
+                                        match cmp {
+                                            version_compare::Cmp::Ge | version_compare::Cmp::Gt => {
+                                                // resolve this, it is bigger
+                                                resolved[index].version = v.clone();
+                                                resolved_earlier = true;
+                                                // This is a soft range no need to add a new one
+                                            }
+                                            version_compare::Cmp::Lt
+                                            | version_compare::Cmp::Le
+                                            | version_compare::Cmp::Eq => {
+                                                unresolved.pop();
+                                                return Ok(());
+                                            }
+                                            version_compare::Cmp::Ne => {
+                                                unreachable!();
+                                            }
+                                        }
+                                    }
+                                }
+                                VersionRequirement::Hard(_) => {
+                                    // no constraint was specified on the already resolved version.
+                                    // so just override everything
+                                    let mut new_constraint = Constraint::default();
+                                    new_constraint.contain_mut(c)?;
+                                    resolved[index].version = version.clone();
+                                    resolved[index].constraints = Some(new_constraint);
+                                    resolved_earlier = true;
                                 }
                             }
                         }
@@ -1248,7 +1314,10 @@ impl BuildTree for ProjectWrapper {
         ))?;
         project.base_url = url;
         project.cache_hit = cache_hit;
-        resolved.push(project);
+
+        if !resolved_earlier {
+            resolved.push(project);
+        }
         Ok(())
     }
 }
@@ -2306,7 +2375,7 @@ mod test {
 
     pub fn resolve(
         dependencies: Vec<Project>,
-        mut resolved: Vec<ProjectDep>,
+        resolved: &mut Vec<ProjectDep>,
         resolvers: Rc<RefCell<Vec<Box<dyn Resolver>>>>,
     ) -> anyhow::Result<Vec<Project>> {
         let mut resolved_projects = Vec::new();
@@ -2316,7 +2385,7 @@ mod test {
             // create a new project wrapper for dependency resolution
             let mut wrapper = ProjectWrapper::new(project.clone(), Rc::clone(&resolvers));
             // walk the dependency tree
-            wrapper.build_tree(&mut resolved, &mut unresolved)?;
+            wrapper.build_tree(resolved, &mut unresolved)?;
             resolved_projects.push(wrapper.project);
         }
         Ok(resolved_projects)
@@ -2345,7 +2414,12 @@ mod test {
         // now create some fake dependencies
         let dependencies = vec![Project::new("com.example", "module-a", "1.0.0")];
 
-        let resolved = resolve(dependencies, Vec::new(), Rc::new(RefCell::new(resolver))).unwrap();
+        let resolved = resolve(
+            dependencies,
+            &mut Vec::new(),
+            Rc::new(RefCell::new(resolver)),
+        )
+        .unwrap();
         let mut iter = resolved.iter();
         let project = iter.next();
         assert_eq!(
@@ -2368,9 +2442,10 @@ mod test {
             Project::new("com.example", "module-b", "2.0.0"),
         ];
 
-        let resolved = resolve(
+        let mut resolved = Vec::new();
+        resolve(
             dependencies,
-            Vec::new(),
+            &mut resolved,
             Rc::new(RefCell::new(create_resolver(port))),
         )
         .unwrap();
@@ -2379,12 +2454,22 @@ mod test {
         let project = iter.next();
         assert_eq!(
             project,
-            Some(&Project::new("com.example", "module-a", "1.0.0"))
+            Some(&ProjectDep {
+                group_id: "com.example".to_string(),
+                artifact_id: "module-a".to_string(),
+                version: "1.0.0".to_string(),
+                ..Default::default()
+            })
         );
         let project = iter.next();
         assert_eq!(
             project,
-            Some(&Project::new("com.example", "module-b", "2.0.0"))
+            Some(&ProjectDep {
+                group_id: "com.example".to_string(),
+                artifact_id: "module-b".to_string(),
+                version: "2.0.0".to_string(),
+                ..Default::default()
+            })
         );
     }
     #[test]
@@ -2401,9 +2486,11 @@ mod test {
             Project::new("com.example", "module-a", "2.0.0"),
         ];
 
-        let resolved = resolve(
+        let mut resolved = Vec::new();
+
+        resolve(
             dependencies,
-            Vec::new(),
+            &mut resolved,
             Rc::new(RefCell::new(create_resolver(port))),
         )
         .unwrap();
@@ -2412,7 +2499,12 @@ mod test {
         assert_eq!(resolved.len(), 1);
         assert_eq!(
             resolved[0],
-            Project::new("com.example", "module-a", "2.0.0")
+            ProjectDep {
+                group_id: "com.example".to_string(),
+                artifact_id: "module-a".to_string(),
+                version: "2.0.0".to_string(),
+                ..Default::default()
+            }
         );
     }
 }
