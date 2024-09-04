@@ -323,7 +323,7 @@ impl Resolver for NetResolver {
                     Some(err),
                 )
             })?;
-            project.set_packaging(p.get_packaging());
+            *project = p;
         } else if matches!(res.status(), StatusCode::NOT_FOUND) {
             // 404 not found
             return Err(ResolverError::new(

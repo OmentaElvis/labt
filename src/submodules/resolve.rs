@@ -2339,11 +2339,11 @@ mod pom_faker {
 #[test]
 fn some_test() {
     let server = pom_faker::PomServer::new().unwrap();
-    server.add_project(pom_faker::ProjectEntry::new(
-        "com.example",
-        "module-a",
-        "1.0.0",
-    ));
+    server.add_project(
+        pom_faker::ProjectEntry::new("com.example", "module-a", "1.0.0").add_dependency(
+            pom_faker::ProjectEntry::new("com.example", "module-a", "1.0.0"),
+        ),
+    );
     let port = server.get_port();
 
     let base_url = format!("http://localhost:{port}");
@@ -2503,6 +2503,69 @@ mod test {
                 group_id: "com.example".to_string(),
                 artifact_id: "module-a".to_string(),
                 version: "2.0.0".to_string(),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn transitive_version_conflict() {
+        let server = PomServer::new().unwrap();
+        let port = server.get_port();
+
+        let lib_a1 = ProjectEntry::new("com.example", "module-a", "1.0.0");
+        let lib_a2 = ProjectEntry::new("com.example", "module-a", "2.0.0");
+        server.add_project(lib_a1.clone());
+        server.add_project(lib_a2.clone());
+
+        server.add_project(
+            ProjectEntry::new("com.example", "module-b", "1.0.0").add_dependency(lib_a1),
+        );
+        server.add_project(
+            ProjectEntry::new("com.example", "module-c", "1.0.0").add_dependency(lib_a2),
+        );
+
+        // module-b and c declares dependencies on module-a:1.0 and module-a:2.0 respectively.
+        let dependencies = vec![
+            Project::new("com.example", "module-b", "1.0.0"),
+            Project::new("com.example", "module-c", "1.0.0"),
+        ];
+
+        let mut resolved = Vec::new();
+
+        resolve(
+            dependencies,
+            &mut resolved,
+            Rc::new(RefCell::new(create_resolver(port))),
+        )
+        .unwrap();
+
+        // Expected: only 1  choosed with highest version
+        assert_eq!(resolved.len(), 3);
+        assert_eq!(
+            resolved[0],
+            ProjectDep {
+                group_id: "com.example".to_string(),
+                artifact_id: "module-a".to_string(),
+                version: "2.0.0".to_string(),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            resolved[1],
+            ProjectDep {
+                group_id: "com.example".to_string(),
+                artifact_id: "module-b".to_string(),
+                version: "1.0.0".to_string(),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            resolved[2],
+            ProjectDep {
+                group_id: "com.example".to_string(),
+                artifact_id: "module-c".to_string(),
+                version: "1.0.0".to_string(),
                 ..Default::default()
             }
         );
