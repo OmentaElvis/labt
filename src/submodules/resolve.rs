@@ -182,6 +182,7 @@ impl TryFrom<&Project> for ProjectDep {
                 p.get_artifact_id()
             ))?);
         }
+        let c = Constraint::default().contain(project.get_version())?;
         Ok(ProjectDep {
             artifact_id: project.get_artifact_id(),
             group_id: project.get_group_id(),
@@ -191,6 +192,7 @@ impl TryFrom<&Project> for ProjectDep {
                 .context("Version not set for package")?,
             scope: project.get_scope(),
             packaging: project.get_packaging(),
+            constraints: Some(c),
             dependencies: deps,
             ..Default::default()
         })
@@ -957,7 +959,10 @@ impl ProjectWrapper {
                             continue;
                         } else {
                             // now this is an error
-                            return Err(anyhow!(err).context("Failed to select correct version."));
+                            return Err(anyhow!(err).context(format!(
+                                "Failed to calculate suitable version from {} resolver.",
+                                resolver.get_name(),
+                            )));
                         }
                     }
                     _ => {
@@ -1060,7 +1065,7 @@ impl BuildTree for ProjectWrapper {
                     version_compare::Cmp::Ne => {
                         // TODO not really sure of what to do with this
                     }
-                    conflict => {
+                    _ => {
                         // we have encountered two different versions.
                         // so try to go back in time and see what sort of constraints were set earlier.
                         if let Some(constraints) = &res.constraints {
@@ -1071,7 +1076,7 @@ impl BuildTree for ProjectWrapper {
                                     // A soft version has been suggested. We can override it at will.
                                     // always prefer a more later version
                                     if constraints.within(c).unwrap() {
-                                        if !version_compare::compare_to(
+                                        if version_compare::compare_to(
                                             &version,
                                             &res.version,
                                             version_compare::Cmp::Gt,
@@ -1102,34 +1107,39 @@ impl BuildTree for ProjectWrapper {
                                 }
                                 VersionRequirement::Hard(v) => {
                                     // These are commandments. If we cannot fit within, then this is not recoverable at all.
-                                    if constraints.within(c).unwrap() {
+                                    if constraints.within(c).context(format!(
+                                        "Failed to contain {:?} within {constraints}",
+                                        v,
+                                    ))? {
                                         // we can fit within, so make the version more strict than ever
-                                        let containment =
-                                            constraints.contain(c).context(format!(
-                                                "Failed to contain {:?} within {constraints}",
-                                                v,
-                                            ))?;
+                                        let containment = constraints.contain(c).unwrap();
                                         // If containment has an exact value set, update it and resolve
                                         if let Some(exact) = &containment.exact {
                                             resolved[index].version = exact.to_string();
-                                            resolved_earlier = true;
                                         } else {
                                             // No exact value set, so we will prefer the latest
-                                            match conflict {
-                                                version_compare::Cmp::Le
-                                                | version_compare::Cmp::Lt => {
-                                                    resolved[index].version = version;
-                                                    resolved_earlier = true;
-                                                }
-                                                version_compare::Cmp::Ge
-                                                | version_compare::Cmp::Gt => {
-                                                    return Ok(());
-                                                }
-                                                _ => {
-                                                    //strange
-                                                }
-                                            }
+                                            // we need to recalculate our selected versions based on what will fit in versions available in metadata.xml
+                                            // This is also why caching of the metadata is important because it is going to be constantly indexed.
+                                            // also update self.project with the selected version so as to capture this calculated version
+
+                                            // step 1: convert Constraints to versionrequirement
+                                            let vr = VersionRequirement::from(&containment);
+
+                                            // step 2: Calculate the suitable version
+                                            let version = Self::compute_version(
+                                                Rc::clone(&self.resolvers),
+                                                Project::new(&res.group_id, &res.artifact_id, "")
+                                                    .set_version(vr),
+                                            )
+                                            .context(format!("Failed to calculate a version for dependency {}:{}.", res.group_id, res.artifact_id))
+                                            .context(format!("No appropriate version could be selected that could sastify {} on this version conflict.", containment))?;
+
+                                            // step 3: use computed version
+                                            resolved[index].version = version;
                                         }
+                                        // update contained constraints
+                                        resolved[index].constraints = Some(containment);
+                                        resolved_earlier = true;
                                     } else {
                                         // the constraint cannot fit in this. This is fatal.
                                         bail!(
@@ -1256,41 +1266,6 @@ impl BuildTree for ProjectWrapper {
                 ))?;
             // from here now on we have a version for even the recursive calls, therefore there should be no complaints
             dep.set_selected_version(Some(version.clone()));
-
-            // TODO remove this since it is redundant, but for some reason it breaks everything
-            if let Some((index, res)) = resolved.iter_mut().enumerate().find(|(_, res)| {
-                res.group_id == dep.get_group_id() && res.artifact_id == dep.get_artifact_id()
-            }) {
-                // if the incoming dependency version is soft override
-
-                // now check version for possible conflicts
-                match version_compare::compare(&res.version, &version) {
-                    Ok(v) => match v {
-                        version_compare::Cmp::Eq => {
-                            // the versions are same, so skip resolving
-                            continue;
-                        }
-                        version_compare::Cmp::Ne => {
-                            // TODO not really sure of what to do with this
-                        }
-                        version_compare::Cmp::Gt | version_compare::Cmp::Ge => {
-                            // dependency conflict, so use the latest version which happens to be already resolved
-                            continue;
-                        }
-                        version_compare::Cmp::Lt | version_compare::Cmp::Le => {
-                            // dependency version conflict, so replace the already resolved version with the latesr
-                            // version and proceed to resolve for this version
-                            resolved[index].version = version;
-                        }
-                    },
-                    Err(_) => {
-                        return Err(anyhow!(format!(
-                            "Invalid versions string. Either {} or {} is invalid",
-                            res.version, version
-                        )));
-                    }
-                }
-            }
 
             if unresolved.contains(&dep.qualified_name()?) {
                 // Circular dep, if encountered,
@@ -1966,7 +1941,9 @@ mod pom_faker {
             MetadataEntry {
                 latest: "2.1.0",
                 release: "2.1.0",
-                versions: vec!["1.0.0", "1.1.0", "1.2.0", "2.0.0", "2.1.0"],
+                versions: vec![
+                    "1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.1", "1.5.0", "2.0.0", "2.1.0",
+                ],
             },
         );
 
@@ -2365,7 +2342,10 @@ mod test {
 
     use crate::{
         pom::Project,
-        submodules::resolvers::{NetResolver, Resolver},
+        submodules::{
+            resolve::Constraint,
+            resolvers::{NetResolver, Resolver},
+        },
     };
 
     use super::{
@@ -2497,15 +2477,10 @@ mod test {
 
         // Expected: only 1  choosed with highest version
         assert_eq!(resolved.len(), 1);
-        assert_eq!(
-            resolved[0],
-            ProjectDep {
-                group_id: "com.example".to_string(),
-                artifact_id: "module-a".to_string(),
-                version: "2.0.0".to_string(),
-                ..Default::default()
-            }
-        );
+        let module_a = &resolved[0];
+        assert_eq!(module_a.group_id, "com.example".to_string());
+        assert_eq!(module_a.artifact_id, "module-a".to_string());
+        assert_eq!(module_a.version, "2.0.0".to_string());
     }
 
     #[test]
@@ -2569,5 +2544,65 @@ mod test {
                 ..Default::default()
             }
         );
+    }
+    /// Test case: Overlapping Version Ranges
+    ///
+    /// This test checks the behavior of the resolver when two dependencies specify overlapping,
+    /// but not identical version ranges for the same module. The expected behavior is that the
+    /// resolver selects a version that satisfies both ranges.
+    ///
+    /// Setup:
+    /// - `module-a` requires `module-b` with a version range of `[1.0, 2.0)`.
+    /// - `module-c` requires `module-b` with a version range of `[1.5, 2.1)`.
+    ///
+    /// Expected Result:
+    /// The resolver should successfully resolve a version of `module-b` that falls within both
+    /// ranges. In this case, `module-b:1.5` should be selected as it is the intersection of the
+    /// two version ranges.
+    #[test]
+    fn overlapping_version_range() {
+        let server = PomServer::new().unwrap();
+        let port = server.get_port();
+
+        let lib_b1 = ProjectEntry::new("com.example", "module-b", "[1.0, 2.0)");
+        let lib_b2 = ProjectEntry::new("com.example", "module-b", "[1.5, 2.1)");
+
+        server.add_project(
+            ProjectEntry::new("com.example", "module-a", "1.0.0").add_dependency(lib_b1),
+        );
+        server.add_project(
+            ProjectEntry::new("com.example", "module-c", "1.0.0").add_dependency(lib_b2),
+        );
+
+        // Project declares dependencies on module-a:1.0 and module-a:2.0 directly.
+        let dependencies = vec![
+            Project::new("com.example", "module-a", "1.0.0"),
+            Project::new("com.example", "module-c", "1.0.0"),
+        ];
+
+        let mut resolved = Vec::new();
+
+        resolve(
+            dependencies,
+            &mut resolved,
+            Rc::new(RefCell::new(create_resolver(port))),
+        )
+        .unwrap();
+
+        // Expected: only module b choosed within version ranges
+        assert_eq!(resolved.len(), 3);
+        let module_b = &resolved[0];
+        assert_eq!(module_b.group_id, String::from("com.example"));
+        assert_eq!(module_b.artifact_id, String::from("module-b"));
+        assert_eq!(
+            module_b.constraints,
+            Some(Constraint {
+                min: Some((true, String::from("1.5"))),
+                max: Some((false, String::from("2.0"))),
+                ..Default::default()
+            })
+        );
+        // The selected version
+        assert_eq!(module_b.version, String::from("1.5.0"));
     }
 }

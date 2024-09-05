@@ -250,6 +250,72 @@ impl VersionRequirement {
     pub fn is_unset(&self) -> bool {
         matches!(self, Self::Unset)
     }
+    fn flip_range(range: VersionRange) -> VersionRange {
+        match range {
+            VersionRange::Eq(v) => VersionRange::Eq(v),
+            VersionRange::Gt(v) => VersionRange::Le(v),
+            VersionRange::Ge(v) => VersionRange::Lt(v),
+            VersionRange::Lt(v) => VersionRange::Ge(v),
+            VersionRange::Le(v) => VersionRange::Gt(v),
+        }
+    }
+}
+
+impl From<&Constraint> for VersionRequirement {
+    fn from(value: &Constraint) -> Self {
+        let mut v = VersionRequirement::Unset;
+        // min
+        if let Some((inclusive, min)) = &value.min {
+            if let VersionRequirement::Hard(v) = &mut v {
+                v.push(if *inclusive {
+                    VersionRange::Ge(min.to_string())
+                } else {
+                    VersionRange::Gt(min.to_string())
+                });
+            } else {
+                v = VersionRequirement::Hard(vec![if *inclusive {
+                    VersionRange::Ge(min.to_string())
+                } else {
+                    VersionRange::Gt(min.to_string())
+                }]);
+            }
+        }
+        // max
+        if let Some((inclusive, max)) = &value.max {
+            if let VersionRequirement::Hard(v) = &mut v {
+                v.push(if *inclusive {
+                    VersionRange::Le(max.to_string())
+                } else {
+                    VersionRange::Lt(max.to_string())
+                });
+            } else {
+                v = VersionRequirement::Hard(vec![if *inclusive {
+                    VersionRange::Le(max.to_string())
+                } else {
+                    VersionRange::Lt(max.to_string())
+                }]);
+            }
+        }
+        // exact
+        if let Some(exact) = &value.exact {
+            v = VersionRequirement::Hard(vec![VersionRange::Eq(exact.to_string())]);
+        }
+
+        // exclusions
+        for (start, end) in &value.exclusions {
+            let start = Self::flip_range(start.clone());
+            let end = Self::flip_range(end.clone());
+
+            if let VersionRequirement::Hard(v) = &mut v {
+                v.push(start);
+                v.push(end);
+            } else {
+                v = VersionRequirement::Hard(vec![start, end]);
+            }
+        }
+
+        v
+    }
 }
 
 impl FromStr for VersionRequirement {
@@ -526,6 +592,11 @@ impl Project {
     /// Returns the version of the project
     pub fn get_version(&self) -> &VersionRequirement {
         &self.version
+    }
+    /// Sets the version requirement of the project
+    pub fn set_version(&mut self, version: VersionRequirement) -> &mut Project {
+        self.version = version;
+        self
     }
     /// Returns the version of the project
     pub fn get_selected_version(&self) -> &Option<String> {
@@ -960,6 +1031,8 @@ pub async fn parse_pom_async<R: AsyncRead + Unpin>(
 #[cfg(test)]
 use pretty_assertions::assert_eq;
 
+use crate::submodules::resolve::Constraint;
+
 #[test]
 fn parse_pom_version_requirements() {
     let soft = "1.0";
@@ -1328,6 +1401,57 @@ fn version_range_to_string() {
     assert_eq!(
         VersionRange::Le("2.0".to_string()).to_string().as_str(),
         "<=2.0"
+    );
+}
+#[test]
+fn version_requirement_from_constraint() {
+    let c = Constraint::default();
+    assert!(VersionRequirement::from(&c).is_unset());
+
+    let c = Constraint {
+        min: Some((true, "1.0".to_string())),
+        max: Some((true, "3.0".to_string())),
+        ..Default::default()
+    };
+
+    let vr = VersionRequirement::from(&c);
+    assert!(vr.is_hard());
+    assert_eq!(
+        vr,
+        VersionRequirement::Hard(vec![
+            VersionRange::Ge("1.0".to_string()),
+            VersionRange::Le("3.0".to_string())
+        ])
+    );
+    let c = Constraint {
+        exact: Some("2.0".to_string()),
+        ..Default::default()
+    };
+
+    let vr = VersionRequirement::from(&c);
+    assert!(vr.is_hard());
+    assert_eq!(
+        vr,
+        VersionRequirement::Hard(vec![VersionRange::Eq("2.0".to_string())])
+    );
+
+    let c = Constraint {
+        // exclude version 1
+        exclusions: vec![(
+            VersionRange::Ge("1.0".to_string()),
+            VersionRange::Le("1.0".to_string()),
+        )],
+        ..Default::default()
+    };
+
+    let vr = VersionRequirement::from(&c);
+    assert!(vr.is_hard());
+    assert_eq!(
+        vr,
+        VersionRequirement::Hard(vec![
+            VersionRange::Lt("1.0".to_string()),
+            VersionRange::Gt("1.0".to_string()),
+        ])
     );
 }
 // su

@@ -211,9 +211,12 @@ impl Resolver for CacheResolver {
             .map_err(|err| {
                 ResolverError::new(
                     format!(
-                        "Failed to select correct version for {}:{}",
+                        "Failed to select correct version for {}:{} from metadata with: latest: {}, release: {} and available {:?}",
                         project.get_group_id(),
-                        project.get_artifact_id()
+                        project.get_artifact_id(),
+                        metadata.latest.unwrap_or("None".to_string()),
+                        metadata.release.unwrap_or("None".to_string()),
+                        metadata.versions
                     )
                     .as_str(),
                     ResolverErrorKind::NoSelectedVersion,
@@ -439,9 +442,12 @@ impl Resolver for NetResolver {
             let selected_version = metadata.select_version(versions).map_err(|err| {
                 ResolverError::new(
                     format!(
-                        "Failed to select correct version for {}:{}",
+                        "Failed to select correct version for {}:{} from metadata with: latest: {}, release: {} and available {:?}",
                         project.get_group_id(),
-                        project.get_artifact_id()
+                        project.get_artifact_id(),
+                        metadata.latest.unwrap_or("None".to_string()),
+                        metadata.release.unwrap_or("None".to_string()),
+                        metadata.versions
                     )
                     .as_str(),
                     ResolverErrorKind::NoSelectedVersion,
