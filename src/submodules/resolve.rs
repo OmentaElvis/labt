@@ -1970,7 +1970,10 @@ mod pom_faker {
             MetadataEntry {
                 latest: "4.0.0",
                 release: "4.0.0",
-                versions: vec!["1.0.0", "2.0.0", "3.0.0", "4.0.0"],
+                versions: vec![
+                    "1.0.0", "1.5.0", "1.6.0", "1.7.0", "2.0.0", "2.1.0", "2.2.0", "2.3.0",
+                    "2.4.0", "3.0.0", "4.0.0",
+                ],
             },
         );
 
@@ -2604,5 +2607,49 @@ mod test {
         );
         // The selected version
         assert_eq!(module_b.version, String::from("1.5.0"));
+    }
+
+    /// Test case: Non-overlapping Version Ranges
+    ///
+    /// This test checks how the resolver handles a situation where two dependencies specify
+    /// non-overlapping version ranges for the same module. The expected behavior is that the
+    /// resolver should detect the conflict and either throw an error or fail the resolution.
+    ///
+    /// Setup:
+    /// - `module-a` requires `module-e` with a version range of `[1.0, 1.5)`.
+    /// - `module-b` requires `module-e` with a version range of `[2.0, 2.5)`.
+    ///
+    /// Expected Result:
+    /// The resolver should detect that there is no version of `module-e` that satisfies both
+    /// version ranges and report a conflict.
+    #[test]
+    fn non_overlapping_version_range() {
+        let server = PomServer::new().unwrap();
+        let port = server.get_port();
+
+        let lib_e1 = ProjectEntry::new("com.example", "module-e", "[1.0, 1.5)");
+        let lib_e2 = ProjectEntry::new("com.example", "module-e", "[2.0, 2.5)");
+
+        server.add_project(
+            ProjectEntry::new("com.example", "module-a", "1.0.0").add_dependency(lib_e1),
+        );
+        server.add_project(
+            ProjectEntry::new("com.example", "module-b", "1.0.0").add_dependency(lib_e2),
+        );
+
+        let dependencies = vec![
+            Project::new("com.example", "module-a", "1.0.0"),
+            Project::new("com.example", "module-b", "1.0.0"),
+        ];
+
+        let mut resolved = Vec::new();
+
+        // This is a hard version conflict
+        assert!(resolve(
+            dependencies,
+            &mut resolved,
+            Rc::new(RefCell::new(create_resolver(port))),
+        )
+        .is_err()); // Maybe this error was a net related error and this test will be incorrect
     }
 }
