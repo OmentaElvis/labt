@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use quick_xml::{events::Event, Reader};
 use version_compare::Cmp;
 
-use crate::pom::VersionRequirement;
+use crate::{pom::VersionRequirement, submodules::resolve::Constraint};
 
 const METADATA: &[u8] = b"metadata";
 const GROUP_ID: &[u8] = b"groupId";
@@ -89,71 +89,54 @@ impl MavenMetadata {
                     return Ok(versions.first().unwrap().to_owned());
                 }
             }
-            VersionRequirement::Hard(hard_constraints) => {
+            hard => {
+                let constraint = Constraint::default().contain(hard)?;
                 // filter through versions while short circuiting to reduce checks
                 let mut versions: Vec<&String> = self
                     .versions
                     .iter()
                     .filter(|version| {
-                        // for each version check that it matches all constraints. Reject it on first failure.
-                        for c in hard_constraints {
-                            // version compare does return a Result for invalid versions. for now ignore the error and filter out the package
-                            match c {
-                                crate::pom::VersionRange::Eq(target_version) => {
-                                    if !version_compare::compare_to(
-                                        version,
-                                        target_version,
-                                        Cmp::Eq,
-                                    )
+                        // check min
+                        if let Some((inclusive, min)) = &constraint.min {
+                            if *inclusive {
+                                if !version_compare::compare_to(version, min, Cmp::Ge)
                                     .unwrap_or(false)
-                                    {
-                                        return false;
-                                    }
+                                {
+                                    return false;
                                 }
-                                crate::pom::VersionRange::Gt(target_version) => {
-                                    if !version_compare::compare_to(
-                                        version,
-                                        target_version,
-                                        Cmp::Gt,
-                                    )
+                            } else if !version_compare::compare_to(version, min, Cmp::Gt)
+                                .unwrap_or(false)
+                            {
+                                return false;
+                            }
+                        }
+                        // check max
+                        if let Some((inclusive, max)) = &constraint.max {
+                            if *inclusive {
+                                if !version_compare::compare_to(version, max, Cmp::Le)
                                     .unwrap_or(false)
-                                    {
-                                        return false;
-                                    }
+                                {
+                                    return false;
                                 }
-                                crate::pom::VersionRange::Ge(target_version) => {
-                                    if !version_compare::compare_to(
-                                        version,
-                                        target_version,
-                                        Cmp::Ge,
-                                    )
-                                    .unwrap_or(false)
-                                    {
-                                        return false;
-                                    }
-                                }
-                                crate::pom::VersionRange::Lt(target_version) => {
-                                    if !version_compare::compare_to(
-                                        version,
-                                        target_version,
-                                        Cmp::Lt,
-                                    )
-                                    .unwrap_or(false)
-                                    {
-                                        return false;
-                                    }
-                                }
-                                crate::pom::VersionRange::Le(target_version) => {
-                                    if !version_compare::compare_to(
-                                        version,
-                                        target_version,
-                                        Cmp::Le,
-                                    )
-                                    .unwrap_or(false)
-                                    {
-                                        return false;
-                                    }
-                                }
+                            } else if !version_compare::compare_to(version, max, Cmp::Lt)
+                                .unwrap_or(false)
+                            {
+                                return false;
+                            }
+                        }
+                        // check for exact
+                        if let Some(exact) = &constraint.exact {
+                            if !version_compare::compare_to(version, exact, Cmp::Eq)
+                                .unwrap_or(false)
+                            {
+                                return false;
+                            }
+                        }
+                        // check among excludes
+                        for (start, end) in &constraint.exclusions {
+                            // a version must fit within start and end to match exclusion
+                            if Constraint::within_range(version, start, end) {
+                                return false;
                             }
                         }
                         true
@@ -402,7 +385,8 @@ where
 
     Ok(parser.metadata)
 }
-
+#[cfg(test)]
+use pretty_assertions::assert_eq;
 #[test]
 fn maven_metadata_parsing() {
     let file = r#"
@@ -529,5 +513,20 @@ fn maven_metadata_select_version() {
     assert_eq!(
         metadata.select_version(&VersionRequirement::Unset).unwrap(),
         "6.9.0".to_string()
+    );
+
+    // Exclude a specific version
+    assert_eq!(
+        metadata
+            .select_version(&"(,1.5.0),(1.5.0,)".parse::<VersionRequirement>().unwrap())
+            .unwrap(),
+        "6.9.1-SNAPSHOT".to_string()
+    );
+    // Exclude a range of version
+    assert_eq!(
+        metadata
+            .select_version(&"(,6.6.0),[6.9.2,)".parse::<VersionRequirement>().unwrap())
+            .unwrap(),
+        "5.9.0".to_string()
     );
 }

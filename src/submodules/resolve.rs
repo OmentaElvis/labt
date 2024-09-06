@@ -493,7 +493,7 @@ impl Constraint {
             }
         }
     }
-    fn within_range(target: &String, start: &VersionRange, end: &VersionRange) -> bool {
+    pub fn within_range(target: &String, start: &VersionRange, end: &VersionRange) -> bool {
         // if a version is on the left of the start, then it is out of range
         // if version is on right of the end, then it is out of range
         //
@@ -598,7 +598,7 @@ impl Constraint {
                 // add the rest of the constraints and sort them
                 number_line.extend(hard_constraints.iter().cloned());
                 // sort
-                number_line.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+                number_line.sort_by(|a, b| a.partial_cmp(b).unwrap());
                 // let mut version_eq = |v| {
                 //     if let Some(exact) = &self.exact {
                 //         // This is an error. We are conflicting very hard
@@ -608,7 +608,7 @@ impl Constraint {
                 //     }
                 //     Ok(())
                 // };
-
+                #[derive(Debug)]
                 enum Edges {
                     Infinity,
                     Bound(VersionRange),
@@ -623,6 +623,28 @@ impl Constraint {
 
                 // Holds a new constraint defination that we are building
                 // let mut constraint = Constraint::default();
+
+                let old_min = match &self.min {
+                    Some((inclusive, min)) => {
+                        if *inclusive {
+                            Some(VersionRange::Ge(min.clone()))
+                        } else {
+                            Some(VersionRange::Gt(min.clone()))
+                        }
+                    }
+                    None => None,
+                };
+                let old_max = match &self.max {
+                    Some((inclusive, max)) => {
+                        if *inclusive {
+                            Some(VersionRange::Le(max.clone()))
+                        } else {
+                            Some(VersionRange::Lt(max.clone()))
+                        }
+                    }
+                    None => None,
+                };
+
                 *self = Constraint {
                     exact: self.exact.clone(),
                     exclusions: self.exclusions.clone(),
@@ -655,135 +677,243 @@ impl Constraint {
                 if !stack.is_empty() {
                     // if no pairs was collected then the last element is the minimum bound
                     if pairs.is_empty() {
-                        match stack.last() {
-                            Some(VersionRange::Lt(v)) => {
-                                self.min = Some((false, v.clone()));
-                            }
-                            Some(VersionRange::Le(v)) => {
-                                self.min = Some((true, v.clone()));
-                            }
-                            _ => {
-                                unreachable!();
-                            }
-                        }
-                    } else {
-                        // We have a non empty pairs and this is still pointing to infinity
-                        // check if it we already had a maximum defined
-                        if let Some((inclusive, max)) = &self.max {
-                            // if this last value can fall within the maximum value set.
-                            let c = stack.last().unwrap();
+                        // we need the first occurrence of LT/Le as max and last occurence of GT/GE as min
+                        let mut min = None;
+                        let mut max = None;
 
-                            let max_version = if *inclusive {
-                                VersionRange::Ge(max.clone())
-                            } else {
-                                VersionRange::Gt(max.clone())
-                            };
-
-                            match c.partial_cmp(&max_version) {
-                                Some(std::cmp::Ordering::Greater) => {
-                                    // Definately a conflict.
-                                    // First we already have a max set and we sorted everything by version. If it was within
-                                    // range of the max, it would have auto closed but now its orphaned since no one is big enough to be parent.
-                                    bail!("An orphan version out of allowed range.");
+                        for s in stack {
+                            match s {
+                                VersionRange::Gt(v) => {
+                                    min = Some((false, v.clone()));
                                 }
-                                Some(std::cmp::Ordering::Less) => {
-                                    // within the desired range
-                                    pairs.push((Edges::Bound(c.clone()), Edges::Infinity));
+                                VersionRange::Ge(v) => {
+                                    min = Some((true, v.clone()));
                                 }
-                                Some(std::cmp::Ordering::Equal) => {
-                                    // TODO Not entirely sure about this section. Should be reviewed
-                                    // This should be checked since we can have conflicting ranges such as >5.6 & <5.6
-                                    // You may think of this example as excluding 5.6 but a max was already set regardless
-                                    match (c, max_version) {
-                                        // |--------------| 
-                                        // >5.6          <5.6
-                                        (VersionRange::Gt(_) , VersionRange::Lt(_)) |
-                                        // |--------------|
-                                        // >=5.6          <5.6
-                                        (VersionRange::Ge(_), VersionRange::Lt(_)) |
-                                        // |--------------|
-                                        // >5.6          <=5.6
-                                        (VersionRange::Gt(_), VersionRange::Le(_)) |
-                                        // |--------------|
-                                        // >=5.6          <=5.6
-                                        (VersionRange::Ge(_), VersionRange::Le(_)) => {
-                                            // conflict
-                                            bail!("A version is pointing out of currently allowed range set by other dependencies");
-                                        }
-                                        _ => {
-                                            // not possible combinations
-                                        }
+                                // Only set once
+                                VersionRange::Lt(v) => {
+                                    if max.is_none() {
+                                        max = Some((false, v.clone()));
                                     }
                                 }
-                                None => {
+                                VersionRange::Le(v) => {
+                                    if max.is_none() {
+                                        max = Some((true, v.clone()));
+                                    }
+                                }
+                                _ => {
                                     unreachable!();
                                 }
                             }
-                        } else {
-                            // no max was defined earlier so this is bounded by infinity
-                            // Why i ignored the rest of the stack? Is because the last value is the largest so it negates all other
-                            // previous >/>= by moving the lower limit to a larger value.
-                            let v = stack.last().unwrap();
-                            pairs.push((Edges::Bound(v.clone()), Edges::Infinity));
-                            // to infinity and beyond
+                        }
+                        self.min = min;
+                        self.max = max;
+                    } else {
+                        // our pair list is not empty.
+                        // This means we had extra ranges whose bound is infinity
+
+                        // Loop through each remaining bound adding the lower and upper threshold
+                        // For Lt/Le take the first occurence and limit it with infinity on the left
+                        let mut max_pair = None;
+                        // For Gt/Ge take the last occurrence and bind it with infinity to the right
+                        let mut min_pair = None;
+
+                        for s in stack {
+                            match s {
+                                VersionRange::Gt(v) => {
+                                    min_pair = Some((
+                                        Edges::Bound(VersionRange::Gt(v.to_string())),
+                                        Edges::Infinity,
+                                    ));
+                                }
+                                VersionRange::Ge(v) => {
+                                    min_pair = Some((
+                                        Edges::Bound(VersionRange::Ge(v.to_string())),
+                                        Edges::Infinity,
+                                    ));
+                                }
+                                VersionRange::Lt(v) => {
+                                    if max_pair.is_none() {
+                                        max_pair = Some((
+                                            Edges::Infinity,
+                                            Edges::Bound(VersionRange::Lt(v.to_string())),
+                                        ));
+                                    }
+                                }
+                                VersionRange::Le(v) => {
+                                    if max_pair.is_none() {
+                                        max_pair = Some((
+                                            Edges::Infinity,
+                                            Edges::Bound(VersionRange::Le(v.to_string())),
+                                        ));
+                                    }
+                                }
+                                _ => {
+                                    unreachable!();
+                                }
+                            }
+                        }
+                        if let Some(min) = min_pair {
+                            pairs.push(min);
+                        }
+
+                        if let Some(max) = max_pair {
+                            pairs.push(max);
                         }
                     }
                 }
 
+                let mut min = None;
+                let mut max = None;
                 // loop through the pair updating the min/max
                 pairs.into_iter().for_each(|(start, end)| {
                     // if start
                     match start {
                         Edges::Infinity => {
                             // Our bound is -ve infinity
+                            if min.is_none() {
+                                min = Some(Edges::Infinity);
+                            }
                         }
                         Edges::Bound(c) => {
-                            // This is our lower bound.
-                            if let Some((inclusive, min)) = &self.min {
-                                let range = if *inclusive {
-                                    VersionRange::Ge(min.to_string())
-                                } else {
-                                    VersionRange::Gt(min.to_string())
-                                };
+                            // check our lower limit if set
+                            match &min {
+                                // Someone explicitly specified our lower limit earlier
+                                Some(bound) => {
+                                    match bound {
+                                        Edges::Infinity => {
+                                            // We have a lower bound that is -ve infinity
+                                            // This is a very specific rare scenario for things like:
+                                            // |------------|-------|-------------|
+                                            // -ve(inf)     <5.9    >5.9          +ve(inf)
+                                            //                      ^ we are here
+                                            // min         max     start         end
 
-                                if c > range {
-                                    // Sign of an exclusion.
-                                    if let Some((inclusive_max, max)) = &self.max {
-                                        // we are fliping the inequalities to encasulate the bounded region
-                                        let exclusion_end = match c {
-                                            VersionRange::Gt(v) => VersionRange::Le(v),
-                                            VersionRange::Ge(v) => VersionRange::Lt(v),
-                                            _ => {
-                                                unreachable!();
+                                            // we want to detect an exclusion
+                                            // There is no min bound value to compare with c so it is automatic less than
+                                            if let Some(Edges::Bound(range)) = &max {
+                                                // flip the symbols
+                                                // The exclusion end is this pair start value while exclusion start is the previous max value
+                                                let exclusion_end = match c {
+                                                    VersionRange::Gt(v) => VersionRange::Le(v),
+                                                    VersionRange::Ge(v) => VersionRange::Lt(v),
+                                                    _ => {
+                                                        unreachable!();
+                                                    }
+                                                };
+
+                                                let exclusion_start = match range {
+                                                    VersionRange::Lt(v) => {
+                                                        VersionRange::Ge(v.to_string())
+                                                    }
+                                                    VersionRange::Le(v) => {
+                                                        VersionRange::Gt(v.to_string())
+                                                    }
+                                                    _ => {
+                                                        unreachable!();
+                                                    }
+                                                };
+                                                self.exclusions
+                                                    .push((exclusion_start, exclusion_end));
+                                                // update the new max version
+                                                max = Some(end);
+                                                return;
                                             }
-                                        };
-                                        let exclusion_start = if *inclusive_max {
-                                            VersionRange::Gt(max.clone())
-                                        } else {
-                                            VersionRange::Ge(max.clone())
-                                        };
+                                        }
+                                        Edges::Bound(min_bound) => {
+                                            // We have a lower bound set to an absolute value
+                                            if &c > min_bound {
+                                                // This particular bound is within the right of the number line
+                                                //so might be an exclusion
+                                                // |------------->
+                                                // c             min_bound
 
-                                        self.exclusions.push((exclusion_start, exclusion_end));
+                                                // check for a max
+                                                match &max {
+                                                    Some(max_bound) => {
+                                                        match max_bound {
+                                                            Edges::Infinity => {
+                                                                // not wanted but can still happen
+                                                            }
+                                                            Edges::Bound(range) => {
+                                                                // flip the symbols
+                                                                // The exclusion end is this pair start value while exclusion start is the previous max value
+                                                                let exclusion_end = match c {
+                                                                    VersionRange::Gt(v) => {
+                                                                        VersionRange::Le(v)
+                                                                    }
+                                                                    VersionRange::Ge(v) => {
+                                                                        VersionRange::Lt(v)
+                                                                    }
+                                                                    _ => {
+                                                                        unreachable!();
+                                                                    }
+                                                                };
 
-                                        // update the new max version
-                                        if let Edges::Bound(candidate_max) = &end {
-                                            match candidate_max {
-                                                VersionRange::Lt(v) => {
-                                                    self.max = Some((false, v.clone()))
+                                                                let exclusion_start = match range {
+                                                                    VersionRange::Lt(v) => {
+                                                                        VersionRange::Ge(
+                                                                            v.to_string(),
+                                                                        )
+                                                                    }
+                                                                    VersionRange::Le(v) => {
+                                                                        VersionRange::Gt(
+                                                                            v.to_string(),
+                                                                        )
+                                                                    }
+                                                                    _ => {
+                                                                        unreachable!();
+                                                                    }
+                                                                };
+                                                                self.exclusions.push((
+                                                                    exclusion_start,
+                                                                    exclusion_end,
+                                                                ));
+                                                                // update the new max version
+                                                                max = Some(end);
+                                                                return;
+                                                            }
+                                                        }
+                                                    }
+                                                    None => {
+                                                        // undesired
+                                                    }
                                                 }
-                                                VersionRange::Le(v) => {
-                                                    self.max = Some((true, v.clone()))
-                                                }
-                                                _ => unreachable!(),
                                             }
                                         }
                                     }
                                 }
-                                // else branch -> We ignore it since we cannot push the lower limit back.
-                                //
-                            } else {
-                                // if we have no min then set this as our new lower limit.
-                                match c {
+                                None => {
+                                    // No bound set, so it is ok to set this as a lower bound
+                                    min = Some(Edges::Bound(c));
+                                }
+                            }
+                        }
+                    }
+
+                    match end {
+                        Edges::Infinity => {
+                            // Our bound is -ve infinity
+                            if max.is_none() {
+                                max = Some(Edges::Infinity);
+                            }
+                        }
+                        Edges::Bound(c) => {
+                            if max.is_none() {
+                                // max was not set, use this
+                                max = Some(Edges::Bound(c));
+                            }
+                        }
+                    }
+                });
+
+                // set the min max to self
+                // we also have an old min and max, we need to do a sanity check to ensure no one just pushed the boundaries
+                match min {
+                    Some(Edges::Bound(range)) => {
+                        // range should be on right of old_min
+                        if let Some(old_min) = old_min {
+                            if range >= old_min {
+                                match range {
                                     VersionRange::Gt(v) => {
                                         self.min = Some((false, v));
                                     }
@@ -794,18 +924,34 @@ impl Constraint {
                                         unreachable!();
                                     }
                                 }
+                            } else {
+                                // This is incorrect version computation
+                                bail!("The minimum allowed version inequality ({}) was moved out of range of the previous constraint minimum ({}).", range, old_min);
+                            }
+                        } else {
+                            match range {
+                                VersionRange::Gt(v) => {
+                                    self.min = Some((false, v));
+                                }
+                                VersionRange::Ge(v) => {
+                                    self.min = Some((true, v));
+                                }
+                                _ => {
+                                    unreachable!();
+                                }
                             }
                         }
                     }
+                    _ => {
+                        // dont care
+                    }
+                }
 
-                    match end {
-                        Edges::Infinity => {
-                            // Our bound is -ve infinity
-                        }
-                        Edges::Bound(c) => {
-                            if self.max.is_none() {
-                                // max was not set, use this
-                                match c {
+                match max {
+                    Some(Edges::Bound(range)) => {
+                        if let Some(old_max) = old_max {
+                            if old_max >= range {
+                                match range {
                                     VersionRange::Lt(v) => {
                                         self.max = Some((false, v));
                                     }
@@ -816,10 +962,28 @@ impl Constraint {
                                         unreachable!();
                                     }
                                 }
+                            } else {
+                                // This is incorrect version computation
+                                bail!("The maximum allowed version inequality ({}) was moved out of range of the previous constraint maximum ({}).", range, old_max);
+                            }
+                        } else {
+                            match range {
+                                VersionRange::Lt(v) => {
+                                    self.max = Some((false, v));
+                                }
+                                VersionRange::Le(v) => {
+                                    self.max = Some((true, v));
+                                }
+                                _ => {
+                                    unreachable!();
+                                }
                             }
                         }
                     }
-                });
+                    _ => {
+                        // dont care
+                    }
+                }
 
                 self.exact = self.exact.clone();
 
@@ -1143,7 +1307,7 @@ impl BuildTree for ProjectWrapper {
                                     } else {
                                         // the constraint cannot fit in this. This is fatal.
                                         bail!(
-                                            "Dependency version conflict. {}:{} as hard set version requirements as {} which does not fit within previously set constraint of {constraints}. Canceling the resolution.",
+                                            "Dependency version conflict. {}:{} has a hard set version requirements as {} which does not fit within previously set constraint of {constraints}. Canceling the resolution.",
                                             self.project.get_group_id(),
                                             self.project.get_artifact_id(),
                                             v.iter().map(|k| k.to_string()).collect::<Vec<String>>().join(", ")
@@ -1815,6 +1979,83 @@ fn constraint_contain_version_ranges() {
     assert!(constraint
         .contain(&"[2.1],(,2.0),(3.0,)".parse::<VersionRequirement>().unwrap(),)
         .is_err());
+
+    // set new min or max
+    let constraint = Constraint::default();
+
+    let c = constraint
+        .contain(&"(5.9,)".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(
+        c,
+        Constraint {
+            min: Some((false, "5.9".to_string())),
+            ..Default::default()
+        }
+    );
+    let c = constraint
+        .contain(&"[5.9,)".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(
+        c,
+        Constraint {
+            min: Some((true, "5.9".to_string())),
+            ..Default::default()
+        }
+    );
+    let c = constraint
+        .contain(&"(,5.9)".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(
+        c,
+        Constraint {
+            max: Some((false, "5.9".to_string())),
+            ..Default::default()
+        }
+    );
+    let c = constraint
+        .contain(
+            &"(,5.9),(,5.6),(,5.1)"
+                .parse::<VersionRequirement>()
+                .unwrap(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        c,
+        Constraint {
+            max: Some((false, "5.1".to_string())),
+            ..Default::default()
+        }
+    );
+    let c = constraint
+        .contain(&"(,5.9]".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(
+        c,
+        Constraint {
+            max: Some((true, "5.9".to_string())),
+            ..Default::default()
+        }
+    );
+    let c = constraint
+        .contain(&"(,5.9),(5.9,)".parse::<VersionRequirement>().unwrap())
+        .unwrap();
+
+    assert_eq!(
+        c,
+        Constraint {
+            exclusions: vec![(
+                VersionRange::Ge("5.9".to_string()),
+                VersionRange::Le("5.9".to_string())
+            )],
+            ..Default::default()
+        }
+    );
 }
 
 #[test]
@@ -2344,7 +2585,7 @@ mod test {
     use pretty_assertions::assert_eq;
 
     use crate::{
-        pom::Project,
+        pom::{Project, VersionRange},
         submodules::{
             resolve::Constraint,
             resolvers::{NetResolver, Resolver},
@@ -2651,5 +2892,107 @@ mod test {
             Rc::new(RefCell::new(create_resolver(port))),
         )
         .is_err()); // Maybe this error was a net related error and this test will be incorrect
+    }
+    /// Test case: Exclusion Ignored
+    ///
+    /// This test verifies the resolver's behavior when a module excludes a specific version of a
+    /// transitive dependency, but another module forces its inclusion. The expected behavior is
+    /// that the resolver respects the exclusion and does not include the excluded version.
+    ///
+    /// Setup:
+    /// - `module-a` requires `module-d` and excludes `module-b:1.5`.
+    /// - `module-c` requires `module-b:1.5`.
+    ///
+    /// Expected Result:
+    /// The resolver should detect the conflict and ensure that `module-i:1.5` is not included
+    /// due to the exclusion specified by `module-a`. The resolution should fail or find an
+    /// alternative version if possible.
+    #[test]
+    fn exclusion_ignored() {
+        let server = PomServer::new().unwrap();
+        let port = server.get_port();
+
+        server.add_project(
+            ProjectEntry::new("com.example", "module-a", "1.0.0")
+                .add_dependency(ProjectEntry::new("com.example", "module-d", "[1.0, 2.0)"))
+                // exclude module b
+                .add_dependency(ProjectEntry::new(
+                    "com.example",
+                    "module-b",
+                    "(,1.5.0),(1.5.0,)",
+                )),
+        );
+        server.add_project(
+            ProjectEntry::new("com.example", "module-c", "1.0.0")
+                // declare an excluded version
+                .add_dependency(ProjectEntry::new("com.example", "module-b", "1.5.0")),
+        );
+
+        let dependencies = vec![
+            Project::new("com.example", "module-a", "1.0.0"),
+            Project::new("com.example", "module-c", "1.0.0"),
+        ];
+
+        let mut resolved = Vec::new();
+
+        resolve(
+            dependencies,
+            &mut resolved,
+            Rc::new(RefCell::new(create_resolver(port))),
+        )
+        .unwrap();
+
+        // Expected: only module b choosed within version ranges
+        assert_eq!(resolved.len(), 4);
+        let module_b = &resolved[1];
+        assert_eq!(module_b.group_id, String::from("com.example"));
+        assert_eq!(module_b.artifact_id, String::from("module-b"));
+        assert_eq!(
+            module_b.constraints,
+            Some(Constraint {
+                exclusions: vec![(
+                    VersionRange::Ge("1.5.0".to_string()),
+                    VersionRange::Le("1.5.0".to_string()),
+                )],
+                ..Default::default()
+            })
+        );
+        // The selected version
+        assert_eq!(module_b.version, String::from("2.1.0"));
+        drop(server);
+
+        // What if module-c forces the version
+        let server = PomServer::new().unwrap();
+        let port = server.get_port();
+
+        server.add_project(
+            ProjectEntry::new("com.example", "module-a", "1.0.0")
+                .add_dependency(ProjectEntry::new("com.example", "module-d", "[1.0, 2.0)"))
+                // exclude module b
+                .add_dependency(ProjectEntry::new(
+                    "com.example",
+                    "module-b",
+                    "(,1.5.0),(1.5.0,)",
+                )),
+        );
+        server.add_project(
+            ProjectEntry::new("com.example", "module-c", "1.0.0")
+                // declare an excluded version but this time enforce it
+                .add_dependency(ProjectEntry::new("com.example", "module-b", "[1.5.0]")),
+        );
+
+        let dependencies = vec![
+            Project::new("com.example", "module-a", "1.0.0"),
+            Project::new("com.example", "module-c", "1.0.0"),
+        ];
+
+        let mut resolved = Vec::new();
+
+        assert!(resolve(
+            dependencies,
+            &mut resolved,
+            Rc::new(RefCell::new(create_resolver(port))),
+        )
+        .is_err());
     }
 }
