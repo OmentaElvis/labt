@@ -1195,7 +1195,14 @@ impl BuildTree for ProjectWrapper {
             ))?;
 
         // push this project to unresolved
-        unresolved.push(qualified_name.clone());
+        // Nearest Defination Wins
+        // So we only compare group_id and artifact_id.
+        // Whatever package is the parent of this circular dependency continues with its mess
+        unresolved.push(format!(
+            "{}:{}",
+            self.project.get_group_id(),
+            self.project.get_artifact_id()
+        ));
 
         // Version was resolved earlier and this is just a version conflict
         let mut resolved_earlier = false;
@@ -1419,7 +1426,6 @@ impl BuildTree for ProjectWrapper {
             }
             true // this particular guy survived, such a waster of clock cycles, good for it
         });
-
         for dep in self.project.get_dependencies_mut() {
             // use version resolvers to compute the version of this dependency if needed
             let version =
@@ -1431,10 +1437,11 @@ impl BuildTree for ProjectWrapper {
             // from here now on we have a version for even the recursive calls, therefore there should be no complaints
             dep.set_selected_version(Some(version.clone()));
 
-            if unresolved.contains(&dep.qualified_name()?) {
+            if unresolved.contains(&format!("{}:{}", dep.get_group_id(), dep.get_artifact_id())) {
                 // Circular dep, if encountered,
                 // TODO check config for ignore, warn, or Error
-                return Ok(());
+                log::trace!(target: "fetch", "Circular dependency detected for {}:{}, Using \"Nearest defination wins\". ", dep.get_group_id(), dep.get_artifact_id());
+                continue;
             }
             let mut wrapper = ProjectWrapper::new(dep.clone(), self.resolvers.clone());
             if let Some(progress) = &self.progress {
@@ -2994,5 +3001,91 @@ mod test {
             Rc::new(RefCell::new(create_resolver(port))),
         )
         .is_err());
+    }
+
+    #[test]
+    pub fn circular_dependency() {
+        let server = PomServer::new().unwrap();
+        let port = server.get_port();
+
+        server.add_project(
+            ProjectEntry::new("com.example", "module-a", "1.0.0")
+                .add_dependency(ProjectEntry::new("com.example", "module-b", "1.0.0")),
+        );
+        server.add_project(
+            ProjectEntry::new("com.example", "module-b", "1.0.0")
+                .add_dependency(ProjectEntry::new("com.example", "module-c", "1.0.0"))
+                .add_dependency(ProjectEntry::new("com.example", "module-a", "1.0.0")),
+        );
+        let dependencies = vec![Project::new("com.example", "module-a", "1.0.0")];
+
+        let mut resolved = Vec::new();
+
+        resolve(
+            dependencies,
+            &mut resolved,
+            Rc::new(RefCell::new(create_resolver(port))),
+        )
+        .unwrap();
+        assert_eq!(resolved.len(), 3);
+        drop(server);
+
+        let server = PomServer::new().unwrap();
+        let port = server.get_port();
+
+        server.add_project(
+            ProjectEntry::new("com.example", "module-a", "1.0.0")
+                .add_dependency(ProjectEntry::new("com.example", "module-b", "1.0.0")),
+        );
+        server.add_project(
+            ProjectEntry::new("com.example", "module-b", "1.0.0")
+                .add_dependency(ProjectEntry::new("com.example", "module-c", "1.0.0")),
+        );
+        server.add_project(
+            ProjectEntry::new("com.example", "module-c", "1.0.0")
+                .add_dependency(ProjectEntry::new("com.example", "module-a", "1.0.0")),
+        );
+
+        let dependencies = vec![Project::new("com.example", "module-a", "1.0.0")];
+
+        let mut resolved = Vec::new();
+
+        resolve(
+            dependencies,
+            &mut resolved,
+            Rc::new(RefCell::new(create_resolver(port))),
+        )
+        .unwrap();
+        assert_eq!(resolved.len(), 3);
+
+        // A circular dependency with different versions
+        let server = PomServer::new().unwrap();
+        let port = server.get_port();
+
+        server.add_project(
+            ProjectEntry::new("com.example", "module-a", "1.0.0")
+                .add_dependency(ProjectEntry::new("com.example", "module-b", "1.0.0")),
+        );
+        server.add_project(
+            ProjectEntry::new("com.example", "module-b", "1.0.0")
+                .add_dependency(ProjectEntry::new("com.example", "module-c", "1.0.0")),
+        );
+        server.add_project(
+            ProjectEntry::new("com.example", "module-c", "1.0.0")
+                .add_dependency(ProjectEntry::new("com.example", "module-a", "1.2.0")),
+        );
+
+        let dependencies = vec![Project::new("com.example", "module-a", "1.0.0")];
+
+        let mut resolved = Vec::new();
+
+        resolve(
+            dependencies,
+            &mut resolved,
+            Rc::new(RefCell::new(create_resolver(port))),
+        )
+        .unwrap();
+        println!("{:#?}", resolved);
+        assert_eq!(resolved.len(), 3);
     }
 }
