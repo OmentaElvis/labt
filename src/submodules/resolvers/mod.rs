@@ -8,6 +8,8 @@ use log::warn;
 use reqwest::StatusCode;
 
 use crate::caching::properties::{read_properties, PropertiesError};
+use crate::config::maven_metadata::parse_maven_metadata;
+use crate::pom::VersionRequirement;
 use crate::{
     caching::Cache,
     caching::CacheType,
@@ -15,6 +17,7 @@ use crate::{
 };
 
 use super::resolve::ProjectDep;
+pub const CACHE_REPO_STR: &str = "cache";
 pub const CENTRAL_REPO_STR: &str = "central";
 pub const CENTRAL_REPO_URL: &str = "https://repo1.maven.org/maven2/";
 pub const GOOGLE_REPO_STR: &str = "google";
@@ -22,8 +25,11 @@ pub const GOOGLE_REPO_URL: &str = "https://maven.google.com/";
 
 pub trait Resolver {
     fn fetch(&self, project: &mut Project) -> Result<String, ResolverError>;
-    fn get_name(&self) -> String;
+    fn get_name(&self) -> &str;
     fn get_priority(&self) -> i32;
+    /// Resolves the correct version of a dependency through use of maven-metadata.xml
+    /// Returns the computed version
+    fn calculate_version(&self, project: &Project) -> Result<String, ResolverError>;
 }
 #[derive(Default)]
 pub struct CacheResolver {}
@@ -40,6 +46,7 @@ pub enum ResolverErrorKind {
     Internal,
     ParseError,
     ResponseError,
+    NoSelectedVersion,
 }
 
 #[derive(Debug)]
@@ -81,7 +88,13 @@ impl CacheResolver {
 impl Resolver for CacheResolver {
     fn fetch(&self, project: &mut Project) -> Result<String, ResolverError> {
         // initialize projectDep from project object
-        let mut project_dep = ProjectDep::from(project.borrow());
+        let mut project_dep = ProjectDep::try_from(project.borrow()).map_err(|err| {
+            ResolverError::new(
+                "Failed to convert Project to ProjectDep.",
+                ResolverErrorKind::NoSelectedVersion,
+                Some(err),
+            )
+        })?;
 
         // try reading the properties from cache checking if error occured
         read_properties(&mut project_dep).map_err(move |err| {
@@ -128,7 +141,9 @@ impl Resolver for CacheResolver {
             let artifact_id = split[1];
             let version = split[2];
 
-            Project::new(group_id, artifact_id, version)
+            let mut p = Project::new(group_id, artifact_id, version);
+            p.set_selected_version(Some(version.to_string()));
+            p
         });
 
         project.set_packaging(project_dep.packaging);
@@ -136,23 +151,118 @@ impl Resolver for CacheResolver {
 
         Ok(project_dep.base_url)
     }
-    fn get_name(&self) -> String {
-        String::from("cache")
+    fn get_name(&self) -> &str {
+        CACHE_REPO_STR
     }
     fn get_priority(&self) -> i32 {
         10
+    }
+    fn calculate_version(&self, project: &Project) -> Result<String, ResolverError> {
+        // if it is a softie return imediately unless they specify LATEST or RELEASE for backward compatibility
+        if let VersionRequirement::Soft(v) = project.get_version() {
+            if v != "LATEST" && v != "RELEASE" {
+                return Ok(v.to_string());
+            }
+        }
+
+        let mut cache = Cache::new(
+            project.get_group_id(),
+            project.get_artifact_id(),
+            String::new(),
+            CacheType::METADATA,
+        );
+
+        if let Err(err) = cache.use_labt_home() {
+            return Err(ResolverError::new(
+                "Failed to init LABt home for caching.",
+                ResolverErrorKind::Internal,
+                Some(err),
+            ));
+        }
+
+        if !cache.exists() {
+            return Err(ResolverError::new(
+                "Failed to get maven-metadata.xml from cache",
+                ResolverErrorKind::NotFound,
+                None,
+            ));
+        }
+        let cache = cache.open().map_err(|err| {
+            ResolverError::new(
+                "Failed to open maven-metadata.xml cache file",
+                ResolverErrorKind::Internal,
+                Some(err.into()),
+            )
+        })?;
+        let reader = io::BufReader::new(cache);
+        let metadata = parse_maven_metadata(reader).map_err(|err| {
+            ResolverError::new(
+                format!(
+                    "Failed to parse maven-metadata.xml for {}:{}",
+                    project.get_group_id(),
+                    project.get_artifact_id()
+                )
+                .as_str(),
+                ResolverErrorKind::Internal,
+                Some(err),
+            )
+        })?;
+
+        let selected_version = metadata
+            .select_version(project.get_version())
+            .map_err(|err| {
+                ResolverError::new(
+                    format!(
+                        "Failed to select correct version for {}:{} from metadata with: latest: {}, release: {} and available {:?}",
+                        project.get_group_id(),
+                        project.get_artifact_id(),
+                        metadata.latest.unwrap_or("None".to_string()),
+                        metadata.release.unwrap_or("None".to_string()),
+                        metadata.versions
+                    )
+                    .as_str(),
+                    ResolverErrorKind::NoSelectedVersion,
+                    Some(err),
+                )
+            })?;
+
+        Ok(selected_version)
     }
 }
 
 impl Resolver for NetResolver {
     fn fetch(&self, project: &mut Project) -> Result<String, ResolverError> {
-        let url = format!(
-            "{0}/{1}/{2}/{3}/{2}-{3}.pom",
-            self.base_url,
-            project.get_group_id().replace('.', "/"),
-            project.get_artifact_id(),
-            project.get_version(),
-        );
+        let version = project
+            .get_selected_version()
+            .clone()
+            .ok_or(ResolverError::new(
+                format!(
+                    "Failed to obtain selected version from package {}:{}",
+                    project.get_group_id(),
+                    project.get_artifact_id()
+                )
+                .as_str(),
+                ResolverErrorKind::NoSelectedVersion,
+                None,
+            ))?;
+
+        let url = if self.base_url.ends_with('/') {
+            format!(
+                "{0}{1}/{2}/{3}/{2}-{3}.pom",
+                self.base_url,
+                project.get_group_id().replace('.', "/"),
+                project.get_artifact_id(),
+                version
+            )
+        } else {
+            format!(
+                "{0}/{1}/{2}/{3}/{2}-{3}.pom",
+                self.base_url,
+                project.get_group_id().replace('.', "/"),
+                project.get_artifact_id(),
+                version
+            )
+        };
 
         let res = self.client.get(&url).send().map_err(|err| {
             ResolverError::new(
@@ -162,12 +272,14 @@ impl Resolver for NetResolver {
             )
         })?;
 
+        log::trace!(target: "fetch", "{url} {}", res.status());
+
         if res.status().is_success() {
             let mut reader = io::BufReader::new(res);
             let mut cache = Cache::new(
                 project.get_group_id(),
                 project.get_artifact_id(),
-                project.get_version(),
+                version,
                 CacheType::POM,
             );
 
@@ -216,10 +328,7 @@ impl Resolver for NetResolver {
                     Some(err),
                 )
             })?;
-            project.set_packaging(p.get_packaging());
-            project
-                .get_dependencies_mut()
-                .extend(p.get_dependencies().iter().map(|dep| dep.to_owned()));
+            *project = p;
         } else if matches!(res.status(), StatusCode::NOT_FOUND) {
             // 404 not found
             return Err(ResolverError::new(
@@ -236,11 +345,135 @@ impl Resolver for NetResolver {
         }
         Ok(self.base_url.clone())
     }
-    fn get_name(&self) -> String {
-        self.name.clone()
+    fn get_name(&self) -> &str {
+        self.name.as_str()
     }
     fn get_priority(&self) -> i32 {
         self.priority
+    }
+    fn calculate_version(&self, project: &Project) -> Result<String, ResolverError> {
+        // if it is a softie return imediately unless they specify LATEST or RELEASE for backward compatibility
+        if let VersionRequirement::Soft(v) = project.get_version() {
+            if v != "LATEST" && v != "RELEASE" {
+                return Ok(v.to_string());
+            }
+        }
+
+        let url = if self.base_url.ends_with('/') {
+            format!(
+                "{0}{1}/{2}/maven-metadata.xml",
+                self.base_url,
+                project.get_group_id().replace('.', "/"),
+                project.get_artifact_id(),
+            )
+        } else {
+            format!(
+                "{0}/{1}/{2}/maven-metadata.xml",
+                self.base_url,
+                project.get_group_id().replace('.', "/"),
+                project.get_artifact_id(),
+            )
+        };
+
+        let res = self.client.get(&url).send().map_err(|err| {
+            ResolverError::new(
+                "Failed to complete the HTTP request for the version resolver client",
+                ResolverErrorKind::Internal,
+                Some(err.into()),
+            )
+        })?;
+
+        if res.status().is_success() {
+            let mut reader = io::BufReader::new(res);
+            let mut cache = Cache::new(
+                project.get_group_id(),
+                project.get_artifact_id(),
+                String::new(),
+                CacheType::METADATA,
+            );
+
+            let metadata_result = if let Err(err) = cache.use_labt_home() {
+                // if we are unable to initialize cache file, just ignore it.
+                // TODO have an effective way to error on this
+                warn!("Unable to cache response \n {:?}", err);
+                parse_maven_metadata(reader)
+            } else {
+                // we are able to cache, so download and save to cache, then parse from there
+
+                let mut writer = BufWriter::new(Cache::from(&cache).create().map_err(|err| {
+                    ResolverError::new(
+                        "Failed to create cache file",
+                        ResolverErrorKind::Internal,
+                        Some(err.into()),
+                    )
+                })?);
+                std::io::copy(&mut reader, &mut writer).map_err(|err| {
+                    ResolverError::new(
+                        "Failed to copy network contents to cache file",
+                        ResolverErrorKind::Internal,
+                        Some(err.into()),
+                    )
+                })?;
+                drop(writer);
+
+                let cache = cache.open().map_err(|err| {
+                    ResolverError::new(
+                        "Failed to open cache file",
+                        ResolverErrorKind::Internal,
+                        Some(err.into()),
+                    )
+                })?;
+
+                let reader = BufReader::new(cache);
+                parse_maven_metadata(reader)
+            };
+            let metadata = metadata_result.map_err(|err| {
+                ResolverError::new(
+                    format!(
+                        "Failed to parse maven-metadata.xml for {}:{}",
+                        project.get_group_id(),
+                        project.get_artifact_id()
+                    )
+                    .as_str(),
+                    ResolverErrorKind::Internal,
+                    Some(err),
+                )
+            })?;
+
+            // Now the reason why we are here
+            let versions = project.get_version();
+
+            let selected_version = metadata.select_version(versions).map_err(|err| {
+                ResolverError::new(
+                    format!(
+                        "Failed to select correct version for {}:{} from metadata with: latest: {}, release: {} and available {:?}",
+                        project.get_group_id(),
+                        project.get_artifact_id(),
+                        metadata.latest.unwrap_or("None".to_string()),
+                        metadata.release.unwrap_or("None".to_string()),
+                        metadata.versions
+                    )
+                    .as_str(),
+                    ResolverErrorKind::NoSelectedVersion,
+                    Some(err),
+                )
+            })?;
+
+            Ok(selected_version)
+        } else if matches!(res.status(), StatusCode::NOT_FOUND) {
+            // 404 not found
+            return Err(ResolverError::new(
+                format!("{}: Failed to fetch {} ", res.status().as_u16(), url).as_str(),
+                ResolverErrorKind::NotFound,
+                None,
+            ));
+        } else {
+            return Err(ResolverError::new(
+                format!("{}: Failed to fetch {}", res.status().as_u16(), url).as_str(),
+                ResolverErrorKind::ResponseError,
+                None,
+            ));
+        }
     }
 }
 

@@ -7,7 +7,7 @@ use mlua::LuaSerdeExt;
 use crate::caching::Cache;
 use crate::config::get_config;
 use crate::config::get_resolvers_from_config;
-use crate::config::lock::load_lock_dependencies;
+use crate::config::lock::load_labt_lock;
 use crate::config::lock::strings::ARTIFACT_ID;
 use crate::config::lock::strings::DEPENDENCIES;
 use crate::config::lock::strings::GROUP_ID;
@@ -45,7 +45,8 @@ fn get_project_root(lua: &Lua) {
 fn get_lock_dependencies(lua: &Lua) {
     // TODO cache this to reduce uneccessary reading of Labt.lock
 
-    let deps = load_lock_dependencies().map_err(MluaAnyhowWrapper::external)?;
+    let lock = load_labt_lock().map_err(MluaAnyhowWrapper::external)?;
+    let deps = lock.resolved;
     let array = lua.create_table_with_capacity(deps.len(), 0)?;
 
     for dep in deps {

@@ -21,6 +21,8 @@ pub enum CacheType {
     JAR,
     SOURCE,
     PROPERTIES,
+    // The V level maven-metadata.xml
+    METADATA,
     UNKNOWN(String),
 }
 #[derive(Debug)]
@@ -71,6 +73,7 @@ impl Cache {
                 format!("{}-{}.{}", self.artifact_id, self.version, ext)
             }
             CacheType::PROPERTIES => format!("{}-{}.toml", self.artifact_id, self.version),
+            CacheType::METADATA => "maven-metadata.xml".to_string(),
         }
     }
     fn build_path(&self) -> std::io::Result<PathBuf> {
@@ -84,7 +87,9 @@ impl Cache {
         let mut path = self.path.clone().unwrap();
         path.push(&self.group_id);
         path.push(&self.artifact_id);
-        path.push(&self.version);
+        if !matches!(self.cache_type, CacheType::METADATA) {
+            path.push(&self.version);
+        }
         if !path.exists() {
             create_dir_all(&path)?;
         }
