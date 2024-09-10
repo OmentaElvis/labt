@@ -158,9 +158,11 @@ impl Resolver for CacheResolver {
         10
     }
     fn calculate_version(&self, project: &Project) -> Result<String, ResolverError> {
-        // if it is a softie return imediately
+        // if it is a softie return imediately unless they specify LATEST or RELEASE for backward compatibility
         if let VersionRequirement::Soft(v) = project.get_version() {
-            return Ok(v.to_string());
+            if v != "LATEST" && v != "RELEASE" {
+                return Ok(v.to_string());
+            }
         }
 
         let mut cache = Cache::new(
@@ -350,9 +352,11 @@ impl Resolver for NetResolver {
         self.priority
     }
     fn calculate_version(&self, project: &Project) -> Result<String, ResolverError> {
-        // if it is a softie return imediately
+        // if it is a softie return imediately unless they specify LATEST or RELEASE for backward compatibility
         if let VersionRequirement::Soft(v) = project.get_version() {
-            return Ok(v.to_string());
+            if v != "LATEST" && v != "RELEASE" {
+                return Ok(v.to_string());
+            }
         }
 
         let url = if self.base_url.ends_with('/') {

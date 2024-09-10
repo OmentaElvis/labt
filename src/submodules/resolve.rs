@@ -3143,4 +3143,68 @@ mod test {
         assert_eq!(resolved.len(), 2);
         drop(server);
     }
+    /// Test case: Dynamic Version Selection (Latest)
+    ///
+    /// This test verifies that when a module specifies a dynamic version like `LATEST`, the
+    /// resolver correctly selects the highest available version.
+    ///
+    /// Setup:
+    /// - `module-a` depends on `module-b` with version set to `LATEST`.
+    ///
+    /// Expected Result:
+    /// The resolver should select `module-b:2.1.0` as it is the latest available version.
+    #[test]
+    pub fn dynamic_version_selection_latest() {
+        let server = PomServer::new().unwrap();
+        let port = server.get_port();
+
+        server.add_project(
+            ProjectEntry::new("com.example", "module-a", "1.0.0")
+                .add_dependency(ProjectEntry::new("com.example", "module-b", "LATEST")),
+        );
+        let dependencies = vec![Project::new("com.example", "module-a", "1.0.0")];
+
+        let mut resolved = Vec::new();
+
+        resolve(
+            dependencies,
+            &mut resolved,
+            Rc::new(RefCell::new(create_resolver(port))),
+        )
+        .unwrap();
+        assert_eq!(resolved.len(), 2);
+
+        let module_b = &resolved[0];
+        assert_eq!(module_b.group_id, String::from("com.example"));
+        assert_eq!(module_b.artifact_id, String::from("module-b"));
+        assert_eq!(module_b.version, String::from("2.1.0"));
+        drop(server);
+    }
+    #[test]
+    pub fn dynamic_version_selection_release() {
+        let server = PomServer::new().unwrap();
+        let port = server.get_port();
+
+        server.add_project(
+            ProjectEntry::new("com.example", "module-a", "1.0.0")
+                .add_dependency(ProjectEntry::new("com.example", "module-b", "RELEASE")),
+        );
+        let dependencies = vec![Project::new("com.example", "module-a", "1.0.0")];
+
+        let mut resolved = Vec::new();
+
+        resolve(
+            dependencies,
+            &mut resolved,
+            Rc::new(RefCell::new(create_resolver(port))),
+        )
+        .unwrap();
+        assert_eq!(resolved.len(), 2);
+
+        let module_b = &resolved[0];
+        assert_eq!(module_b.group_id, String::from("com.example"));
+        assert_eq!(module_b.artifact_id, String::from("module-b"));
+        assert_eq!(module_b.version, String::from("2.1.0"));
+        drop(server);
+    }
 }

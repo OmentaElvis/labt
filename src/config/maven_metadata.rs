@@ -1,6 +1,6 @@
 use std::io::{BufReader, Read};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use quick_xml::{events::Event, Reader};
 use version_compare::Cmp;
 
@@ -59,7 +59,41 @@ impl MavenMetadata {
     /// If no appropriate version is found we return an error
     pub fn select_version(&self, constraints: &VersionRequirement) -> anyhow::Result<String> {
         match constraints {
-            VersionRequirement::Soft(version) => Ok(version.clone()),
+            VersionRequirement::Soft(version) => {
+                // check for latest and release tags
+                match version.as_str() {
+                    "LATEST" => {
+                        if let Some(latest) = &self.latest {
+                            Ok(latest.clone())
+                        } else {
+                            let mut versions = self.versions.clone();
+                            versions.sort_unstable_by(|a, b| {
+                                match version_compare::compare(b, a) {
+                                    Ok(order) => match order {
+                                        Cmp::Eq | Cmp::Le | Cmp::Ge => std::cmp::Ordering::Equal,
+                                        Cmp::Lt => std::cmp::Ordering::Less,
+                                        Cmp::Gt => std::cmp::Ordering::Greater,
+                                        Cmp::Ne => std::cmp::Ordering::Less,
+                                    },
+                                    Err(_) => {
+                                        unreachable!();
+                                    }
+                                }
+                            });
+
+                            Ok(versions
+                                .first()
+                                .context(anyhow!("No latest version specified in metadata xml"))?
+                                .to_string())
+                        }
+                    }
+                    "RELEASE" => self
+                        .release
+                        .clone()
+                        .context(anyhow!("No available release version in repository")),
+                    v => Ok(v.to_string()),
+                }
+            }
             VersionRequirement::Unset => {
                 if let Some(release) = &self.release {
                     Ok(release.clone())
