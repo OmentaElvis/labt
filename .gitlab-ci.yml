@@ -67,7 +67,6 @@ build_linux:
       - apt-get update -yqq
       - apt-get install -yqq --no-install-recommends build-essential
     rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH 
     - if: $CI_COMMIT_TAG
     script:
         - echo "=== BUILDING FOR x86_64 linux gnu ==="
@@ -96,7 +95,6 @@ build_windows:
       - unzip -j EnVar_plugin.zip  Plugins/x86-unicode/EnVar.dll -d plugins
       - rm EnVar_plugin.zip
     rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
     script:
         - echo "=== BUILDING FOR x86_64 linux gnu ==="
@@ -151,7 +149,6 @@ upload_job:
     - job: build_windows
       artifacts: true
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH 
     - if: $CI_COMMIT_TAG
   script:
     - echo "=== UPLOADING ==="
