@@ -2148,6 +2148,7 @@ mod pom_faker {
         version: String,
         dependencies: Vec<ProjectEntry>,
         scope: Scope,
+        exclusions: Vec<(&'static str, &'static str)>,
     }
 
     impl ProjectEntry {
@@ -2164,6 +2165,10 @@ mod pom_faker {
         }
         pub fn add_dependency(mut self, dep: ProjectEntry) -> Self {
             self.dependencies.push(dep);
+            self
+        }
+        pub fn add_exclusion(mut self, group_id: &'static str, artifact_id: &'static str) -> Self {
+            self.exclusions.push((group_id, artifact_id));
             self
         }
     }
@@ -2513,6 +2518,19 @@ mod pom_faker {
                     ));
                     body.push_str(&format!("      <version>{}</version>\n", dep.version));
                     body.push_str(&format!("      <scope>{}</scope>\n", dep.scope));
+                    if dep.exclusions.is_empty() {
+                        body.push_str("      <exclusions>\n");
+                        for (group_id, artifact_id) in dep.exclusions {
+                            body.push_str("        <exclusion>\n");
+                            body.push_str(&format!("         <groupId>{}</groupId>\n", group_id));
+                            body.push_str(&format!(
+                                "         <artifactId>{}</artifactId>\n",
+                                artifact_id
+                            ));
+                            body.push_str("        </exclusion>\n");
+                        }
+                        body.push_str("      </exclusions>\n");
+                    }
                     body.push_str("    </dependency>\n");
                 }
                 body.push_str("  </dependencies>\n");
@@ -3085,7 +3103,44 @@ mod test {
             Rc::new(RefCell::new(create_resolver(port))),
         )
         .unwrap();
-        println!("{:#?}", resolved);
         assert_eq!(resolved.len(), 3);
+    }
+
+    /// Test case: Dependency Exclusion
+    ///
+    /// This test verifies that when a module declares an exclusion for one of its transitive
+    /// dependencies, the resolver respects that exclusion and does not include the excluded
+    /// module in the resolved dependencies.
+    ///
+    /// Setup:
+    /// - `module-a` depends on `module-b`.
+    /// - `module-b` excludes `module-a` from its dependencies.
+    ///
+    /// Expected Result:
+    /// The resolver should resolve `module-a` and `module-b` but exclude `module-c` due to the
+    /// explicit exclusion declared by `module-b`.
+    #[test]
+    pub fn dependency_exclusion() {
+        let server = PomServer::new().unwrap();
+        let port = server.get_port();
+
+        server.add_project(
+            ProjectEntry::new("com.example", "module-a", "1.0.0").add_dependency(
+                ProjectEntry::new("com.example", "module-b", "1.0.0")
+                    .add_exclusion("com.example", "module-c"),
+            ),
+        );
+        let dependencies = vec![Project::new("com.example", "module-a", "1.0.0")];
+
+        let mut resolved = Vec::new();
+
+        resolve(
+            dependencies,
+            &mut resolved,
+            Rc::new(RefCell::new(create_resolver(port))),
+        )
+        .unwrap();
+        assert_eq!(resolved.len(), 2);
+        drop(server);
     }
 }
