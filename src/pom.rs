@@ -806,6 +806,10 @@ enum ParserState {
     /// The properties of this project
     /// <properties></properties>
     Properties(PropertiesState),
+    /// Used to indicate that under project we are in a tag we dont care about
+    /// The argument is the level of xml tree we are at. 0 is at project level.
+    /// Increment if we go deeper (Start tag) and decrement when we go up (End tag)
+    Other(usize),
 }
 
 /// Keeps track of the dependency specific events
@@ -1098,9 +1102,16 @@ impl Parser {
                     tags::VERSION => ParserState::ReadVersion,
                     tags::PACKAGING => ParserState::ReadPackaging,
                     tags::PROPERTIES => ParserState::Properties(PropertiesState::Properties),
-                    _ => ParserState::Project,
+                    _ => ParserState::Other(1),
                 },
                 _ => ParserState::Project,
+            },
+            ParserState::Other(level) => match event {
+                // We dont care about these tags. So ignore them
+                Event::Start(_) => ParserState::Other(level + 1),
+                Event::End(_) if level == 1 => ParserState::Project,
+                Event::End(_) => ParserState::Other(level - 1),
+                _ => ParserState::Other(level),
             },
 
             // <artifactId> </artifactId>
