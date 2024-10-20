@@ -204,6 +204,7 @@ impl From<String> for CacheType {
             "pom" => CacheType::POM,
             "aar" => CacheType::AAR,
             "jar" => CacheType::JAR,
+            "bundle" => CacheType::JAR,
             "source" => CacheType::SOURCE,
             "toml" => CacheType::PROPERTIES,
             _ => CacheType::UNKNOWN(value),

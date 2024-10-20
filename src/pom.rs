@@ -1311,6 +1311,7 @@ fn project_substitute_property_string() {
         project.substitute_string("${project.groupId}:${project.artifactId}:${project.version}"),
         "com.example:artifact_1:22.0.0".to_string()
     );
+    assert_eq!(project.substitute_string("pro"), "pro".to_string());
 }
 
 #[test]
