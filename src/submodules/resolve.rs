@@ -2355,6 +2355,7 @@ mod pom_faker {
     pub struct PomServer {
         pub port: u16,
         pub repo: Repository,
+        pub properties: Arc<Mutex<HashMap<String, String>>>,
     }
 
     impl PomServer {
@@ -2362,8 +2363,10 @@ mod pom_faker {
             let listener = TcpListener::bind("127.0.0.1:0")?;
             let port = listener.local_addr()?.port();
             let repo = Arc::new(Mutex::new(HashMap::new()));
+            let properties = Arc::new(Mutex::new(HashMap::new()));
 
             let r = Arc::clone(&repo);
+            let p = Arc::clone(&properties);
 
             thread::spawn(move || {
                 for stream in listener.incoming() {
@@ -2374,11 +2377,15 @@ mod pom_faker {
                     if buffer.starts_with(b"CLOSE") {
                         break;
                     }
-                    Self::handle_request(&stream, r.clone()).unwrap();
+                    Self::handle_request(&stream, r.clone(), p.clone()).unwrap();
                 }
             });
 
-            Ok(Self { port, repo })
+            Ok(Self {
+                port,
+                repo,
+                properties,
+            })
         }
 
         pub fn close(&self) {
@@ -2389,7 +2396,11 @@ mod pom_faker {
         }
 
         /// spawns a new thread to handle response of this request
-        pub fn handle_request(stream: &TcpStream, repo: Repository) -> anyhow::Result<()> {
+        pub fn handle_request(
+            stream: &TcpStream,
+            repo: Repository,
+            properties: Arc<Mutex<HashMap<String, String>>>,
+        ) -> anyhow::Result<()> {
             let stream = stream.try_clone()?;
 
             thread::spawn(move || {
@@ -2426,6 +2437,7 @@ mod pom_faker {
                         group_id.as_str(),
                         artifact_id.as_str(),
                         version.as_str(),
+                        properties,
                     ) {
                         writer
                             .write_all(Self::create_response(200, resp.as_str()).as_bytes())
@@ -2482,6 +2494,7 @@ mod pom_faker {
             group_id: &str,
             artifact_id: &str,
             version: &str,
+            properties: Arc<Mutex<HashMap<String, String>>>,
         ) -> Option<String> {
             let proj = ProjectEntry::new(group_id, artifact_id, version);
             if let Ok(repo) = repo.lock() {
@@ -2508,6 +2521,17 @@ mod pom_faker {
                 body.push_str(&format!(" <artifactId>{}</artifactId>\n", artifact_id));
                 body.push_str(&format!(" <version>{}</version>\n", version));
                 body.push_str(&format!(" <name>{}:{}</name>\n", group_id, artifact_id));
+                // deal with passed properties
+                let p = properties.lock().unwrap();
+                if !p.is_empty() {
+                    body.push_str("  <dependencies>\n");
+                    for property in p.iter() {
+                        body.push_str(&format!("<{0}>{1}</{0}>\n", property.0, property.1));
+                    }
+                    body.push_str("  </dependencies>\n");
+                }
+                drop(p);
+
                 body.push_str("  <dependencies>\n");
                 for dep in proj.dependencies {
                     body.push_str("    <dependency>\n");
@@ -2564,10 +2588,16 @@ mod pom_faker {
                 None
             }
         }
-        // Adds a project to the list available packages
+        /// Adds a project to the list available packages
         pub fn add_project(&self, project: ProjectEntry) {
             if let Ok(mut repo) = self.repo.lock() {
                 repo.insert(project.get_id(), project);
+            }
+        }
+        /// Add a property
+        pub fn add_property(&self, key: &str, value: &str) {
+            if let Ok(mut prop) = self.properties.lock() {
+                prop.insert(key.to_string(), value.to_string());
             }
         }
         pub fn get_port(&self) -> u16 {
@@ -3189,6 +3219,34 @@ mod test {
             ProjectEntry::new("com.example", "module-a", "1.0.0")
                 .add_dependency(ProjectEntry::new("com.example", "module-b", "RELEASE")),
         );
+        let dependencies = vec![Project::new("com.example", "module-a", "1.0.0")];
+
+        let mut resolved = Vec::new();
+
+        resolve(
+            dependencies,
+            &mut resolved,
+            Rc::new(RefCell::new(create_resolver(port))),
+        )
+        .unwrap();
+        assert_eq!(resolved.len(), 2);
+
+        let module_b = &resolved[0];
+        assert_eq!(module_b.group_id, String::from("com.example"));
+        assert_eq!(module_b.artifact_id, String::from("module-b"));
+        assert_eq!(module_b.version, String::from("2.1.0"));
+        drop(server);
+    }
+    #[test]
+    pub fn properties_check_if_parsed() {
+        let server = PomServer::new().unwrap();
+        let port = server.get_port();
+
+        server.add_project(
+            ProjectEntry::new("com.example", "module-a", "1.0.0")
+                .add_dependency(ProjectEntry::new("com.example", "module-b", "RELEASE")),
+        );
+        server.add_property("my_version", "5.0.0");
         let dependencies = vec![Project::new("com.example", "module-a", "1.0.0")];
 
         let mut resolved = Vec::new();

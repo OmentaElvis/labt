@@ -2,6 +2,7 @@ use anyhow::Context;
 use anyhow::Result;
 use quick_xml::{events::Event, Reader};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::io::BufReader;
 use std::io::Read;
@@ -27,6 +28,7 @@ mod tags {
     pub const IMPORT: &[u8] = b"import";
     pub const SYSTEM: &[u8] = b"system";
     pub const RUNTIME: &[u8] = b"runtime";
+    pub const PROPERTIES: &[u8] = b"properties";
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize)]
@@ -257,6 +259,40 @@ impl VersionRequirement {
             VersionRange::Ge(v) => VersionRange::Lt(v),
             VersionRange::Lt(v) => VersionRange::Ge(v),
             VersionRange::Le(v) => VersionRange::Gt(v),
+        }
+    }
+}
+impl Display for VersionRequirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Soft(soft) => write!(f, "{}", soft),
+            Self::Hard(hard) => {
+                // This is a nightmare
+                // Here is what we are going to do. We are going to dump the ranges as is
+                // without caring about syntatic sugars like [1.0, 2.0] which is seen by the parser as [1.0,),(,2.0]
+                // because its the parser going to parse it anyway.
+                let mut ranges: Vec<String> = Vec::new();
+                for range in hard {
+                    match range {
+                        // We can only have one eq so short circuit here
+                        VersionRange::Eq(eq) => return write!(f, "[{}]", eq),
+                        VersionRange::Gt(v) => {
+                            ranges.push(format!("({v},)"));
+                        }
+                        VersionRange::Ge(v) => {
+                            ranges.push(format!("[{v},)"));
+                        }
+                        VersionRange::Lt(v) => {
+                            ranges.push(format!("(,{v})"));
+                        }
+                        VersionRange::Le(v) => {
+                            ranges.push(format!("(,{v}]"));
+                        }
+                    }
+                }
+                write!(f, "{}", ranges.join(","))
+            }
+            Self::Unset => write!(f, ""),
         }
     }
 }
@@ -502,6 +538,8 @@ impl FromStr for VersionRequirement {
     }
 }
 
+type Properties = HashMap<String, String>;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Project {
     /// The actual project name
@@ -520,6 +558,8 @@ pub struct Project {
     scope: Scope,
     /// The packaging of the project
     packaging: String,
+    /// Properties of the project
+    properties: Properties,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -552,6 +592,7 @@ impl Default for Project {
             excludes: vec![],
             scope: Scope::COMPILE,
             packaging: String::from("jar"),
+            properties: HashMap::new(),
         }
     }
 }
@@ -645,6 +686,99 @@ impl Project {
     pub fn set_packaging(&mut self, packaging: String) {
         self.packaging = packaging;
     }
+    pub fn get_property(&self, key: &str) -> Option<String> {
+        // if we fail to get it from the map it must be one of those java, env or project things
+        let value = self.properties.get(key);
+        if value.is_some() {
+            return value.cloned();
+        }
+
+        let segments = key.split_once(".");
+        segments?;
+
+        let (group, item) = segments.unwrap();
+
+        match group {
+            "env" => {
+                // do env stuff
+                match std::env::var(item) {
+                    Ok(v) => Some(v),
+                    _ => None,
+                }
+            }
+            "project" => {
+                // reply with project stuff
+                match item {
+                    "version" => Some(self.version.to_string()),
+                    "artifactId" => Some(self.get_artifact_id()),
+                    "groupId" => Some(self.get_group_id()),
+                    "scope" => Some(self.get_scope().to_string()),
+                    "packaging" => Some(self.get_packaging()),
+                    _ => None,
+                }
+            }
+            // TODO
+            // "java" => {
+            //     // reply with java stuff
+            // }
+            _ => {
+                // you are lost
+                None
+            }
+        }
+    }
+    pub fn substitute_string(&self, data: &str) -> String {
+        // Parse the string for ${}
+        // Yet another state machine
+        let mut result = String::with_capacity(data.len());
+        #[derive(Debug)]
+        enum SubState {
+            Normal,
+            PlaceholderDollar,
+            PlaceholderBody,
+        }
+
+        let mut state = SubState::Normal;
+        let mut current_placeholder_start = 0;
+
+        for (i, c) in data.chars().enumerate() {
+            match state {
+                SubState::Normal if c == '$' => {
+                    state = SubState::PlaceholderDollar;
+                    continue;
+                }
+                SubState::Normal => {
+                    result.push(c);
+                }
+                SubState::PlaceholderDollar if c == '{' => {
+                    state = SubState::PlaceholderBody;
+                    current_placeholder_start = i;
+                    continue;
+                }
+                SubState::PlaceholderDollar if c.is_whitespace() => {
+                    continue;
+                }
+                SubState::PlaceholderDollar => {
+                    result.push(c);
+                    state = SubState::Normal;
+                    continue;
+                }
+                SubState::PlaceholderBody if c == '}' => {
+                    // The end of our tag
+                    // obtain the tag
+                    let substring = &data[(current_placeholder_start + 1)..i].trim();
+                    if let Some(property) = self.get_property(substring) {
+                        result.push_str(&property);
+                    }
+                    state = SubState::Normal;
+                }
+                SubState::PlaceholderBody => {
+                    continue;
+                }
+            }
+        }
+        result
+    }
 }
 
 /// Parser states, helps in keeping track of the current event
@@ -669,6 +803,9 @@ enum ParserState {
     /// The packaging of this project
     /// <packaging></packaging>
     ReadPackaging,
+    /// The properties of this project
+    /// <properties></properties>
+    Properties(PropertiesState),
 }
 
 /// Keeps track of the dependency specific events
@@ -697,6 +834,17 @@ enum DependencyState {
     ReadScope,
 }
 
+/// Keeps track of the properties specific events
+#[derive(Clone, Debug)]
+enum PropertiesState {
+    /// Root properties tag
+    ///<properties></properties>
+    Properties,
+    /// Tries to read a specific property.
+    /// Since these are dynamic tag names we just use this generic enum name
+    ReadEntry,
+}
+
 /// Keeps track of the exclusions specific events
 #[derive(Clone, Debug)]
 enum ExclusionsState {
@@ -719,6 +867,10 @@ struct Parser {
     project: Project,
     /// Used to keep track of a dependency while parsing xml
     current_dependency: Option<Project>,
+    /// Used to store the currently processed property tag
+    current_property_tag: Vec<u8>,
+    /// Used to carry the current property tag value
+    current_property_value: Vec<String>,
 }
 
 impl Parser {
@@ -728,6 +880,8 @@ impl Parser {
             state: ParserState::Project,
             project,
             current_dependency: None,
+            current_property_tag: Vec::new(),
+            current_property_value: Vec::new(),
         }
     }
     /// Filters through xml stream events matching through accepted dependency tags
@@ -893,6 +1047,42 @@ impl Parser {
 
         Ok(new_state)
     }
+    fn parse_props(&mut self, event: Event, state: PropertiesState) -> Result<PropertiesState> {
+        let new_state = match state {
+            // <properties></properties>
+            PropertiesState::Properties => match event {
+                Event::End(start) => match start.local_name().into_inner() {
+                    tags::PROPERTIES => PropertiesState::Properties,
+                    tag => {
+                        self.current_property_tag = Vec::from(tag);
+                        PropertiesState::ReadEntry
+                    }
+                },
+                _ => PropertiesState::Properties,
+            },
+            // Handle the current tag
+            PropertiesState::ReadEntry => match event {
+                Event::End(end) if end.local_name().into_inner() == self.current_property_tag => {
+                    let tag = String::from_utf8_lossy(&self.current_property_tag);
+
+                    let value: String = self.current_property_value.join("");
+                    self.project.properties.insert(tag.to_string(), value);
+                    self.current_property_value.clear();
+
+                    PropertiesState::Properties
+                }
+                Event::Text(e) => {
+                    let value = e.unescape()?.to_string();
+                    self.current_property_value.push(value);
+
+                    PropertiesState::ReadEntry
+                }
+                _ => PropertiesState::ReadEntry,
+            },
+        };
+
+        Ok(new_state)
+    }
 
     /// Processes the xml stream events into its respective tags.
     /// The matched tags are used to update the state machine.
@@ -907,6 +1097,7 @@ impl Parser {
                     tags::GROUP_ID => ParserState::ReadGroupId,
                     tags::VERSION => ParserState::ReadVersion,
                     tags::PACKAGING => ParserState::ReadPackaging,
+                    tags::PROPERTIES => ParserState::Properties(PropertiesState::Properties),
                     _ => ParserState::Project,
                 },
                 _ => ParserState::Project,
@@ -966,6 +1157,13 @@ impl Parser {
                 }
                 event => ParserState::Dependencies(self.parse_deps(event, dep_state)?),
             },
+            // <properties></properties>
+            ParserState::Properties(prop_state) => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::PROPERTIES => {
+                    ParserState::Project
+                }
+                event => ParserState::Properties(self.parse_props(event, prop_state)?),
+            },
         };
         Ok(())
     }
@@ -997,6 +1195,28 @@ where
             ev => parser.process(ev).context("Processing xml events")?,
         }
         buf.clear()
+    }
+
+    // try to substitute properties.
+    // some basic intelligence can be applied here since not all projects use variables
+
+    if !parser.project.properties.is_empty() {
+        parser.project.group_id = parser
+            .project
+            .substitute_string(parser.project.group_id.as_str());
+        parser.project.artifact_id = parser
+            .project
+            .substitute_string(parser.project.artifact_id.as_str());
+        if let Some(version) = &parser.project.selected_version {
+            parser.project.selected_version =
+                Some(parser.project.substitute_string(version.as_str()));
+        }
+    }
+
+    // loop through all dependencies
+    for (i, dep) in parser.project.dependencies.clone().iter().enumerate() {
+        parser.project.dependencies[i].artifact_id =
+            parser.project.substitute_string(&dep.artifact_id);
     }
 
     Ok(parser.project)
@@ -1032,6 +1252,55 @@ pub async fn parse_pom_async<R: AsyncRead + Unpin>(
 use pretty_assertions::assert_eq;
 
 use crate::submodules::resolve::Constraint;
+
+#[test]
+fn project_substitute_property_string() {
+    let mut project = Project::new("com.example", "artifact_1", "22.0.0");
+    project
+        .properties
+        .insert("glorious".to_string(), "bustard".to_string());
+
+    assert_eq!(
+        project.substitute_string("${glorious}"),
+        "bustard".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("${   glorious}"),
+        "bustard".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("${   glorious   }"),
+        "bustard".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("${glorious   }"),
+        "bustard".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("$   {glorious}"),
+        "bustard".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("$x{glorious}"),
+        "x{glorious}".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("${project.groupId}"),
+        "com.example".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("${project.artifactId}"),
+        "artifact_1".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("${project.version}"),
+        "22.0.0".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("${project.groupId}:${project.artifactId}:${project.version}"),
+        "com.example:artifact_1:22.0.0".to_string()
+    );
+}
 
 #[test]
 fn parse_pom_version_requirements() {
@@ -1345,6 +1614,107 @@ fn parse_pom_version_requirements() {
             VersionRange::Lt(String::from("1.1")),
             VersionRange::Gt(String::from("1.1"))
         ])
+    );
+}
+
+/// Tests conversion between version requirement and string. Remember we dont
+/// care about the various syntatic sugars. What we care about is if the parser
+/// can reproduce the same result regardless of what the to_string produces
+#[test]
+fn version_requirement_to_string() {
+    assert_eq!(
+        VersionRequirement::Soft("4.0".to_string()).to_string(),
+        String::from("4.0")
+    );
+
+    assert_eq!(VersionRequirement::Unset.to_string(), String::new());
+
+    // Now the complicated stuff.
+    // The test plan:
+    //  - Convert to string
+    //  - Convert the resulting string back to VersionRequirement.
+    //  - Compare if the resulting VersionRequirement is identical
+
+    // Eq
+    let version = VersionRequirement::Hard(vec![VersionRange::Eq("4.0".to_string())]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+
+    // Gt
+    let version = VersionRequirement::Hard(vec![VersionRange::Gt("4.0".to_string())]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+
+    // Ge
+    let version = VersionRequirement::Hard(vec![VersionRange::Ge("4.0".to_string())]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+
+    // Lt
+    let version = VersionRequirement::Hard(vec![VersionRange::Lt("4.0".to_string())]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+
+    // Le
+    let version = VersionRequirement::Hard(vec![VersionRange::Lt("4.0".to_string())]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+
+    // more complex stuff
+    // [1.0, 2.0]
+    let version = VersionRequirement::Hard(vec![
+        VersionRange::Ge(String::from("1.0")),
+        VersionRange::Le(String::from("2.0")),
+    ]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+    // [1.0,2.0)
+    let version = VersionRequirement::Hard(vec![
+        VersionRange::Ge(String::from("1.0")),
+        VersionRange::Lt(String::from("2.0")),
+    ]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+    // (1.0,2.0)
+    let version = VersionRequirement::Hard(vec![
+        VersionRange::Gt(String::from("1.0")),
+        VersionRange::Lt(String::from("2.0")),
+    ]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+    // (,1.0],[1.2,)
+    let version = VersionRequirement::Hard(vec![
+        VersionRange::Le(String::from("1.0")),
+        VersionRange::Ge(String::from("1.2")),
+    ]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+    // (,1.1),(1.1,)
+    let version = VersionRequirement::Hard(vec![
+        VersionRange::Lt(String::from("1.1")),
+        VersionRange::Gt(String::from("1.1")),
+    ]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
     );
 }
 
