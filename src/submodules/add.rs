@@ -41,7 +41,7 @@ impl Add {
 
         if let Some(dep) = &self.args.dependency {
             // if dependency positional argument was provided, try to parse it
-            let re = Regex::new(r"^([\w\.]+):([\w-]+):([\w\.-]+)$")
+            let re = Regex::new(r"^([\w\.]+):([\w\.-]+):([\w\.-]+)$")
                 .context("Invalid regex")
                 .unwrap();
             if let Some(group) = re.captures(dep) {
