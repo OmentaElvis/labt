@@ -957,7 +957,7 @@ impl Parser {
                 }
                 Event::Text(e) => {
                     if let Some(dep) = &mut self.current_dependency {
-                        dep.version = e.unescape()?.to_string().parse()?;
+                        dep.selected_version = Some(e.unescape()?.to_string());
                     }
                     DependencyState::ReadVersion
                 }
@@ -1055,13 +1055,17 @@ impl Parser {
         let new_state = match state {
             // <properties></properties>
             PropertiesState::Properties => match event {
-                Event::End(start) => match start.local_name().into_inner() {
+                Event::End(end) => match end.local_name().into_inner() {
                     tags::PROPERTIES => PropertiesState::Properties,
                     tag => {
                         self.current_property_tag = Vec::from(tag);
                         PropertiesState::ReadEntry
                     }
                 },
+                Event::Start(tag) => {
+                    self.current_property_tag = tag.local_name().into_inner().to_vec();
+                    PropertiesState::ReadEntry
+                }
                 _ => PropertiesState::Properties,
             },
             // Handle the current tag
@@ -1182,6 +1186,32 @@ impl Parser {
     //     return &self.project;
     // }
 }
+fn substitute_properties_vars(project: &mut Project) -> anyhow::Result<()> {
+    // try to substitute properties.
+    // some basic intelligence can be applied here since not all projects use variables
+
+    if !project.properties.is_empty() {
+        project.group_id = project.substitute_string(project.group_id.as_str());
+        project.artifact_id = project.substitute_string(project.artifact_id.as_str());
+        if let Some(version) = &project.selected_version {
+            project.selected_version = Some(project.substitute_string(version.as_str()));
+        }
+    }
+
+    // loop through all dependencies
+    for (i, dep) in project.dependencies.clone().iter().enumerate() {
+        project.dependencies[i].artifact_id = project.substitute_string(&dep.artifact_id);
+        project.dependencies[i].group_id = project.substitute_string(&dep.group_id);
+        if let Some(v) = &project.dependencies[i].selected_version {
+            project.dependencies[i].version = project
+                .substitute_string(v)
+                .parse()
+                .context("Failed to select a suitable version for dependency")?;
+        }
+    }
+
+    Ok(())
+}
 
 /// Parses a pom xml file from a given stream and produces a Result
 /// containing the Project object
@@ -1207,29 +1237,7 @@ where
         }
         buf.clear()
     }
-
-    // try to substitute properties.
-    // some basic intelligence can be applied here since not all projects use variables
-
-    if !parser.project.properties.is_empty() {
-        parser.project.group_id = parser
-            .project
-            .substitute_string(parser.project.group_id.as_str());
-        parser.project.artifact_id = parser
-            .project
-            .substitute_string(parser.project.artifact_id.as_str());
-        if let Some(version) = &parser.project.selected_version {
-            parser.project.selected_version =
-                Some(parser.project.substitute_string(version.as_str()));
-        }
-    }
-
-    // loop through all dependencies
-    for (i, dep) in parser.project.dependencies.clone().iter().enumerate() {
-        parser.project.dependencies[i].artifact_id =
-            parser.project.substitute_string(&dep.artifact_id);
-    }
-
+    substitute_properties_vars(&mut parser.project)?;
     Ok(parser.project)
 }
 
@@ -1257,6 +1265,7 @@ pub async fn parse_pom_async<R: AsyncRead + Unpin>(
         buf.clear()
     }
 
+    substitute_properties_vars(&mut parser.project)?;
     Ok(parser.project)
 }
 #[cfg(test)]
