@@ -72,6 +72,7 @@ Commands:
   resolve  Fetches the project dependencies
   build    Builds the project
   plugin   Manage plugins
+  sdk      Sdk manager
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -80,6 +81,33 @@ Options:
 
 ```
 
+Here's a more concise version:
+
+
+## SDK Manager
+LABt's SDK Manager lets you manage Android SDK packages via a 
+terminal interface.
+
+- **Interactive Management**: Use `labt sdk list` to view 
+  and toggle package actions (install, uninstall, upgrade/downgrade) 
+  in a TUI.
+- **Installing**: `labt sdk install <id>` to install a package non interactively.
+- **Lua API Integration**: Plugins can access SDK packages directly through 
+  LABt's Lua API. [More details here](doc/LuaAPI.md).
+  
+  ```lua
+  local build = require("sdk:build")
+  local ok, stdout, stderr = build.get_aapt2("version")
+  local version
+
+  if ok then
+      version = stderr  -- Note: `aapt2` outputs to `stderr`
+  else
+      error(stderr)
+  end
+  ```
+
+
 ## Plugin system
 Labt on its own cant really do much. It provides tools to manage projects and their
 dependencies. To extend the capability of labt, it provides a powerful Lua scripting
@@ -87,8 +115,9 @@ plugin system. This allows custom plugins to do the heavy lifting of building ap
 For more information on plugin system check the [LABt Lua API documentation](doc/LuaAPI.md).
 
 ## TODO
-- [ ] Add a FFI capability for plugins
-- [ ] Support for windows file system
+- [x] Add a FFI capability for plugins
+- [x] Support for windows file system
 - [ ] Add a configurable template system
 - [ ] Stabilize the plugin api and interpret versions of plugins
 - [ ] Shorten the plugin use command
+- [ ] Sdkmanager support multiple repositories

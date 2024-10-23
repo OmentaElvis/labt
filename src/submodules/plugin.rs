@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     env::current_dir,
     fs::{create_dir_all, File},
     io::Write,
@@ -16,7 +17,7 @@ use crate::{
     config::{add_plugin_to_config, get_config, remove_plugin_from_config},
     get_home,
     plugin::config::PluginToml,
-    MULTI_PRPGRESS_BAR,
+    MULTI_PROGRESS_BAR,
 };
 
 use super::Submodule;
@@ -157,7 +158,7 @@ pub fn fetch_plugin(
     ))?;
 
     // start a new spinner progress bar and add it to the global multi progress bar
-    let spinner = MULTI_PRPGRESS_BAR.with(|multi| multi.borrow().add(ProgressBar::new_spinner()));
+    let spinner = MULTI_PROGRESS_BAR.add(ProgressBar::new_spinner());
     spinner.enable_steady_tick(Duration::from_millis(100));
     spinner.set_style(ProgressStyle::with_template("{spinner} {prefix:.blue} {wide_msg}").unwrap());
     spinner.set_prefix("Plugin");
@@ -223,17 +224,11 @@ pub fn create_new_plugin(
     let plugin = PluginToml {
         name: name.clone(),
         version: version.clone(),
-        stage: crate::plugin::config::Stage {
-            pre: None,
-            aapt: None,
-            compile: None,
-            dex: None,
-            bundle: None,
-            post: None,
-        },
+        stages: HashMap::default(),
         path: PathBuf::new(),
         package_paths: None,
         enable_unsafe: false,
+        sdk: Vec::new(),
     };
 
     let mut path = if local_plugin {
@@ -256,7 +251,7 @@ pub fn create_new_plugin(
         }
     };
 
-    let doc = toml_edit::ser::to_document(&plugin).context("Failed to serialize plugin config")?;
+    let doc = plugin.to_string();
     path.push("plugin.toml");
     let mut file =
         File::create(&path).context(format!("Failed to create plugin file at {:?}", path))?;

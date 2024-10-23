@@ -1,7 +1,7 @@
 workspace = { members = ["labt-proc-macro"] }
 [package]
 name = "labt"
-version = "0.2.14"
+version = "0.3.2"
 edition = "2021"
 description = "Lab-t Lightweight Android build tool" 
 homepage = "https://gitlab.com/lab-tool/labt"
@@ -37,6 +37,14 @@ version-compare = "0.1.1"
 labt-proc-macro = {path = "labt-proc-macro", version = "0.1.0"}
 glob = "0.3.1"
 zip = { version = "2.1.1", default-features = false, features = ["deflate"] }
+ratatui = "0.26.3"
+crossterm = "0.27.0"
+fuzzy-matcher = "0.3.7"
+sha1 = "0.10.6"
+lazy_static = "1.5.0"
 
 [features]
 vendored-lua = ["mlua/vendored"]
+
+[dev-dependencies]
+pretty_assertions = "1.4.0"

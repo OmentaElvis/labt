@@ -3,6 +3,7 @@ use crate::submodules::build::{Build, BuildArgs};
 use crate::submodules::init::{Init, InitArgs};
 use crate::submodules::plugin::{Plugin, PluginArgs};
 use crate::submodules::resolve::{Resolve, ResolveArgs};
+use crate::submodules::sdk::{Sdk, SdkArgs};
 use crate::submodules::Submodule;
 use crate::LABT_VERSION;
 use clap::{CommandFactory, Parser, Subcommand};
@@ -38,6 +39,8 @@ enum Commands {
     Build(BuildArgs),
     /// Manage plugins
     Plugin(PluginArgs),
+    /// Sdk manager
+    Sdk(SdkArgs),
 }
 
 pub fn parse_args() {
@@ -67,6 +70,11 @@ pub fn parse_args() {
         Some(Commands::Plugin(args)) => {
             if let Err(e) = Plugin::new(args).run() {
                 error!(target: "plugin", "{:?}", e);
+            }
+        }
+        Some(Commands::Sdk(args)) => {
+            if let Err(e) = Sdk::new(args).run() {
+                error!(target: "sdk", "{:?}", e);
             }
         }
         None => {

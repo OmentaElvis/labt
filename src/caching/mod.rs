@@ -11,7 +11,7 @@ use anyhow::{bail, Context};
 use indicatif::{HumanBytes, ProgressBar};
 use log::info;
 
-use crate::{get_home, submodules::resolve::ProjectDep, MULTI_PRPGRESS_BAR};
+use crate::{get_home, submodules::resolve::ProjectDep, MULTI_PROGRESS_BAR};
 
 use self::{download::download, properties::write_properties};
 #[derive(Clone, Debug)]
@@ -21,6 +21,8 @@ pub enum CacheType {
     JAR,
     SOURCE,
     PROPERTIES,
+    // The V level maven-metadata.xml
+    METADATA,
     UNKNOWN(String),
 }
 #[derive(Debug)]
@@ -71,6 +73,7 @@ impl Cache {
                 format!("{}-{}.{}", self.artifact_id, self.version, ext)
             }
             CacheType::PROPERTIES => format!("{}-{}.toml", self.artifact_id, self.version),
+            CacheType::METADATA => "maven-metadata.xml".to_string(),
         }
     }
     fn build_path(&self) -> std::io::Result<PathBuf> {
@@ -84,7 +87,9 @@ impl Cache {
         let mut path = self.path.clone().unwrap();
         path.push(&self.group_id);
         path.push(&self.artifact_id);
-        path.push(&self.version);
+        if !matches!(self.cache_type, CacheType::METADATA) {
+            path.push(&self.version);
+        }
         if !path.exists() {
             create_dir_all(&path)?;
         }
@@ -225,8 +230,7 @@ pub fn save_dependencies(deps: &Vec<ProjectDep>) -> anyhow::Result<()> {
         write_properties(project)?;
     }
     // initialize a new progressbar
-    let pb =
-        MULTI_PRPGRESS_BAR.with(|multi| multi.borrow().add(ProgressBar::new(deps.len() as u64)));
+    let pb = MULTI_PROGRESS_BAR.add(ProgressBar::new(deps.len() as u64));
     // begin the download  of the dependencies
     for project in deps {
         let mut cache = Cache::from(project);

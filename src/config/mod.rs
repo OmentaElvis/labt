@@ -5,6 +5,8 @@ use std::{
 };
 pub mod lock;
 pub mod maven_metadata;
+pub mod repository;
+
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use toml_edit::Document;

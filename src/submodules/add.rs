@@ -93,7 +93,8 @@ impl Submodule for Add {
         };
         add_dependency_to_config(group_id.clone(), artifact_id.clone(), version.clone())?;
         let resolvers = get_resolvers().context("Failed to get resolvers from Labt.toml config")?;
-        let project = Project::new(group_id.as_str(), artifact_id.as_str(), version.as_str());
+        let mut project = Project::new(group_id.as_str(), artifact_id.as_str(), version.as_str());
+        project.set_selected_version(Some(version.clone()));
         resolve(vec![project], resolvers)?;
 
         // println!("{:?}", project);

@@ -1,11 +1,10 @@
 use std::{
-    cell::RefCell,
     env::current_dir,
     ffi::OsStr,
     fs::{create_dir, create_dir_all},
     io::Write,
     path::PathBuf,
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
 };
 
 use anyhow::bail;
@@ -14,6 +13,7 @@ use console::style;
 use env_logger::Env;
 use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
+use lazy_static::lazy_static;
 use log::warn;
 
 use crate::envs::HOME;
@@ -25,16 +25,22 @@ pub mod plugin;
 pub mod pom;
 pub mod submodules;
 pub mod templating;
+pub mod tui;
 
-thread_local! {
-    pub static MULTI_PRPGRESS_BAR: RefCell<MultiProgress> = RefCell::new(MultiProgress::new());
+lazy_static! {
+    pub static ref MULTI_PROGRESS_BAR: Arc<MultiProgress> = Arc::new(MultiProgress::new());
 }
 /// Initialized by get_project_root. It caches the the
 /// result of the function to prevent extra system calls
 /// DO NOT use directly
 static PROJECT_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
+/// Cached value if labt home. Initialized by get_home function
+static LABT_HOME_PATH: OnceLock<PathBuf> = OnceLock::new();
+
 pub const LABT_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const USER_AGENT: &str = concat!("Labt/", env!("CARGO_PKG_VERSION"));
+pub const TARGET: &str = env!("TARGET");
 
 pub mod envs {
     pub const LABT_HOME: &str = "LABT_HOME";
@@ -50,17 +56,34 @@ pub mod envs {
 /// # Errors
 ///
 /// This function will return an error if no suitable path is found for labt home.
-#[cfg(not(target_os = "windows"))]
 pub fn get_home() -> anyhow::Result<PathBuf> {
+    get_home_ref().cloned()
+}
+
+/// Returns the location of Labt home, this is where Labt stores its
+/// configurations files, plugins and cache. It first checks if LABT_HOME
+/// was set. If not set, falls back to $HOME/.labt on linux, or %LOCALAPPDATA%/.labt on
+/// windows.
+///
+/// # Errors
+///
+/// This function will return an error if no suitable path is found for labt home.
+#[cfg(not(target_os = "windows"))]
+pub fn get_home_ref() -> anyhow::Result<&'static PathBuf> {
+    // check for cached static variable
+    if let Some(path) = LABT_HOME_PATH.get() {
+        return Ok(path);
+    }
+
     if let Ok(path) = std::env::var(envs::LABT_HOME) {
-        return Ok(PathBuf::from(path));
+        return Ok(LABT_HOME_PATH.get_or_init(|| PathBuf::from(path)));
     }
 
     if let Ok(path) = std::env::var(envs::HOME) {
         let mut path = PathBuf::from(path);
         path.push(".labt");
         if path.exists() {
-            return Ok(path);
+            return Ok(LABT_HOME_PATH.get_or_init(|| path));
         } else {
             bail!(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -81,16 +104,21 @@ pub fn get_home() -> anyhow::Result<PathBuf> {
 ///
 /// This function will return an error if no suitable path is found for labt home.
 #[cfg(target_os = "windows")]
-pub fn get_home() -> anyhow::Result<PathBuf> {
+pub fn get_home_ref() -> anyhow::Result<&'static PathBuf> {
+    // check for cached static variable
+    if let Some(path) = LABT_HOME_PATH.get() {
+        return Ok(path);
+    }
+
     if let Ok(path) = std::env::var(envs::LABT_HOME) {
-        return Ok(PathBuf::from(path));
+        return Ok(LABT_HOME_PATH.get_or_init(|| PathBuf::from(path)));
     }
 
     if let Ok(path) = std::env::var(envs::LOCALAPPDATA) {
         let mut path = PathBuf::from(path);
         path.push(".labt");
         if path.exists() {
-            return Ok(path);
+            return Ok(LABT_HOME_PATH.get_or_init(|| path));
         } else {
             bail!(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -146,17 +174,15 @@ fn get_project_root_recursive(current_dir: PathBuf) -> std::io::Result<PathBuf> 
 /// it is assumed to be a first run if labt home does not exist
 fn first_run(path: &mut PathBuf) -> anyhow::Result<()> {
     path.push(".labt");
-    // create .labt folder
-    create_dir_all(&path)?;
-
-    // create cache dir
     path.push("cache");
-    create_dir(&path)?;
+    // create .labt folder and
+    // create cache dir
+    create_dir_all(path.clone())?;
 
     // create plugins
     path.pop();
     path.push("plugins");
-    create_dir(&path)?;
+    create_dir(path)?;
 
     Ok(())
 }
@@ -205,8 +231,8 @@ fn main() -> anyhow::Result<()> {
         })
         .build();
 
-    let multi = MULTI_PRPGRESS_BAR.with(|multi| multi.borrow().clone());
-    LogWrapper::new(multi.clone(), logger).try_init()?;
+    let multi = Arc::clone(&MULTI_PROGRESS_BAR);
+    LogWrapper::new((*multi).clone(), logger).try_init()?;
 
     parse_args();
 

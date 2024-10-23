@@ -67,7 +67,7 @@ build_linux:
       - apt-get update -yqq
       - apt-get install -yqq --no-install-recommends build-essential
     rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_COMMIT_TAG
+    - if: $CI_COMMIT_TAG
     script:
         - echo "=== BUILDING FOR x86_64 linux gnu ==="
         - rustup target add x86_64-unknown-linux-gnu
@@ -95,7 +95,7 @@ build_windows:
       - unzip -j EnVar_plugin.zip  Plugins/x86-unicode/EnVar.dll -d plugins
       - rm EnVar_plugin.zip
     rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_COMMIT_TAG
+    - if: $CI_COMMIT_TAG
     script:
         - echo "=== BUILDING FOR x86_64 linux gnu ==="
         - rustup target add x86_64-pc-windows-gnu
@@ -124,7 +124,7 @@ release_job:
   image: registry.gitlab.com/gitlab-org/release-cli:latest
   script: echo "=== CREATING RELEASE ==="
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_COMMIT_TAG
+    - if: $CI_COMMIT_TAG
   release:
     tag_name: "v${LABT_VERSION}"
     description: "Lightweight Android Build tool (LABt) v${LABT_VERSION}"
@@ -149,7 +149,7 @@ upload_job:
     - job: build_windows
       artifacts: true
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_COMMIT_TAG
+    - if: $CI_COMMIT_TAG
   script:
     - echo "=== UPLOADING ==="
     - ls -a bin/

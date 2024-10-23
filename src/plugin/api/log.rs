@@ -1,5 +1,5 @@
 use labt_proc_macro::labt_lua;
-use mlua::Lua;
+use mlua::{Lua, Value};
 
 /// Logs a message at the info level
 #[labt_lua]
@@ -19,6 +19,12 @@ fn error(_: &Lua, (target, message): (String, String)) {
     log::error!(target: target.as_str(), "{}", message);
     Ok(())
 }
+/// Dumps a lua table for debugging
+#[labt_lua]
+fn dump(_lua: &Lua, table: Value) {
+    println!("{:#?}", table);
+    Ok(())
+}
 
 /// Generates log table and loads all its api functions
 ///
@@ -32,6 +38,7 @@ pub fn load_log_table(lua: &mut Lua) -> anyhow::Result<()> {
     info(lua, &table)?;
     error(lua, &table)?;
     warn(lua, &table)?;
+    dump(lua, &table)?;
 
     lua.globals().set("log", table)?;
 
