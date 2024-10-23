@@ -23,6 +23,8 @@ pub struct Plugin {
     pub dependents: Option<(Vec<PathBuf>, Vec<PathBuf>)>,
     /// package paths
     pub package_paths: Vec<PathBuf>,
+    /// Unsafe mode enabled for this plugin
+    pub unsafe_mode: bool,
 }
 
 impl Plugin {
@@ -35,10 +37,11 @@ impl Plugin {
             priority: 0,
             dependents: None,
             package_paths: vec![],
+            unsafe_mode: false,
         }
     }
     pub fn load(&self) -> anyhow::Result<ExecutableLua> {
-        let mut exe = ExecutableLua::new(self.path.clone(), &self.package_paths);
+        let mut exe = ExecutableLua::new(self.path.clone(), &self.package_paths, self.unsafe_mode);
         exe.set_build_step(self.step);
         exe.load_api_tables()
             .context("Error injecting api tables into lua context")?;

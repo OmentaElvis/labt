@@ -233,6 +233,7 @@ pub fn create_new_plugin(
         },
         path: PathBuf::new(),
         package_paths: None,
+        enable_unsafe: false,
     };
 
     let mut path = if local_plugin {

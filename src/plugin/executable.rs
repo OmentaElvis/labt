@@ -27,8 +27,12 @@ pub struct ExecutableLua {
 }
 
 impl<'lua, 'a> ExecutableLua {
-    pub fn new(path: PathBuf, package_paths: &[PathBuf]) -> Self {
-        let lua = Lua::new();
+    pub fn new(path: PathBuf, package_paths: &[PathBuf], unsafe_mode: bool) -> Self {
+        let lua = if unsafe_mode {
+            unsafe { Lua::unsafe_new() }
+        } else {
+            Lua::new()
+        };
         let paths: String = package_paths
             .iter()
             .filter_map(|p| p.to_str())

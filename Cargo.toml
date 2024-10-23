@@ -23,7 +23,7 @@ git2 = { version = "0.18.3", features = ["https", "openssl-probe"], default-feat
 indicatif = "0.17.7"
 indicatif-log-bridge = "0.2.2"
 log = "0.4.21"
-mlua = { version = "0.9.6", features = ["vendored", "lua54", "serde", "serialize"] }
+mlua = { version = "0.9.6", features = ["luajit", "serde", "serialize"] }
 quick-xml = { version = "0.31.0", features = ["async-tokio"] }
 regex = "1.10.2"
 reqwest = { version = "0.11.24", features = ["stream", "blocking"] }
@@ -37,3 +37,6 @@ version-compare = "0.1.1"
 labt-proc-macro = {path = "labt-proc-macro", version = "0.1.0"}
 glob = "0.3.1"
 zip = { version = "2.1.1", default-features = false, features = ["deflate"] }
+
+[features]
+vendored-lua = ["mlua/vendored"]

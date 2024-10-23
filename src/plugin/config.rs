@@ -24,6 +24,9 @@ pub struct PluginToml {
     pub path: PathBuf,
     /// Paths to serch for required lua modules
     pub package_paths: Option<Vec<PathBuf>>,
+    /// Enable unsafe lua api for entire plugin
+    #[serde(rename = "unsafe", default)]
+    pub enable_unsafe: bool,
 }
 
 #[derive(Default, Debug, Deserialize, Serialize)]
@@ -54,6 +57,9 @@ pub struct PluginStage {
     pub inputs: Option<Vec<String>>,
     /// The output files that we should ensure that it is uptodate
     pub outputs: Option<Vec<String>>,
+    /// Enable unsafe lua api
+    #[serde(rename = "unsafe", default)]
+    pub enable_unsafe: bool,
 }
 
 impl PluginToml {
@@ -76,6 +82,7 @@ impl PluginToml {
                     // create a plugin and set its step as $j
                     let mut plugin = Plugin::new(self.name.clone(), self.version.clone(), path, $j);
                     plugin.priority = s.priority;
+                    plugin.unsafe_mode = self.enable_unsafe || s.enable_unsafe;
                     plugin.package_paths = if let Some(package_paths) = &self.package_paths{
                             load_package_paths(package_paths, &self.path)
                         }else{
