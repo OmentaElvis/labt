@@ -745,7 +745,7 @@ There are two flavors of FFI you can use.
 - Through lua c modules: good for extending your plugin with custom native code
 - Through LuaJIT FFI module: good for quickly utilizing existing native libraries
 
-### Custom native code
+### Example: Custom native code
 These are dynamic libraries that you can "require" in your lua code. They are usually .so or .dll
 files in Linux and windows respectively. You have to write your code, compile it and make it available
 to be loaded by lua. The entry point for these modules is a function named `luaopen_XXXX` eg `luaopen_hello` for module hello.
@@ -825,7 +825,7 @@ run with `labt build pre`
 
 more info can be found [here](https://epics-lua.readthedocs.io/en/latest/adding-libraries.html?origin=serp_auto)
 
-### Using FFI module
+### Example: Using FFI module
 This uses LuaJIT FFI module to dynamically link to shared objects at runtime.
 In this example, we will demonstrate how to use `libcurl` to perform a simple HTTP GET request.
 Full LuaJIT FFI module documentation can be found [here](http://luajit.org/ext_ffi.html)
