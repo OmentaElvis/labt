@@ -13,7 +13,7 @@ pub fn download(project: &ProjectDep) -> anyhow::Result<u64> {
         .build()
         .context("Error creating download client")?;
     let base = Url::parse(&project.get_root_url()).context("Error parsing repo url")?;
-    let ext = if project.packaging.is_empty() {
+    let ext = if project.packaging.is_empty() || project.packaging.eq("bundle") {
         String::from("jar")
     } else {
         project.packaging.clone()
