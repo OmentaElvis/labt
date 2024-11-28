@@ -23,7 +23,7 @@ git2 = { version = "0.18.3", features = ["https", "openssl-probe"], default-feat
 indicatif = "0.17.7"
 indicatif-log-bridge = "0.2.2"
 log = "0.4.21"
-mlua = { version = "0.9.6", features = ["vendored", "lua54", "serde", "serialize"] }
+mlua = { version = "0.9.6", features = ["luajit", "serde", "serialize"] }
 quick-xml = { version = "0.31.0", features = ["async-tokio"] }
 regex = "1.10.2"
 reqwest = { version = "0.11.24", features = ["stream", "blocking"] }
@@ -42,6 +42,9 @@ crossterm = "0.27.0"
 fuzzy-matcher = "0.3.7"
 sha1 = "0.10.6"
 lazy_static = "1.5.0"
+
+[features]
+vendored-lua = ["mlua/vendored"]
 
 [dev-dependencies]
 pretty_assertions = "1.4.0"

@@ -30,6 +30,7 @@ pub(super) const PACKAGE_PATHS: &str = "package_paths";
 pub(super) const SDK: &str = "sdk";
 pub(super) const PATH: &str = "path";
 pub(super) const CHANNEL: &str = "channel";
+pub(super) const UNSAFE: &str = "unsafe";
 
 const PRE: &str = "pre";
 const AAPT: &str = "aapt";
@@ -67,6 +68,8 @@ pub struct PluginToml {
     pub path: PathBuf,
     /// Paths to search for required lua modules
     pub package_paths: Option<Vec<PathBuf>>,
+    /// Enable unsafe lua api for entire plugin
+    pub enable_unsafe: bool,
 }
 
 #[derive(Default, Debug, Deserialize, Serialize)]
@@ -97,6 +100,9 @@ pub struct PluginStage {
     pub inputs: Option<Vec<String>>,
     /// The output files that we should ensure that it is uptodate
     pub outputs: Option<Vec<String>>,
+    /// Enable unsafe lua api
+    #[serde(rename = "unsafe", default)]
+    pub enable_unsafe: bool,
 }
 
 impl PluginToml {
@@ -121,6 +127,7 @@ impl PluginToml {
                     let mut plugin = Plugin::new(self.name.clone(), self.version.clone(), path, $j);
                     plugin.sdk_dependencies = Rc::clone(&sdk_rc);
                     plugin.priority = s.priority;
+                    plugin.unsafe_mode = self.enable_unsafe || s.enable_unsafe;
                     plugin.package_paths = if let Some(package_paths) = &self.package_paths{
                             load_package_paths(package_paths, &self.path)
                         }else{
@@ -159,6 +166,8 @@ enum PluginTomlErrorKind {
     MissingTableKey(&'static str, String, Option<usize>),
     /// Failed to convert a value to string
     ToStringErr(&'static str, Option<&'static str>, Option<usize>),
+    /// Failed to convert a value to bool
+    ToBoolErr(&'static str, Option<&'static str>, Option<usize>),
     /// Invalid sdk string entry
     InvalidSdkKey(String, String),
     /// Invalid version string
@@ -209,6 +218,16 @@ impl Display for PluginTomlError {
             PluginTomlErrorKind::ToStringErr(key, None, _) => {
                 write!(f, "Failed to convert {} value as string.", key)
             }
+            PluginTomlErrorKind::ToBoolErr(key, Some(table), Some(position)) => {
+                write!(
+                    f,
+                    "Failed to convert {} value as Boolean in the table \"{}\" at position {}.",
+                    key, table, position
+                )
+            }
+            PluginTomlErrorKind::ToBoolErr(key, None, _) => {
+                write!(f, "Failed to convert {} value as boolean.", key)
+            }
             PluginTomlErrorKind::InvalidSdkVersionString(key) => {
                 write!(f, "Invalid version string for sdk dependency {}", key)
             }
@@ -257,6 +276,9 @@ impl Display for PluginToml {
                     let array = toml_edit::Array::from_iter(outputs.iter().map(|p| p.as_str()));
                     table.insert(OUTPUTS, value(array));
                 }
+                if s.enable_unsafe {
+                    table.insert(UNSAFE, value(true));
+                }
                 stages.insert(stage.to_string().as_str(), toml_edit::Item::Table(table));
             }
         };
@@ -300,6 +322,14 @@ impl FromStr for PluginToml {
             bail!(PluginTomlError::new(PluginTomlErrorKind::MissingKey(
                 VERSION
             )));
+        };
+
+        let enable_unsafe = if doc.contains_key(UNSAFE) {
+            doc[UNSAFE].as_bool().ok_or_else(|| {
+                PluginTomlError::new(PluginTomlErrorKind::ToBoolErr(NAME, None, None))
+            })?
+        } else {
+            false
         };
 
         let package_paths = doc
@@ -362,12 +392,20 @@ impl FromStr for PluginToml {
                     } else {
                         None
                     };
+                    let enabe_unsafe_stage = if let Some(unsafe_mode) = stage.get(UNSAFE) {
+                        unsafe_mode.as_bool().ok_or_else(|| {
+                            PluginTomlError::new(PluginTomlErrorKind::ToBoolErr(NAME, None, None))
+                        })?
+                    } else {
+                        false
+                    };
 
                     Ok(Some(PluginStage {
                         file,
                         priority,
                         inputs,
                         outputs,
+                        enable_unsafe: enabe_unsafe_stage,
                     }))
                 } else {
                     Ok(None)
@@ -477,6 +515,7 @@ impl FromStr for PluginToml {
             path: PathBuf::default(),
             package_paths,
             sdk: sdk_deps,
+            enable_unsafe,
         })
     }
 }
@@ -553,6 +592,7 @@ channel = "stable"
 [stage.pre]
 file="pre.lua"
 priority=1
+unsafe = true
 
 # android asset packaging tool step.
 [stage.aapt]
@@ -622,7 +662,8 @@ priority=1
             file: PathBuf::from("aapt.lua"),
             priority: 1,
             inputs: None,
-            outputs: None
+            outputs: None,
+            enable_unsafe: false,
         })
     );
     assert_eq!(
@@ -631,7 +672,8 @@ priority=1
             file: PathBuf::from("pre.lua"),
             priority: 1,
             inputs: None,
-            outputs: None
+            outputs: None,
+            enable_unsafe: true,
         })
     );
     assert_eq!(
@@ -640,7 +682,8 @@ priority=1
             file: PathBuf::from("compile.lua"),
             priority: 1,
             inputs: None,
-            outputs: None
+            outputs: None,
+            enable_unsafe: false,
         })
     );
     assert_eq!(
@@ -649,7 +692,8 @@ priority=1
             file: PathBuf::from("dex.lua"),
             priority: 1,
             inputs: None,
-            outputs: None
+            outputs: None,
+            enable_unsafe: false,
         })
     );
     assert_eq!(
@@ -658,7 +702,8 @@ priority=1
             file: PathBuf::from("bundle.lua"),
             priority: 1,
             inputs: None,
-            outputs: None
+            outputs: None,
+            enable_unsafe: false,
         })
     );
     assert_eq!(
@@ -667,7 +712,8 @@ priority=1
             file: PathBuf::from("post.lua"),
             priority: 1,
             inputs: None,
-            outputs: None
+            outputs: None,
+            enable_unsafe: false,
         })
     );
 }
@@ -681,6 +727,7 @@ fn plugin_toml_to_string() {
         sdk: Vec::new(),
         path: PathBuf::new(),
         package_paths: None,
+        enable_unsafe: false,
     };
 
     plugin.sdk.push(SdkEntry {
@@ -709,6 +756,7 @@ fn plugin_toml_to_string() {
             priority: 1,
             inputs: Some(vec![String::from("**/*.xml")]),
             outputs: Some(vec![String::from("build/res.apk")]),
+            enable_unsafe: false,
         },
     );
 
@@ -719,6 +767,7 @@ fn plugin_toml_to_string() {
             priority: 1,
             inputs: None,
             outputs: None,
+            enable_unsafe: false,
         },
     );
 
@@ -729,6 +778,7 @@ fn plugin_toml_to_string() {
             priority: 1,
             inputs: None,
             outputs: None,
+            enable_unsafe: false,
         },
     );
 
@@ -739,6 +789,7 @@ fn plugin_toml_to_string() {
             priority: 1,
             inputs: None,
             outputs: None,
+            enable_unsafe: false,
         },
     );
 
@@ -749,6 +800,7 @@ fn plugin_toml_to_string() {
             priority: 1,
             inputs: None,
             outputs: None,
+            enable_unsafe: false,
         },
     );
 
@@ -759,6 +811,7 @@ fn plugin_toml_to_string() {
             priority: 1,
             inputs: None,
             outputs: None,
+            enable_unsafe: true,
         },
     );
     let toml = r#"name = "example"
@@ -796,6 +849,7 @@ priority = 1
 [stage.post]
 file = "post.lua"
 priority = 1
+unsafe = true
 "#;
     assert_eq!(toml, plugin.to_string().as_str());
 }

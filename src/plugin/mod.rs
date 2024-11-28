@@ -68,6 +68,9 @@ pub struct Plugin {
     pub dependents: Option<(Vec<PathBuf>, Vec<PathBuf>)>,
     /// package paths
     pub package_paths: Vec<PathBuf>,
+    /// Unsafe mode enabled for this plugin
+    pub unsafe_mode: bool,
+    /// List of sdk modules to load
     pub sdk_dependencies: Rc<Vec<SdkEntry>>,
 }
 
@@ -81,6 +84,7 @@ impl Plugin {
             priority: 0,
             dependents: None,
             package_paths: vec![],
+            unsafe_mode: false,
             sdk_dependencies: Rc::new(Vec::default()),
         }
     }
@@ -89,6 +93,7 @@ impl Plugin {
             self.path.clone(),
             &self.package_paths,
             Rc::clone(&self.sdk_dependencies),
+            self.unsafe_mode,
         );
         exe.set_build_step(self.step);
         exe.load_sdk_loader()
