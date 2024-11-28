@@ -1397,12 +1397,12 @@ impl BuildTree for ProjectWrapper {
                 wrapper.set_progress_bar(Some(progress.clone()));
             }
             log::trace!(target: "fetch", "Fetching parent {}:{}:{} for {}:{}", 
-                parent.group_id, 
-                parent.artifact_id, 
-                parent.version, 
-                self.project.get_group_id(), 
+                parent.group_id,
+                parent.artifact_id,
+                parent.version,
+                self.project.get_group_id(),
                 self.project.get_artifact_id());
-            
+
             wrapper.build_tree(resolved, unresolved)?;
             let management = wrapper.project.get_dependency_management();
             for dep in self.project.get_dependencies_mut() {
@@ -1418,6 +1418,10 @@ impl BuildTree for ProjectWrapper {
         let excludes = Rc::new(self.project.get_excludes().clone());
         self.project.get_dependencies_mut().retain(|dep| {
             if dep.get_scope().ne(&pom::Scope::COMPILE) {
+                return false;
+            }
+
+            if dep.is_optional() {
                 return false;
             }
 
@@ -2188,6 +2192,7 @@ mod pom_faker {
         dependency_management: Vec<ProjectEntry>,
         scope: Scope,
         exclusions: Vec<(&'static str, &'static str)>,
+        optional: bool,
         parent: Option<ParentEntry>,
     }
 
@@ -2197,6 +2202,7 @@ mod pom_faker {
                 group_id: group_id.to_string(),
                 artifact_id: artifact_id.to_string(),
                 version: version.to_string(),
+                optional: false,
                 ..Default::default()
             }
         }
@@ -2217,6 +2223,10 @@ mod pom_faker {
         }
         pub fn set_parent(mut self, parent: ParentEntry) -> Self {
             self.parent = Some(parent);
+            self
+        }
+        pub fn set_optional(mut self, value: bool) -> Self {
+            self.optional = value;
             self
         }
     }
@@ -2596,11 +2606,17 @@ mod pom_faker {
                         ));
                         body.push_str(&format!("      <version>{}</version>\n", dep.version));
                         body.push_str(&format!("      <scope>{}</scope>\n", dep.scope));
+                        if dep.optional {
+                            body.push_str("      <optional>true</optional>\n");
+                        }
                         if !dep.exclusions.is_empty() {
                             body.push_str("      <exclusions>\n");
                             for (group_id, artifact_id) in &dep.exclusions {
                                 body.push_str("        <exclusion>\n");
-                                body.push_str(&format!("         <groupId>{}</groupId>\n", group_id));
+                                body.push_str(&format!(
+                                    "         <groupId>{}</groupId>\n",
+                                    group_id
+                                ));
                                 body.push_str(&format!(
                                     "         <artifactId>{}</artifactId>\n",
                                     artifact_id
@@ -2641,6 +2657,9 @@ mod pom_faker {
                     ));
                     body.push_str(&format!("      <version>{}</version>\n", dep.version));
                     body.push_str(&format!("      <scope>{}</scope>\n", dep.scope));
+                    if dep.optional {
+                        body.push_str("      <optional>true</optional>\n");
+                    }
                     if !dep.exclusions.is_empty() {
                         body.push_str("      <exclusions>\n");
                         for (group_id, artifact_id) in dep.exclusions {
@@ -3423,5 +3442,49 @@ mod test {
         assert_eq!(module_a.version, String::from("1.0.0"));
 
         drop(server);
+    }
+    #[test]
+    pub fn optional_dependency() {
+        let server = PomServer::new().unwrap();
+        let port = server.get_port();
+
+        server.add_project(
+            ProjectEntry::new("com.example", "module-a", "1.0.0").add_dependency(
+                ProjectEntry::new("com.example", "module-b", "RELEASE").set_optional(true),
+            ),
+        );
+        server.add_project(
+            ProjectEntry::new("com.example", "module-c", "3.0.0")
+                .add_dependency(ProjectEntry::new("com.example", "module-d", "RELEASE")),
+        );
+
+        let dependencies = vec![
+            Project::new("com.example", "module-a", "1.0.0"),
+            Project::new("com.example", "module-c", "3.0.0"),
+        ];
+
+        let mut resolved = Vec::new();
+
+        resolve(
+            dependencies,
+            &mut resolved,
+            Rc::new(RefCell::new(create_resolver(port))),
+        )
+        .unwrap();
+        assert_eq!(resolved.len(), 3);
+        let module_a = &resolved[0];
+        assert_eq!(module_a.group_id, String::from("com.example"));
+        assert_eq!(module_a.artifact_id, String::from("module-a"));
+        assert_eq!(module_a.version, String::from("1.0.0"));
+
+        let module_d = &resolved[1];
+        assert_eq!(module_d.group_id, String::from("com.example"));
+        assert_eq!(module_d.artifact_id, String::from("module-d"));
+        assert_eq!(module_d.version, String::from("1.2.0"));
+
+        let module_c = &resolved[2];
+        assert_eq!(module_c.group_id, String::from("com.example"));
+        assert_eq!(module_c.artifact_id, String::from("module-c"));
+        assert_eq!(module_c.version, String::from("3.0.0"));
     }
 }

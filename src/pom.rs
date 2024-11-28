@@ -22,6 +22,7 @@ mod tags {
     pub const EXCLUSIONS: &[u8] = b"exclusions";
     pub const EXCLUSION: &[u8] = b"exclusion";
     pub const PACKAGING: &[u8] = b"packaging";
+    pub const OPTIONAL: &[u8] = b"optional";
     pub const SCOPE: &[u8] = b"scope";
     pub const COMPILE: &[u8] = b"compile";
     pub const TEST: &[u8] = b"test";
@@ -576,6 +577,8 @@ pub struct Project {
     packaging: String,
     /// Properties of the project
     properties: Properties,
+    /// Is Optional
+    optional: bool,
     /// Parent pom
     pub parent: Option<ParentPom>,
 }
@@ -613,6 +616,7 @@ impl Default for Project {
             packaging: String::from("jar"),
             properties: HashMap::new(),
             parent: None,
+            optional: false,
         }
     }
 }
@@ -726,6 +730,9 @@ impl Project {
     }
     pub fn set_packaging(&mut self, packaging: String) {
         self.packaging = packaging;
+    }
+    pub fn is_optional(&self) -> bool {
+        self.optional
     }
     pub fn get_property(&self, key: &str) -> Option<String> {
         // if we fail to get it from the map it must be one of those java, env or project things
@@ -883,6 +890,9 @@ enum DependencyState {
     /// The scope
     /// <scope></scope>
     ReadScope,
+    /// If not optional
+    /// <optional></optional>
+    ReadOptional,
 }
 /// Keeps track of the parent specific events
 #[derive(Clone, Debug)]
@@ -974,6 +984,7 @@ impl Parser {
                     tags::VERSION => DependencyState::ReadVersion,
                     tags::EXCLUSIONS => DependencyState::Exclusions(ExclusionsState::Exclusions),
                     tags::SCOPE => DependencyState::ReadScope,
+                    tags::OPTIONAL => DependencyState::ReadOptional,
                     _ => DependencyState::Dependency,
                 },
                 Event::End(end) if end.local_name().into_inner() == tags::DEPENDENCY => {
@@ -1048,6 +1059,23 @@ impl Parser {
                     DependencyState::Dependency
                 }
                 event => DependencyState::Exclusions(self.parse_exclusions(event, exclu_state)?),
+            },
+
+            // <optional></optional>
+            DependencyState::ReadOptional => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::OPTIONAL => {
+                    DependencyState::Dependency
+                }
+                Event::Text(e) => {
+                    if let Some(dep) = &mut self.current_dependency {
+                        let optional = e.unescape()?;
+                        if optional.trim() == "true" {
+                            dep.optional = true;
+                        }
+                    }
+                    DependencyState::ReadOptional
+                }
+                _ => DependencyState::ReadOptional,
             },
         };
         Ok(new_state)
