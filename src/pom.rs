@@ -16,6 +16,7 @@ mod tags {
     pub const GROUP_ID: &[u8] = b"groupId";
     pub const VERSION: &[u8] = b"version";
     pub const DEPENDENCIES: &[u8] = b"dependencies";
+    pub const DEPENDENCY_MANAGEMENT: &[u8] = b"dependencyManagement";
     pub const PROJECT: &[u8] = b"project";
     pub const DEPENDENCY: &[u8] = b"dependency";
     pub const EXCLUSIONS: &[u8] = b"exclusions";
@@ -29,6 +30,7 @@ mod tags {
     pub const SYSTEM: &[u8] = b"system";
     pub const RUNTIME: &[u8] = b"runtime";
     pub const PROPERTIES: &[u8] = b"properties";
+    pub const PARENT: &[u8] = b"parent";
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize)]
@@ -541,6 +543,18 @@ impl FromStr for VersionRequirement {
 type Properties = HashMap<String, String>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParentPom {
+    /// The organization name/package name
+    pub group_id: String,
+    /// The actual project name
+    pub artifact_id: String,
+    /// The project version number
+    pub version: String,
+    /// Relative path
+    pub relative_path: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Project {
     /// The actual project name
     artifact_id: String,
@@ -552,6 +566,8 @@ pub struct Project {
     group_id: String,
     /// The project main dependencies
     dependencies: Vec<Project>,
+    /// This project's dependencyManagement section
+    dependency_management: HashMap<String, Project>,
     /// This module excludes
     excludes: Vec<Exclusion>,
     /// The scope of the project
@@ -560,6 +576,8 @@ pub struct Project {
     packaging: String,
     /// Properties of the project
     properties: Properties,
+    /// Parent pom
+    pub parent: Option<ParentPom>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -589,10 +607,12 @@ impl Default for Project {
             selected_version: None,
             group_id: "com.my_organization.name".to_string(),
             dependencies: vec![],
+            dependency_management: HashMap::new(),
             excludes: vec![],
             scope: Scope::COMPILE,
             packaging: String::from("jar"),
             properties: HashMap::new(),
+            parent: None,
         }
     }
 }
@@ -655,11 +675,32 @@ impl Project {
     pub fn add_dependency(&mut self, dep: Project) {
         self.dependencies.push(dep);
     }
+    /// Adds a dependency to this project
+    pub fn add_to_dependency_management(&mut self, dep: Project) {
+        self.dependency_management
+            .insert(format!("{}:{}", dep.group_id, dep.artifact_id), dep);
+    }
     pub fn get_dependencies(&self) -> &Vec<Project> {
         &self.dependencies
     }
+    pub fn get_dependency_management(&self) -> &HashMap<String, Project> {
+        &self.dependency_management
+    }
     pub fn get_dependencies_mut(&mut self) -> &mut Vec<Project> {
         &mut self.dependencies
+    }
+    pub fn get_dependencies_owned(self) -> Vec<Project> {
+        self.dependencies
+    }
+    pub fn copy_parent(&mut self, parent: &Project) {
+        if let Some(version) = &parent.selected_version {
+            self.version = VersionRequirement::Soft(version.clone());
+        }
+        self.selected_version = parent.selected_version.clone();
+        if !parent.excludes.is_empty() {
+            self.excludes.extend(parent.excludes.iter().cloned());
+        }
+        self.scope = parent.scope.clone();
     }
     pub fn qualified_name(&self) -> anyhow::Result<String> {
         let version = self
@@ -800,6 +841,12 @@ enum ParserState {
     /// Indicates that the state machine is handling a dependency
     /// <dependencies></dependencies>
     Dependencies(DependencyState),
+    /// Indicates that the state machine is handling a dependencyManagement Section
+    /// <dependencyManagement></dependencyManagement>
+    DependencyManagement(DependencyState),
+    /// Indicates that the state machine is handling a dependency
+    /// <parent></parent>
+    Parent(ParentState),
     /// The packaging of this project
     /// <packaging></packaging>
     ReadPackaging,
@@ -836,6 +883,22 @@ enum DependencyState {
     /// The scope
     /// <scope></scope>
     ReadScope,
+}
+/// Keeps track of the parent specific events
+#[derive(Clone, Debug)]
+enum ParentState {
+    /// Root of the parent tag
+    /// <parent></parent>
+    Parent,
+    /// The Dependency artifactId/name
+    /// <artifactId><)artifactId>
+    ReadArtifactId,
+    /// The Dependency groupId/package name
+    /// <groupId></groupId>
+    ReadGroupId,
+    /// The Dependency version number
+    /// <version></version>
+    ReadVersion,
 }
 
 /// Keeps track of the properties specific events
@@ -989,6 +1052,38 @@ impl Parser {
         };
         Ok(new_state)
     }
+    /// Filters through xml stream events matching through accepted dependency tags
+    /// triggered when <dependencies></dependencies> tag is encountered
+    fn parse_dependency_management(
+        &mut self,
+        event: Event,
+        state: DependencyState,
+    ) -> Result<DependencyState> {
+        let new_state = match state {
+            // <dependency> </dependency>
+            DependencyState::Dependency => match event {
+                Event::Start(tag) => match tag.local_name().into_inner() {
+                    tags::ARTIFACT_ID => DependencyState::ReadArtifactId,
+                    tags::GROUP_ID => DependencyState::ReadGroupId,
+                    tags::VERSION => DependencyState::ReadVersion,
+                    tags::SCOPE => DependencyState::ReadScope,
+                    tags::EXCLUSIONS => DependencyState::Exclusions(ExclusionsState::Exclusions),
+                    _ => DependencyState::Dependency,
+                },
+                Event::End(end) if end.local_name().into_inner() == tags::DEPENDENCY => {
+                    // FIXME also fix this: It doesn't feel correct that i had to clone this field
+                    if let Some(dep) = self.current_dependency.clone() {
+                        self.project.add_to_dependency_management(dep);
+                        self.current_dependency = None;
+                    }
+                    DependencyState::Dependencies
+                }
+                _ => DependencyState::Dependency,
+            },
+            _ => self.parse_deps(event, state)?,
+        };
+        Ok(new_state)
+    }
 
     fn parse_exclusions(
         &mut self,
@@ -1091,6 +1186,64 @@ impl Parser {
 
         Ok(new_state)
     }
+    fn parse_parent(&mut self, event: Event, state: ParentState) -> Result<ParentState> {
+        let new_state = match state {
+            // <parent></parent>
+            ParentState::Parent => match event {
+                Event::Start(tag) => match tag.local_name().into_inner() {
+                    tags::ARTIFACT_ID => ParentState::ReadArtifactId,
+                    tags::GROUP_ID => ParentState::ReadGroupId,
+                    tags::VERSION => ParentState::ReadVersion,
+                    _ => ParentState::Parent,
+                },
+                Event::End(end) if end.local_name().into_inner() == tags::PARENT => {
+                    ParentState::Parent
+                }
+                _ => ParentState::Parent,
+            },
+            // <artifactId> </artifactId>
+            ParentState::ReadArtifactId => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::ARTIFACT_ID => {
+                    ParentState::Parent
+                }
+                Event::Text(e) => {
+                    if let Some(parent) = &mut self.project.parent {
+                        parent.artifact_id = e.unescape()?.to_string();
+                    }
+                    ParentState::Parent
+                }
+                _ => ParentState::Parent,
+            },
+            // <groupId></groupId>
+            ParentState::ReadGroupId => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::GROUP_ID => {
+                    ParentState::Parent
+                }
+
+                Event::Text(e) => {
+                    if let Some(parent) = &mut self.project.parent {
+                        parent.group_id = e.unescape()?.to_string();
+                    }
+                    ParentState::ReadGroupId
+                }
+                _ => ParentState::ReadGroupId,
+            },
+            // <version></version>
+            ParentState::ReadVersion => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::VERSION => {
+                    ParentState::Parent
+                }
+                Event::Text(e) => {
+                    if let Some(parent) = &mut self.project.parent {
+                        parent.version = e.unescape()?.to_string();
+                    }
+                    ParentState::ReadVersion
+                }
+                _ => ParentState::ReadVersion,
+            },
+        };
+        Ok(new_state)
+    }
 
     /// Processes the xml stream events into its respective tags.
     /// The matched tags are used to update the state machine.
@@ -1101,10 +1254,22 @@ impl Parser {
                 Event::Start(tag) => match tag.local_name().into_inner() {
                     tags::PROJECT => ParserState::Project,
                     tags::DEPENDENCIES => ParserState::Dependencies(DependencyState::Dependencies),
+                    tags::DEPENDENCY_MANAGEMENT => {
+                        ParserState::DependencyManagement(DependencyState::Dependencies)
+                    }
                     tags::ARTIFACT_ID => ParserState::ReadArtifactId,
                     tags::GROUP_ID => ParserState::ReadGroupId,
                     tags::VERSION => ParserState::ReadVersion,
                     tags::PACKAGING => ParserState::ReadPackaging,
+                    tags::PARENT => {
+                        self.project.parent = Some(ParentPom {
+                            group_id: String::new(),
+                            artifact_id: String::new(),
+                            version: String::new(),
+                            relative_path: None,
+                        });
+                        ParserState::Parent(ParentState::Parent)
+                    }
                     tags::PROPERTIES => ParserState::Properties(PropertiesState::Properties),
                     _ => ParserState::Other(1),
                 },
@@ -1172,12 +1337,28 @@ impl Parser {
                 }
                 event => ParserState::Dependencies(self.parse_deps(event, dep_state)?),
             },
+            // <dependencyManagement></dependencyManagement>
+            ParserState::DependencyManagement(dep_state) => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::DEPENDENCY_MANAGEMENT => {
+                    ParserState::Project
+                }
+                event => ParserState::DependencyManagement(
+                    self.parse_dependency_management(event, dep_state)?,
+                ),
+            },
             // <properties></properties>
             ParserState::Properties(prop_state) => match event {
                 Event::End(end) if end.local_name().into_inner() == tags::PROPERTIES => {
                     ParserState::Project
                 }
                 event => ParserState::Properties(self.parse_props(event, prop_state)?),
+            },
+            // <parent></parent>
+            ParserState::Parent(parent_state) => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::PARENT => {
+                    ParserState::Project
+                }
+                event => ParserState::Parent(self.parse_parent(event, parent_state)?),
             },
         };
         Ok(())

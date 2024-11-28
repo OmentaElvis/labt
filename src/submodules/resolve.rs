@@ -1384,6 +1384,37 @@ impl BuildTree for ProjectWrapper {
             self.project.get_scope(),
         ))?;
 
+        if let Some(parent) = &self.project.parent {
+            // if we are given a parent, try to fetch the parent common dependencies
+            // obtain the returned dependencies and merge it with our chain.
+
+            // this should just bubble up the parent tree
+            let mut wrapper = ProjectWrapper::new(
+                Project::new(&parent.group_id, &parent.artifact_id, &parent.version),
+                self.resolvers.clone(),
+            );
+            if let Some(progress) = &self.progress {
+                wrapper.set_progress_bar(Some(progress.clone()));
+            }
+            log::trace!(target: "fetch", "Fetching parent {}:{}:{} for {}:{}", 
+                parent.group_id, 
+                parent.artifact_id, 
+                parent.version, 
+                self.project.get_group_id(), 
+                self.project.get_artifact_id());
+            
+            wrapper.build_tree(resolved, unresolved)?;
+            let management = wrapper.project.get_dependency_management();
+            for dep in self.project.get_dependencies_mut() {
+                let key = format!("{}:{}", dep.get_group_id(), dep.get_artifact_id());
+                if let Some(parent_dep) = management.get(&key) {
+                    dep.copy_parent(parent_dep);
+                }
+            }
+            let deps = wrapper.project.get_dependencies_owned();
+            self.project.get_dependencies_mut().extend(deps);
+        }
+
         let excludes = Rc::new(self.project.get_excludes().clone());
         self.project.get_dependencies_mut().retain(|dep| {
             if dep.get_scope().ne(&pom::Scope::COMPILE) {
@@ -2142,13 +2173,22 @@ mod pom_faker {
     }
 
     #[derive(Default, Debug, Clone)]
+    pub struct ParentEntry {
+        pub artifact_id: String,
+        pub group_id: String,
+        pub version: String,
+    }
+
+    #[derive(Default, Debug, Clone)]
     pub struct ProjectEntry {
         artifact_id: String,
         group_id: String,
         version: String,
         dependencies: Vec<ProjectEntry>,
+        dependency_management: Vec<ProjectEntry>,
         scope: Scope,
         exclusions: Vec<(&'static str, &'static str)>,
+        parent: Option<ParentEntry>,
     }
 
     impl ProjectEntry {
@@ -2167,8 +2207,16 @@ mod pom_faker {
             self.dependencies.push(dep);
             self
         }
+        pub fn add_dependency_management(mut self, dep: ProjectEntry) -> Self {
+            self.dependency_management.push(dep);
+            self
+        }
         pub fn add_exclusion(mut self, group_id: &'static str, artifact_id: &'static str) -> Self {
             self.exclusions.push((group_id, artifact_id));
+            self
+        }
+        pub fn set_parent(mut self, parent: ParentEntry) -> Self {
+            self.parent = Some(parent);
             self
         }
     }
@@ -2517,6 +2565,57 @@ mod pom_faker {
                 body.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>\n"#);
                 body.push_str(r#"<project xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd" xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">\n"#);
                 body.push_str(r#" <modelVersion>4.0.0</modelVersion>\n"#);
+                // add parent properties
+                if let Some(parent) = proj.parent {
+                    body.push_str("  <parent>\n");
+
+                    if !parent.group_id.is_empty() {
+                        body.push_str(&format!("    <groupId>{}</groupId>\n", parent.group_id));
+                    }
+                    if !parent.artifact_id.is_empty() {
+                        body.push_str(&format!(
+                            "    <artifactId>{}</artifactId>\n",
+                            parent.artifact_id
+                        ));
+                    }
+                    if !parent.version.is_empty() {
+                        body.push_str(&format!("    <version>{}</version>\n", parent.version));
+                    }
+                    body.push_str("  </parent>\n");
+                }
+
+                if !proj.dependency_management.is_empty() {
+                    body.push_str("  <dependencyManagement>\n");
+                    body.push_str("    <dependencies>\n");
+                    for dep in &proj.dependency_management {
+                        body.push_str("     <dependency>\n");
+                        body.push_str(&format!("      <groupId>{}</groupId>\n", dep.group_id));
+                        body.push_str(&format!(
+                            "      <artifactId>{}</artifactId>\n",
+                            dep.artifact_id
+                        ));
+                        body.push_str(&format!("      <version>{}</version>\n", dep.version));
+                        body.push_str(&format!("      <scope>{}</scope>\n", dep.scope));
+                        if !dep.exclusions.is_empty() {
+                            body.push_str("      <exclusions>\n");
+                            for (group_id, artifact_id) in &dep.exclusions {
+                                body.push_str("        <exclusion>\n");
+                                body.push_str(&format!("         <groupId>{}</groupId>\n", group_id));
+                                body.push_str(&format!(
+                                    "         <artifactId>{}</artifactId>\n",
+                                    artifact_id
+                                ));
+                                body.push_str("        </exclusion>\n");
+                            }
+                            body.push_str("      </exclusions>\n");
+                        }
+                        body.push_str("     </dependency>\n");
+                    }
+
+                    body.push_str("    </dependencies>\n");
+                    body.push_str("  </dependencyManagement>\n");
+                }
+
                 body.push_str(&format!(" <groupId>{}</groupId>\n", group_id));
                 body.push_str(&format!(" <artifactId>{}</artifactId>\n", artifact_id));
                 body.push_str(&format!(" <version>{}</version>\n", version));
@@ -2524,11 +2623,11 @@ mod pom_faker {
                 // deal with passed properties
                 let p = properties.lock().unwrap();
                 if !p.is_empty() {
-                    body.push_str("  <dependencies>\n");
+                    body.push_str("  <properties>\n");
                     for property in p.iter() {
                         body.push_str(&format!("<{0}>{1}</{0}>\n", property.0, property.1));
                     }
-                    body.push_str("  </dependencies>\n");
+                    body.push_str("  </properties>\n");
                 }
                 drop(p);
 
@@ -2542,7 +2641,7 @@ mod pom_faker {
                     ));
                     body.push_str(&format!("      <version>{}</version>\n", dep.version));
                     body.push_str(&format!("      <scope>{}</scope>\n", dep.scope));
-                    if dep.exclusions.is_empty() {
+                    if !dep.exclusions.is_empty() {
                         body.push_str("      <exclusions>\n");
                         for (group_id, artifact_id) in dep.exclusions {
                             body.push_str("        <exclusion>\n");
@@ -2642,7 +2741,7 @@ mod test {
     use crate::{
         pom::{Project, VersionRange},
         submodules::{
-            resolve::Constraint,
+            resolve::{pom_faker::ParentEntry, Constraint},
             resolvers::{NetResolver, Resolver},
         },
     };
@@ -3263,6 +3362,66 @@ mod test {
         assert_eq!(module_b.group_id, String::from("com.example"));
         assert_eq!(module_b.artifact_id, String::from("module-b"));
         assert_eq!(module_b.version, String::from("2.1.0"));
+        drop(server);
+    }
+    #[test]
+    pub fn parent_pom() {
+        let server = PomServer::new().unwrap();
+        let port = server.get_port();
+
+        server.add_project(
+            ProjectEntry::new("com.example", "module-a", "1.0.0")
+                .add_dependency(ProjectEntry::new("com.example", "module-b", "RELEASE"))
+                .add_dependency(ProjectEntry::new("com.example", "module-e", ""))
+                .set_parent(ParentEntry {
+                    artifact_id: String::from("module-c"),
+                    group_id: String::from("com.example"),
+                    version: String::from("3.0.0"),
+                }),
+        );
+        server.add_project(
+            ProjectEntry::new("com.example", "module-c", "3.0.0")
+                .add_dependency(ProjectEntry::new("com.example", "module-d", "RELEASE"))
+                .add_dependency_management(ProjectEntry::new("com.example", "module-e", "2.0.0")),
+        );
+
+        let dependencies = vec![Project::new("com.example", "module-a", "1.0.0")];
+
+        let mut resolved = Vec::new();
+
+        resolve(
+            dependencies,
+            &mut resolved,
+            Rc::new(RefCell::new(create_resolver(port))),
+        )
+        .unwrap();
+        assert_eq!(resolved.len(), 5);
+
+        let module_d = &resolved[0];
+        assert_eq!(module_d.group_id, String::from("com.example"));
+        assert_eq!(module_d.artifact_id, String::from("module-d"));
+        assert_eq!(module_d.version, String::from("1.2.0"));
+
+        let module_c = &resolved[1];
+        assert_eq!(module_c.group_id, String::from("com.example"));
+        assert_eq!(module_c.artifact_id, String::from("module-c"));
+        assert_eq!(module_c.version, String::from("3.0.0"));
+
+        let module_b = &resolved[2];
+        assert_eq!(module_b.group_id, String::from("com.example"));
+        assert_eq!(module_b.artifact_id, String::from("module-b"));
+        assert_eq!(module_b.version, String::from("2.1.0"));
+
+        let module_b = &resolved[3];
+        assert_eq!(module_b.group_id, String::from("com.example"));
+        assert_eq!(module_b.artifact_id, String::from("module-e"));
+        assert_eq!(module_b.version, String::from("2.0.0"));
+
+        let module_a = &resolved[4];
+        assert_eq!(module_a.group_id, String::from("com.example"));
+        assert_eq!(module_a.artifact_id, String::from("module-a"));
+        assert_eq!(module_a.version, String::from("1.0.0"));
+
         drop(server);
     }
 }
