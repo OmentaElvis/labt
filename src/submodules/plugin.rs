@@ -227,6 +227,7 @@ pub fn create_new_plugin(
         stages: HashMap::default(),
         path: PathBuf::new(),
         package_paths: None,
+        enable_unsafe: false,
         sdk: Vec::new(),
     };
 

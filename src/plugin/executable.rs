@@ -38,8 +38,17 @@ pub struct ExecutableLua {
 }
 
 impl<'lua, 'a> ExecutableLua {
-    pub fn new(path: PathBuf, package_paths: &[PathBuf], sdk: Rc<Vec<SdkEntry>>) -> Self {
-        let lua = Lua::new();
+    pub fn new(
+        path: PathBuf,
+        package_paths: &[PathBuf],
+        sdk: Rc<Vec<SdkEntry>>,
+        unsafe_mode: bool,
+    ) -> Self {
+        let lua = if unsafe_mode {
+            unsafe { Lua::unsafe_new() }
+        } else {
+            Lua::new()
+        };
         let paths: String = package_paths
             .iter()
             .filter_map(|p| p.to_str())
@@ -297,7 +306,7 @@ impl<'lua, 'a> ExecutableLua {
             .raw_get("package")
             .context("Failed to get lua package table.")?;
         let loaders: Table = package
-            .raw_get("searchers")
+            .raw_get("loaders")
             .context("Failed to get lua searchers table.")?;
 
         loaders

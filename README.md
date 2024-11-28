@@ -115,7 +115,7 @@ plugin system. This allows custom plugins to do the heavy lifting of building ap
 For more information on plugin system check the [LABt Lua API documentation](doc/LuaAPI.md).
 
 ## TODO
-- [ ] Add a FFI capability for plugins / WASM
+- [x] Add a FFI capability for plugins
 - [x] Support for windows file system
 - [ ] Add a configurable template system
 - [ ] Stabilize the plugin api and interpret versions of plugins
