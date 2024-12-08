@@ -14,6 +14,7 @@ use toml_edit::{value, Document};
 use crate::{
     config::repository::{ChannelType, Revision},
     get_project_root,
+    pom::VersionRange,
     submodules::{build::Step, sdkmanager::ToId},
 };
 
@@ -21,6 +22,7 @@ use super::Plugin;
 
 pub(super) const NAME: &str = "name";
 pub(super) const VERSION: &str = "version";
+pub(super) const LABT: &str = "labt";
 pub(super) const STAGE: &str = "stage";
 pub(super) const FILE: &str = "file";
 pub(super) const PRIORITY: &str = "priority";
@@ -70,6 +72,8 @@ pub struct PluginToml {
     pub package_paths: Option<Vec<PathBuf>>,
     /// Enable unsafe lua api for entire plugin
     pub enable_unsafe: bool,
+    /// required Labt version
+    pub labt: Option<VersionRange>,
 }
 
 #[derive(Default, Debug, Deserialize, Serialize)]
@@ -332,6 +336,19 @@ impl FromStr for PluginToml {
             false
         };
 
+        let labt_version = if doc.contains_key(LABT) {
+            let v = doc[LABT]
+                .as_str()
+                .ok_or_else(|| {
+                    PluginTomlError::new(PluginTomlErrorKind::ToStringErr(NAME, None, None))
+                })?
+                .to_string();
+
+            Some(v.parse::<VersionRange>()?)
+        } else {
+            None
+        };
+
         let package_paths = doc
             .get(PACKAGE_PATHS)
             .and_then(|f| f.as_array())
@@ -516,6 +533,7 @@ impl FromStr for PluginToml {
             package_paths,
             sdk: sdk_deps,
             enable_unsafe,
+            labt: labt_version,
         })
     }
 }
@@ -578,6 +596,7 @@ fn parse_plugin_toml_from_string() {
 name="example"
 version="0.1.0"
 author="omentum"
+labt=">=0.3.4"
 
 [sdk]
 build = "build-tools:33.0.2:stable"
@@ -624,6 +643,7 @@ priority=1
     assert_eq!(plugin.name, String::from("example"));
     assert_eq!(plugin.version, String::from("0.1.0"));
     assert_eq!(plugin.path, PathBuf::default());
+    assert_eq!(plugin.labt, Some(VersionRange::Ge(String::from("0.3.4"))));
     assert_eq!(plugin.sdk.len(), 3);
 
     let mut sdks = plugin.sdk.iter();
@@ -728,6 +748,7 @@ fn plugin_toml_to_string() {
         path: PathBuf::new(),
         package_paths: None,
         enable_unsafe: false,
+        labt: None,
     };
 
     plugin.sdk.push(SdkEntry {

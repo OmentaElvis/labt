@@ -18,7 +18,8 @@ use crate::{
     config::{add_plugin_to_config, get_config, remove_plugin_from_config},
     get_home,
     plugin::config::PluginToml,
-    MULTI_PROGRESS_BAR,
+    pom::VersionRange,
+    LABT_VERSION, MULTI_PROGRESS_BAR,
 };
 
 use super::Submodule;
@@ -162,33 +163,6 @@ pub fn fetch_plugin(
     let version = version.unwrap_or(LATEST);
 
     let path = if let Ok(url) = Url::parse(location) {
-        // let name = if let Some(name) = name {
-        //     name.replace('/', "_").to_string()
-        // } else {
-        //     let url_path = url.path();
-        //     let re = regex::Regex::new(r"^\/(?<user>[\w\-\/]+)\/(?<repo>[\w-]+)(\.git)?").unwrap();
-        //     let captures = re
-        //         .captures(url_path)
-        //         .context("Failed to match the url path with expected format.")?;
-        //     let user_org = captures.name("user").map(|m| m.as_str());
-        //     let repo_name = captures.name("repo").map(|m| m.as_str());
-
-        //     let mut segs = vec![];
-        //     if let Some(user) = user_org {
-        //         segs.push(user);
-        //     }
-
-        //     if let Some(repo) = repo_name {
-        //         segs.push(repo);
-        //     }
-
-        //     let name = segs.join("_").replace('/', "_");
-        //     if name.is_empty() {
-        //         bail!("Unable to resolve plugin name from the provided url.");
-        //     }
-        //     name.to_string()
-        // };
-
         let mut path = get_home().context("Failed to get Labt Home")?;
         path.push("plugins");
         if let Some(domain) = url.domain() {
@@ -244,14 +218,23 @@ pub fn fetch_plugin(
                 .context("Unable to get the repository \"origin\"")?;
 
             // fetch all these lads
-            remote.fetch(
+            if let Err(err) = remote.fetch(
                 &[
                     "refs/heads/*:refs/remotes/origin/*",
                     "refs/tags/*:refs/tags/*",
                 ],
                 None,
                 None,
-            )?;
+            ) {
+                match (err.code(), err.class()) {
+                    (git2::ErrorCode::GenericError, git2::ErrorClass::Net) => {
+                        warn!(target: "plugin", "A network request failed. We are unable to update the plugin git repo. We will proceed in offline mode but latest versions will be missing or incorrect.")
+                    }
+                    _ => {
+                        bail!(err);
+                    }
+                }
+            }
             // drop it so that the borrow checker does not try to crusify us.
             drop(remote);
 
@@ -322,6 +305,47 @@ pub fn fetch_plugin(
         plugin_toml_path.to_string_lossy()
     ))?;
 
+    // now lets check if this config requires a specific plugin
+    if let Some(labt) = &plugin_toml.labt {
+        let give_err = |v: &str| {
+            format!(
+                "Failed to compare LABT ({}) version with plugin requested version ({})",
+                LABT_VERSION, v
+            )
+        };
+
+        let reject = match labt {
+            VersionRange::Gt(v) => {
+                version_compare::compare_to(LABT_VERSION, v, version_compare::Cmp::Gt)
+                    .map_err(|_| anyhow::anyhow!(give_err(v)))?
+            }
+            VersionRange::Ge(v) => {
+                !version_compare::compare_to(LABT_VERSION, v, version_compare::Cmp::Ge)
+                    .map_err(|_| anyhow::anyhow!(give_err(v)))?
+            }
+            VersionRange::Lt(v) => {
+                !version_compare::compare_to(LABT_VERSION, v, version_compare::Cmp::Lt)
+                    .map_err(|_| anyhow::anyhow!(give_err(v)))?
+            }
+            VersionRange::Le(v) => {
+                !version_compare::compare_to(LABT_VERSION, v, version_compare::Cmp::Le)
+                    .map_err(|_| anyhow::anyhow!(give_err(v)))?
+            }
+            VersionRange::Eq(v) => {
+                !version_compare::compare_to(v, LABT_VERSION, version_compare::Cmp::Eq)
+                    .map_err(|_| anyhow::anyhow!(give_err(v)))?
+            }
+        };
+        if reject {
+            bail!("{}@{} requested LABt ({}) which is not compatible with the currently available LABt version ({}). Please check for other versions of the plugin or Install the appropriate version of LABt. ", 
+                plugin_toml.name,
+                plugin_toml.version,
+                plugin_toml.labt.unwrap(),
+                LABT_VERSION
+            );
+        }
+    }
+
     // check if its a fs path
     if update_config {
         // TODO check which is best to use. plugin_toml.version or version passed by user.
@@ -383,6 +407,7 @@ pub fn create_new_plugin(
         package_paths: None,
         enable_unsafe: false,
         sdk: Vec::new(),
+        labt: None,
     };
 
     let mut path = if local_plugin {
