@@ -526,12 +526,6 @@ impl FromStr for PluginToml {
                     let value = value.as_table_like().unwrap();
                     if let Some(repo) = value.get(REPO).and_then(|p| p.as_str()) {
                         sdk.repo = repo.to_string();
-                    } else {
-                        bail!(PluginTomlError::new(PluginTomlErrorKind::MissingTableKey(
-                            REPO,
-                            format!("sdk.{}", key),
-                            None
-                        )))
                     }
 
                     if let Some(path) = value.get(PATH).and_then(|p| p.as_str()) {
