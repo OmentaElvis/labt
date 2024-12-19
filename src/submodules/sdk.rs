@@ -1,6 +1,6 @@
 use core::panic;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     fs::{self, create_dir, create_dir_all, remove_dir_all, remove_file, File},
     io::{self, BufReader, BufWriter, Read, Write},
@@ -37,10 +37,13 @@ use crate::{
 };
 
 // consts
-const DEFAULT_URL: &str = "https://dl.google.com/android/repository/";
+pub const DEFAULT_URL: &str = "https://dl.google.com/android/repository/";
+pub const GOOGLE_REPO_NAME_STR: &str = "google";
 const DEFAULT_RESOURCES_URL: &str = "https://dl.google.com/android/repository/repository2-1.xml";
 const SDKMANAGER_TARGET: &str = "sdkmanager";
 const LOCK_FILE: &str = ".lock";
+
+pub const FAILED_TO_PARSE_SDK_STR: &str = "Failed to parse sdk repository config from cache. try --update-repository-list to force update config.";
 
 use super::sdkmanager::filters::FilteredPackages;
 use super::sdkmanager::installed_list::InstalledList;
@@ -50,15 +53,11 @@ pub use super::sdkmanager::InstalledPackage;
 
 #[derive(Clone, Args)]
 pub struct SdkArgs {
-    /// The repository.xml url to fetch sdk list
-    #[arg(long)]
-    repository_xml: Option<String>,
     /// Force updates the android repository xml
     #[arg(long, action)]
     update_repository_list: bool,
-
     #[command(subcommand)]
-    subcommands: Option<SdkSubcommands>,
+    subcommands: SdkSubcommands,
 }
 
 #[derive(Subcommand, Clone)]
@@ -67,10 +66,14 @@ pub enum SdkSubcommands {
     Install(InstallArgs),
     /// List packages
     List(ListArgs),
+    /// Add a sdk repository.
+    Add(AddArgs),
 }
 
 #[derive(Clone, Args)]
 pub struct ListArgs {
+    /// The repository name
+    name: String,
     /// Show only installed packages
     #[arg(long, action)]
     installed: bool,
@@ -96,6 +99,8 @@ pub struct ListArgs {
 
 #[derive(Clone, Args)]
 pub struct InstallArgs {
+    /// The repository name
+    name: String,
     /// The package path name to install
     #[arg(long)]
     path: String,
@@ -117,11 +122,19 @@ pub struct InstallArgs {
     #[arg(long, action)]
     quiet: bool,
 }
+#[derive(Clone, Args)]
+pub struct AddArgs {
+    /// The name to save this repository as
+    name: String,
+
+    /// The repository.xml url to fetch sdk list
+    url: Option<String>,
+}
 
 pub struct Sdk {
     url: String,
-    update: bool,
     args: SdkArgs,
+    name: String,
 }
 
 /// Locks the target directory so that other LABt processes do not interfere with it
@@ -236,23 +249,24 @@ impl Drop for SdkLock {
 
 impl Sdk {
     pub fn new(args: &SdkArgs) -> Self {
-        let url = if let Some(url) = args.repository_xml.clone() {
-            url
-        } else {
-            String::from(DEFAULT_RESOURCES_URL)
-        };
+        // let url = if let Some(url) = args.repository_xml.clone() {
+        //     url
+        // } else {
+        //     String::from(DEFAULT_RESOURCES_URL)
+        // };
         Self {
-            url,
-            update: args.update_repository_list,
+            url: String::new(),
             args: args.clone(),
+            name: String::new(),
         }
     }
     pub fn start_tui<'a>(
+        name: &'a str,
         packages: &'a mut FilteredPackages<'a, 'a>,
     ) -> io::Result<(PendingActions, PendingAccepts)> {
         let mut terminal: Tui = tui::init()?;
         terminal.clear()?;
-        let (actions, accepts) = SdkManager::new(packages).run(&mut terminal)?;
+        let (actions, accepts) = SdkManager::new(name, packages).run(&mut terminal)?;
         tui::restore()?;
         for (key, action) in actions.iter() {
             match action {
@@ -312,10 +326,9 @@ impl Sdk {
             }
             return Ok(());
         }
-
-        let (actions, accepts) = Self::start_tui(&mut filtered)?;
+        let (actions, accepts) = Self::start_tui(repo.get_name(), &mut filtered)?;
         for license in accepts {
-            installed.accept_license(license);
+            installed.accept_license(repo.get_name(), license);
         }
         installed
             .save_to_file()
@@ -343,19 +356,19 @@ impl Sdk {
     pub fn perform_actions(
         &self,
         mut actions: HashMap<RemotePackage, PendingAction>,
-        _repo: &RepositoryXml,
+        repo: &RepositoryXml,
         installed_list: &mut InstalledList,
         url: Url,
         host_os: &Option<String>,
         quiet: bool,
     ) -> anyhow::Result<()> {
         let mut uninstaller = Uninstaller::new(quiet);
-        let (host_os, bits) = self.get_host_os_and_bits(host_os.to_owned())?;
+        let (host_os, bits) = Self::get_host_os_and_bits(host_os.to_owned())?;
         let mut installer = Installer::new(url, bits, host_os, quiet);
 
         for (package, action) in actions.drain() {
             match action {
-                PendingAction::Install => installer.add_package(package)?,
+                PendingAction::Install => installer.add_package(repo.get_name(), package)?,
                 PendingAction::Uninstall
                 | PendingAction::Upgrade(_)
                 | PendingAction::Downgrade(_)
@@ -364,6 +377,7 @@ impl Sdk {
                         package.get_path().to_owned(),
                         package.get_revision().to_owned(),
                         package.get_channel().to_owned(),
+                        repo.get_name().to_string(),
                     )) {
                         uninstaller.add_uninstall_package(p.to_owned());
                     }
@@ -395,7 +409,7 @@ impl Sdk {
     }
     /// Returns the appropriate os and pointer width size (64 or 32bit)
     /// If os is None it returns the defaults of the current host os running labt
-    fn get_host_os_and_bits(&self, os: Option<String>) -> anyhow::Result<(String, BitSizeType)> {
+    pub fn get_host_os_and_bits(os: Option<String>) -> anyhow::Result<(String, BitSizeType)> {
         // if you are debugging the sdkmanager, please check this section as it may be a source of bugs
         let mut bits = if cfg!(target_pointer_width = "64") {
             BitSizeType::Bit64
@@ -431,6 +445,7 @@ impl Sdk {
         installed: InstalledList,
     ) -> anyhow::Result<()> {
         let mut installed = installed;
+        let name = &args.name;
 
         let package = repo.get_remote_packages().iter().find(|p| {
             if !&args.path.eq(p.get_path()) {
@@ -476,7 +491,7 @@ impl Sdk {
             warn!(target: SDKMANAGER_TARGET, "{}", err);
             return Err(anyhow!(io::Error::new(io::ErrorKind::NotFound, err)));
         };
-        let (host_os, bits) = self.get_host_os_and_bits(args.host_os.clone())?;
+        let (host_os, bits) = Self::get_host_os_and_bits(args.host_os.clone())?;
 
         let url = if let Some(url) = &args.url {
             url.to_owned()
@@ -484,17 +499,17 @@ impl Sdk {
             Url::parse(DEFAULT_URL).context("Failed to parse default URL")?
         };
         // update licenses
-        if !installed.has_accepted(package.get_uses_license()) {
+        if let Some(true) = installed.has_accepted(&self.name, package.get_uses_license()) {
             let mut license_path = get_sdk_path().context(SDK_PATH_ERR_STRING)?;
             license_path.push("licenses");
             license_path.push(package.get_uses_license());
 
             log::warn!(target: SDKMANAGER_TARGET, "Automatically accepted license for the package: ({}). Please review the license stored at ({:?})", package.to_id(), license_path);
-            installed.accept_license(package.get_uses_license().clone());
+            installed.accept_license(&self.name, package.get_uses_license().clone());
         }
 
         let mut installer = Installer::new(url, bits, host_os, args.quiet);
-        installer.add_package(package.clone())?;
+        installer.add_package(name, package.clone())?;
 
         installer.install()?;
 
@@ -504,6 +519,61 @@ impl Sdk {
         installed
             .save_to_file()
             .context("Failed to update installed package list with installed packages")?;
+
+        Ok(())
+    }
+    pub fn add_repository(name: &str, url: &str) -> anyhow::Result<()> {
+        let sdk = get_sdk_path().context(super::sdkmanager::installed_list::SDK_PATH_ERR_STRING)?;
+
+        let url = Url::parse(url).context("Failed to parse repository url")?;
+
+        // confirm a repository.toml exists
+        let mut toml = sdk.clone();
+        toml.push(name);
+        if !toml.exists() {
+            create_dir_all(&toml)
+                .context(format!("Failed to create sdk repository path for {}", name))?;
+        }
+
+        // let repo = if !toml.exists() || self.update {
+        info!(target: SDKMANAGER_TARGET, "Fetching {} repository xml from {}", name, url.as_str());
+        let prog = MULTI_PROGRESS_BAR.add(ProgressBar::new_spinner());
+        prog.set_message("Downloading xml");
+        let client = reqwest::blocking::Client::builder()
+            .user_agent(crate::USER_AGENT)
+            .build()
+            .context(format!(
+                "Failed to create http client to fetch {}",
+                url.as_str()
+            ))?;
+        let resp = client
+            .get(url.clone())
+            .send()
+            .context(format!("Failed to complete request to {}", url.as_str()))?;
+        let reader = BufReader::new(resp);
+        let mut repo = parse_repository_xml(reader).context(format!(
+            "Failed to parse android repository from {}",
+            url.as_str()
+        ))?;
+        prog.finish_and_clear();
+        repo.set_url(url.to_string());
+        repo.set_name(name.to_string());
+
+        write_repository_config(&repo, &toml)
+            .context("Failed to write repository config to LABt home cache")?;
+
+        let mut installed =
+            InstalledList::parse_from_sdk().context("Failed to parse installed.toml")?;
+        installed.repositories.insert(
+            name.to_string(),
+            crate::submodules::sdkmanager::installed_list::RepositoryInfo {
+                url: url.to_string(),
+                accepted_licenses: HashSet::new(),
+                path: toml,
+            },
+        );
+
+        installed.save_to_file()?;
 
         Ok(())
     }
@@ -520,6 +590,9 @@ pub mod toml_strings {
     pub const CHANNEL: &str = "channel";
     pub const CHANNELS: &str = "channels";
     pub const URL: &str = "url";
+    pub const NAME: &str = "name";
+    pub const REPOSITORY_NAME: &str = "repository_name";
+    pub const REPOSITORY: &str = "repository";
     pub const CHECKSUM: &str = "checksum";
     pub const SIZE: &str = "size";
     pub const OS: &str = "os";
@@ -535,53 +608,51 @@ pub mod toml_strings {
 impl Submodule for Sdk {
     fn run(&mut self) -> anyhow::Result<()> {
         // check for sdk folder
-        let sdk = get_sdk_path().context(super::sdkmanager::installed_list::SDK_PATH_ERR_STRING)?;
-
-        let url = Url::parse(&self.url).context("Failed to parse repository url")?;
-
-        // confirm a repository.toml exists
-        let mut toml = sdk.clone();
-        toml.push(toml_strings::CONFIG_FILE);
-
-        let repo = if !toml.exists() || self.update {
-            info!(target: SDKMANAGER_TARGET, "Fetching android repository xml from {}", url.as_str());
-            let client = reqwest::blocking::Client::builder()
-                .user_agent(crate::USER_AGENT)
-                .build()
-                .context(format!(
-                    "Failed to create http client to fetch {}",
-                    url.as_str()
-                ))?;
-            let resp = client
-                .get(url.clone())
-                .send()
-                .context(format!("Failed to complete request to {}", url.as_str()))?;
-            let reader = BufReader::new(resp);
-            let repo = parse_repository_xml(reader).context(format!(
-                "Failed to parse android repository from {}",
-                url.as_str()
-            ))?;
-            write_repository_config(&repo)
-                .context("Failed to write repository config to LABt home cache")?;
-            repo
-        } else {
-            info!(target: SDKMANAGER_TARGET, "Fetching cached repository config file");
-            parse_repository_toml(&toml).context("Failed to parse android repository config from cache. try --update-repository-list to force update config.")?
-        };
 
         let mut list =
             InstalledList::parse_from_sdk().context("Failed reading installed packages list")?;
 
         match &self.args.subcommands {
-            Some(SdkSubcommands::Install(args)) => {
+            SdkSubcommands::Install(args) => {
+                let name = &args.name;
+                self.name = name.to_string();
+                let mut toml = get_sdk_path()
+                    .context(super::sdkmanager::installed_list::SDK_PATH_ERR_STRING)?;
+                toml.push(name);
+                toml.push(toml_strings::CONFIG_FILE);
+                let repo = parse_repository_toml(&toml).context(FAILED_TO_PARSE_SDK_STR)?;
                 self.install_package(args, repo, list)
                     .context("Failed to install package")?;
             }
-            Some(SdkSubcommands::List(args)) => {
+            SdkSubcommands::List(args) => {
+                let name = &args.name;
+                self.name = name.to_string();
+                let mut toml = get_sdk_path()
+                    .context(super::sdkmanager::installed_list::SDK_PATH_ERR_STRING)?;
+                toml.push(name);
+                toml.push(toml_strings::CONFIG_FILE);
+                let repo = parse_repository_toml(&toml).context(FAILED_TO_PARSE_SDK_STR)?;
                 self.list_packages(args, &repo, &mut list)
                     .context("Failed to list packages")?;
             }
-            None => {}
+            SdkSubcommands::Add(args) => {
+                let name = &args.name;
+                let url = if let Some(url) = &args.url {
+                    url
+                } else if name.ne("google") {
+                    // let mut err = clap::Error::new(clap::error::ErrorKind::MissingRequiredArgument);
+                    // err.insert(
+                    //     clap::error::ContextKind::TrailingArg,
+                    //     ContextValue::String("URL".to_owned()),
+                    // );
+                    // err.print()?;
+
+                    bail!("No repository URL provided. Check --help for usage");
+                } else {
+                    DEFAULT_RESOURCES_URL
+                };
+                Sdk::add_repository(name, url).context("Failed to add repository")?;
+            }
         }
 
         Ok(())
@@ -601,10 +672,10 @@ pub fn get_sdk_path() -> anyhow::Result<PathBuf> {
     Ok(sdk)
 }
 
-pub fn write_repository_config(repo: &RepositoryXml) -> anyhow::Result<()> {
+pub fn write_repository_config(repo: &RepositoryXml, path: &Path) -> anyhow::Result<()> {
     use toml_strings::*;
     // Check for sdk folder
-    let sdk = get_sdk_path().context(super::sdkmanager::installed_list::SDK_PATH_ERR_STRING)?;
+    let sdk = PathBuf::from(path);
 
     // Create licenses page
     let mut licenses = sdk.clone();
@@ -628,6 +699,9 @@ pub fn write_repository_config(repo: &RepositoryXml) -> anyhow::Result<()> {
 
     // write the toml to file
     let mut doc = toml_edit::Document::new();
+    doc.insert(NAME, value(repo.get_name()));
+    doc.insert(URL, value(repo.get_url()));
+
     let mut remotes = toml_edit::ArrayOfTables::new();
     for package in repo.get_remote_packages() {
         let mut table = toml_edit::Table::new();
@@ -704,6 +778,34 @@ pub fn parse_repository_toml(path: &Path) -> anyhow::Result<RepositoryXml> {
     };
 
     let mut repo = RepositoryXml::new();
+    let name = if let Some(name) = toml.get(NAME) {
+        name.as_value()
+            .unwrap_or(&toml_edit::Value::String(toml_edit::Formatted::new(
+                String::new(),
+            )))
+            .as_str()
+            .unwrap()
+            .to_string()
+    } else {
+        missing_err(NAME, 0)?;
+        String::new()
+    };
+    repo.set_name(name);
+
+    let url = if let Some(url) = toml.get(URL) {
+        url.as_value()
+            .unwrap_or(&toml_edit::Value::String(toml_edit::Formatted::new(
+                String::new(),
+            )))
+            .as_str()
+            .unwrap()
+            .to_string()
+    } else {
+        missing_err(PATH, 0)?;
+        String::new()
+    };
+    repo.set_url(url);
+
     if toml.contains_array_of_tables(REMOTE_PACKAGE) {
         if let Some(packages) = toml[REMOTE_PACKAGE].as_array_of_tables() {
             for p in packages {
@@ -998,11 +1100,11 @@ impl Uninstaller {
 // }
 
 /// Manages the installation on packages
-struct Installer {
+pub struct Installer {
     /// The installer mode
     // pub mode: InstallerMode,
     install_targets: Vec<InstallerTarget>,
-    complete_tasks: Vec<InstalledPackage>,
+    pub complete_tasks: Vec<InstalledPackage>,
 
     default_url: Arc<Url>,
     /// The current os architecture bits, ie 64 or 32. This sets the preferred bits. If an archive is platform independent, it will be downloaded instead.
@@ -1014,12 +1116,13 @@ struct Installer {
 }
 
 #[derive(Clone)]
-struct InstallerTarget {
-    bits: BitSizeType,
-    host_os: String,
-    target_path: PathBuf,
-    download_url: Arc<Url>,
-    package: RemotePackage,
+pub struct InstallerTarget {
+    pub bits: BitSizeType,
+    pub host_os: String,
+    pub target_path: PathBuf,
+    pub download_url: Arc<Url>,
+    pub package: RemotePackage,
+    pub repository_name: String,
 }
 fn checksum_err(path: String, archive: &Archive, checksum: String) -> anyhow::Error {
     // error messages in reverse so anyhow can do its thing
@@ -1045,15 +1148,21 @@ impl Installer {
         self.install_targets.push(target);
     }
 
-    pub fn add_package(&mut self, package: RemotePackage) -> anyhow::Result<()> {
+    pub fn add_package(
+        &mut self,
+        repository_name: &str,
+        package: RemotePackage,
+    ) -> anyhow::Result<()> {
         let path: PathBuf = package.get_path().split(';').collect();
-        let sdk = get_sdk_path()?;
+        let mut sdk = get_sdk_path()?;
+        sdk.push(repository_name);
         let target = InstallerTarget {
             bits: self.bits,
             host_os: self.host_os.clone(),
             target_path: sdk.join(path),
             package,
             download_url: Arc::clone(&self.default_url),
+            repository_name: repository_name.to_string(),
         };
 
         self.add_target(target);
@@ -1261,6 +1370,7 @@ impl Installer {
             url: String::new(),
             directory: Some(target_path.to_path_buf()),
             channel: package.get_channel().to_owned(),
+            repository_name: target.repository_name.to_string(),
         })
     }
 
@@ -1392,6 +1502,7 @@ impl Installer {
             url: url.to_string(),
             directory: Some(target_path.to_path_buf()),
             channel: package.get_channel().to_owned(),
+            repository_name: target.repository_name.to_string(),
         })
     }
     /// spawns a new tokio instance to do all the installs

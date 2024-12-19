@@ -4,6 +4,7 @@ use std::{
     fs::{create_dir_all, read_to_string, File},
     io::Write,
     path::PathBuf,
+    sync::Arc,
     time::Duration,
 };
 
@@ -11,14 +12,24 @@ use anyhow::{bail, Context};
 use clap::{Args, Subcommand};
 use git2::{DescribeFormatOptions, DescribeOptions, Repository, WorktreeAddOptions};
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{info, warn};
+use log::{info, trace, warn};
 use reqwest::Url;
 
 use crate::{
-    config::{add_plugin_to_config, get_config, remove_plugin_from_config},
+    config::{
+        add_plugin_to_config, get_config, remove_plugin_from_config, repository::RepositoryXml,
+    },
     get_home,
     plugin::config::PluginToml,
     pom::VersionRange,
+    submodules::{
+        resolvers::GOOGLE_REPO_URL,
+        sdk::{
+            get_sdk_path, parse_repository_toml, toml_strings, Installer, InstallerTarget, Sdk,
+            DEFAULT_URL, FAILED_TO_PARSE_SDK_STR, GOOGLE_REPO_NAME_STR,
+        },
+        sdkmanager::installed_list::InstalledList,
+    },
     LABT_VERSION, MULTI_PROGRESS_BAR,
 };
 
@@ -359,6 +370,116 @@ pub fn fetch_plugin(
 
     info!(target: "plugin", "Installed plugin: {}@{}", plugin_toml.name, plugin_toml.version);
 
+    if !plugin_toml.sdk.is_empty() {
+        let mut installed_list = InstalledList::parse_from_sdk()?;
+        const PLUGIN_SDK: &str = "plugin sdk";
+
+        // add all the repositories specified by the plugin.
+        for (name, repo) in plugin_toml.sdk_repo.iter() {
+            // TODO possiblitity of repository name collisions.
+            info!(target: PLUGIN_SDK, "Installing {} sdk repo for plugin {}@{}.", name, plugin_toml.name, plugin_toml.version);
+            Sdk::add_repository(name, &repo.url).context(format!(
+                "Failed to install {} sdk repo requested by plugin {}@{}.",
+                name, plugin_toml.name, plugin_toml.version
+            ))?;
+        }
+
+        let (host_os, bits) = Sdk::get_host_os_and_bits(None)?;
+
+        let mut installer = Installer::new(Url::parse(DEFAULT_URL)?, bits, host_os.clone(), false);
+
+        // A very rough caching for the repository lists
+        let mut repositories: HashMap<String, RepositoryXml> = HashMap::new();
+
+        // the plugin requested for an sdk, so try to check for their existance an install if necessary
+        for sdk in plugin_toml.sdk {
+            // check if repo is specified
+
+            // =================== INSTALL PLAN ===================
+            // - We assume at this point all the repositories are ready
+            // - The installer needs the repository "RemotePackage"
+            // - We need to select the correct sdk repository
+            //    + open the matching sdk repository config from file or cache memory
+            //    + in the repository, find the package path/id. Error if not found, otherwise return the "RemotePackage".
+            //    + pass the "RemotePackage" to the installer and its details
+            //    + repeat for the next plugin sdk packages
+
+            // Load this repository
+            let repo = if let Some(repo) = &repositories.get(&sdk.repo) {
+                repo
+            } else {
+                // not cached so load the repository
+                if let Some(repo_entry) = installed_list.repositories.get(&sdk.repo) {
+                    let mut path = repo_entry.path.clone();
+                    path.push(toml_strings::CONFIG_FILE);
+                    let repo = parse_repository_toml(&path).context(FAILED_TO_PARSE_SDK_STR)?;
+                    repositories.insert(sdk.repo.to_string(), repo);
+                    repositories.get(&sdk.repo).unwrap()
+                } else {
+                    // you fambled the repository name
+                    bail!("The plugin config tried to install an sdk package from a repository name it did not specify in its config! ");
+                }
+            };
+
+            // since we have obtained the correct repo. Now find the package
+            let package = repo
+                .get_remote_packages()
+                .iter()
+                .find(|p| {
+                    if !&sdk.path.eq(p.get_path()) {
+                        return false;
+                    }
+
+                    if !sdk.version.eq(p.get_revision()) {
+                        return false;
+                    }
+
+                    if &sdk.channel != p.get_channel() {
+                        return false;
+                    }
+
+                    true
+                })
+                .context(format!(
+                    "Package {} v{}-{} does not exist on \"{}\" sdk repo.",
+                    sdk.path, sdk.version, sdk.channel, sdk.channel
+                ))?;
+
+            if sdk.repo == GOOGLE_REPO_NAME_STR {
+                installer.add_package(GOOGLE_REPO_NAME_STR, package.clone())?;
+            } else {
+                // the repo devs should specify the base url for this package.
+                let base_url = if let Some(url) = package.get_base_url() {
+                    Url::parse(url)?
+                } else {
+                    trace!(target: "sdkmanager", "Repository did not specify its base URL. Setting google repo url as a place holder hoping that they did for whatever archive we are installing. ");
+                    Url::parse(GOOGLE_REPO_URL)?
+                };
+
+                let path: PathBuf = package.get_path().split(';').collect();
+                let mut sdk_path = get_sdk_path()?;
+                sdk_path.push(&sdk.repo);
+                let target = InstallerTarget {
+                    bits,
+                    host_os: host_os.clone(),
+                    target_path: sdk_path.join(path),
+                    package: package.clone(),
+                    download_url: Arc::new(base_url),
+                    repository_name: sdk.repo.to_string(),
+                };
+
+                installer.add_target(target);
+            }
+        }
+        installer.install()?;
+        for package in installer.complete_tasks {
+            installed_list.add_installed_package(package);
+        }
+        installed_list
+            .save_to_file()
+            .context("Failed to update installed package list with installed packages")?;
+    }
+
     Ok(())
 }
 
@@ -408,6 +529,7 @@ pub fn create_new_plugin(
         enable_unsafe: false,
         sdk: Vec::new(),
         labt: None,
+        sdk_repo: HashMap::new(),
     };
 
     let mut path = if local_plugin {
