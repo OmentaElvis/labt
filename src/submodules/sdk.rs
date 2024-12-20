@@ -6,7 +6,8 @@ use std::{
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     process,
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
+    time::Duration,
 };
 
 use anyhow::{anyhow, bail, Context};
@@ -15,7 +16,7 @@ use console::style;
 use crossterm::style::Stylize;
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{info, warn};
+use log::{error, info, warn};
 use reqwest::Url;
 use sha1::{Digest, Sha1};
 use toml_edit::{value, Document};
@@ -364,7 +365,8 @@ impl Sdk {
     ) -> anyhow::Result<()> {
         let mut uninstaller = Uninstaller::new(quiet);
         let (host_os, bits) = Self::get_host_os_and_bits(host_os.to_owned())?;
-        let mut installer = Installer::new(url, bits, host_os, quiet);
+        let running = Arc::new(AtomicBool::new(true));
+        let mut installer = Installer::new(url, bits, host_os, quiet, running);
 
         for (package, action) in actions.drain() {
             match action {
@@ -508,7 +510,8 @@ impl Sdk {
             installed.accept_license(&self.name, package.get_uses_license().clone());
         }
 
-        let mut installer = Installer::new(url, bits, host_os, args.quiet);
+        let running = Arc::new(AtomicBool::new(true));
+        let mut installer = Installer::new(url, bits, host_os, args.quiet, running);
         installer.add_package(name, package.clone())?;
 
         installer.install()?;
@@ -1000,7 +1003,10 @@ impl Uninstaller {
         if !dir.pop() {
             return Ok(());
         }
-        let sdk = get_sdk_path().context(super::sdkmanager::installed_list::SDK_PATH_ERR_STRING)?;
+        let mut sdk =
+            get_sdk_path().context(super::sdkmanager::installed_list::SDK_PATH_ERR_STRING)?;
+        sdk.push(&package.repository_name);
+
         if !dir.starts_with(sdk) {
             // aint touching that, not ours
             return Ok(());
@@ -1041,17 +1047,22 @@ impl Uninstaller {
 
         Ok(())
     }
-    fn remove_package(package: &mut InstalledPackage, quiet: bool) -> anyhow::Result<()> {
+    fn remove_package(
+        package: &mut InstalledPackage,
+        quiet: bool,
+        ignore_lock: bool,
+    ) -> anyhow::Result<()> {
         // check for lock file on target dir
         let dir = if let Some(dir) = &package.directory {
             dir.clone()
         } else {
             let path: PathBuf = package.path.split(';').collect();
-            let sdk = get_sdk_path()?;
+            let mut sdk = get_sdk_path()?;
+            sdk.push(&package.repository_name);
             sdk.join(path)
         };
         let lock = dir.join(LOCK_FILE);
-        if lock.exists() {
+        if lock.exists() && !ignore_lock {
             let pid = process::id();
             let other_pid = fs::read_to_string(&lock)?;
             if !pid.to_string().eq(&other_pid) {
@@ -1082,7 +1093,7 @@ impl Uninstaller {
     /// Loops through all packages marked for uninstall removing them from disk and install list
     pub fn uninstall(mut self) -> anyhow::Result<Vec<InstalledPackage>> {
         for package in &mut self.packages {
-            Self::remove_package(package, self.quiet)?;
+            Self::remove_package(package, self.quiet, false)?;
         }
         Ok(self.packages)
     }
@@ -1113,6 +1124,9 @@ pub struct Installer {
     host_os: String,
     /// If to show progressbars
     quiet: bool,
+
+    /// If to exit the installer
+    running: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -1124,22 +1138,94 @@ pub struct InstallerTarget {
     pub package: RemotePackage,
     pub repository_name: String,
 }
-fn checksum_err(path: String, archive: &Archive, checksum: String) -> anyhow::Error {
-    // error messages in reverse so anyhow can do its thing
-    anyhow!("Common reasons for this error include network connectivity issues, file corruption, or malicious tampering.")
-        .context(format!("Calculated checksum: {} ", checksum))
-        .context(format!("Expected checksum: {}", archive.get_checksum()))
-        .context(format!("Checksum mismatch: The downloaded file's SHA-1 checksum for {} does not match the expected value. Refusing to install.", path))
+
+#[derive(thiserror::Error, Debug)]
+pub enum InstallerError {
+    /// Common IO errors
+    #[error("Failed to compute checksum.")]
+    ChecksumIOError {
+        #[from]
+        source: io::Error,
+    },
+    /// A checksum errow which failed to match. Arguments are Calculated/Incomming and Expected
+    #[error("Checksum mismatch for file '{path}': expected checksum '{expected}', calculated checksum '{calculated}'. Common reasons for this error include network connectivity issues, file corruption, or malicious tampering.")]
+    ChecksumMismatch {
+        path: String,
+        expected: String,
+        calculated: String,
+    },
+    /// The install operation was cancelled by the user
+    #[error("The installation target ({path}) was canceled before completion.")]
+    Canceled { path: String },
+    /// Archive selection failed for correct platform failed
+    #[error("Failed to get an appropriate archive to download for platform: {0}, {1} bit")]
+    ArchiveSelectionFailed(String, BitSizeType),
+
+    /// Failed url parsing
+    #[error("Invalid archive url (\"{url}\") encountered. {err}")]
+    UrlParseError { url: String, err: String },
+
+    // reqwest errors
+    #[error("Failed to send request to {url}")]
+    FailedToSendRequest {
+        url: String,
+        #[source]
+        source: anyhow::Error,
+    },
+
+    #[error("Server responded with an error while trying to fetch {url}")]
+    BadServerResponse {
+        url: String,
+        #[source]
+        source: anyhow::Error,
+    },
+
+    #[error("Failed to create download tmp file ({0})")]
+    FailedToCreateDownloadTmp(String, #[source] io::Error),
+
+    #[error("Failed to open download tmp file ({0})")]
+    FailedToOpenDownloadTmp(String, #[source] io::Error),
+
+    #[error(
+        "Failed to copy all bytes from the network stream to a local file: read {0}, written: {0}"
+    )]
+    IOCopyFailed(usize, usize),
+
+    #[error(
+        "An error occured while trying to flush remaining bytes to disk at ({path}) at {package}"
+    )]
+    IOFlushFailed {
+        path: String,
+        package: String,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("Failed to unzip package")]
+    UnzipError(#[source] anyhow::Error),
+
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+
+    #[error("The request timed out after a duration of inactivity.")]
+    RequestTimedOut(#[source] anyhow::Error),
 }
 
 impl Installer {
-    pub fn new(download_from: Url, bits: BitSizeType, host_os: String, quiet: bool) -> Self {
+    pub fn new(
+        download_from: Url,
+        bits: BitSizeType,
+        host_os: String,
+        quiet: bool,
+        running: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             install_targets: Vec::new(),
             complete_tasks: Vec::new(),
             default_url: Arc::new(download_from),
             bits,
             host_os,
+            running,
             quiet,
         }
     }
@@ -1174,7 +1260,7 @@ impl Installer {
         archives: &'a [Archive],
         host_os: &String,
         bits: &BitSizeType,
-    ) -> anyhow::Result<&'a Archive> {
+    ) -> Result<&'a Archive, InstallerError> {
         let archives: Vec<&Archive> = archives
             .iter()
             .filter(|p| {
@@ -1198,18 +1284,18 @@ impl Installer {
         if let Some(archive) = archives.first() {
             Ok(archive)
         } else {
-            bail!(
-                "Failed to get an appropriate archive to download for platform: {}, {} bit",
-                host_os,
-                bits
-            );
+            Err(InstallerError::ArchiveSelectionFailed(
+                host_os.to_string(),
+                *bits,
+            ))
         }
     }
-    pub fn calculate_checksum(path: &Path, prog: Option<ProgressBar>) -> anyhow::Result<String> {
-        let file = File::open(path).context(format!(
-            "Failed to open file at ({:?}) to compute checksum.",
-            path
-        ))?;
+    pub fn calculate_checksum(
+        path: &Path,
+        prog: Option<ProgressBar>,
+    ) -> Result<String, InstallerError> {
+        let file =
+            File::open(path).map_err(|err| InstallerError::ChecksumIOError { source: err })?;
         let mut reader = BufReader::new(file);
         let mut sha = Sha1::new();
         let mut buf = [0; 4 * 1024];
@@ -1220,7 +1306,9 @@ impl Installer {
         }
 
         loop {
-            let n = reader.read(&mut buf)?;
+            let n = reader
+                .read(&mut buf)
+                .map_err(|err| InstallerError::ChecksumIOError { source: err })?;
             if n == 0 {
                 break;
             }
@@ -1239,7 +1327,8 @@ impl Installer {
         &self,
         client: &reqwest::blocking::Client,
         target: &InstallerTarget,
-    ) -> anyhow::Result<InstalledPackage> {
+        running: Arc<AtomicBool>,
+    ) -> Result<InstalledPackage, InstallerError> {
         // get the target archive to download
         let archive =
             Self::select_archive(target.package.get_archives(), &target.host_os, &target.bits)?;
@@ -1247,23 +1336,31 @@ impl Installer {
         let url =
                     // if archive url is a full url use it otherwise treat the url like a file name
                     if archive_url.starts_with("http://") || archive_url.starts_with("https://") {
-                        Url::parse(archive_url).context("Invalid archive url encountered")?
+                        Url::parse(archive_url).map_err(|err| {
+                            InstallerError::UrlParseError { url: archive_url.to_string(), err: err.to_string() }
+                        })?
                     } else {
-                        target.download_url.join(archive_url).context(format!("Failed to join url {} with {}", target.download_url, archive_url))?
+                        target.download_url.join(archive_url).map_err(|err| {
+                            InstallerError::UrlParseError { url: archive_url.to_string(), err: err.to_string() }
+                        })?
                     };
+        if !running.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(InstallerError::Canceled {
+                path: target.package.get_path().to_string(),
+            });
+        }
         let req = client.get(url.clone());
         let res = req
             .send()
-            .context(format!(
-                "Failed to complete request to {url} for {}",
-                target.package.get_path()
-            ))?
+            .map_err(|err| InstallerError::FailedToSendRequest {
+                url: url.to_string(),
+                source: anyhow!(err),
+            })?
             .error_for_status()
-            .context(format!(
-                "Server responded with an error while trying to fetch {}",
-                target.package.get_path()
-            ))?;
-
+            .map_err(|err| InstallerError::BadServerResponse {
+                url: url.to_string(),
+                source: anyhow!(err),
+            })?;
         let prog = if !self.quiet {
             let prog = indicatif::ProgressBar::new(archive.get_size() as u64).with_style(
                 ProgressStyle::with_template(
@@ -1275,6 +1372,11 @@ impl Installer {
         } else {
             None
         };
+        if !running.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(InstallerError::Canceled {
+                path: target.package.get_path().to_string(),
+            });
+        }
 
         let target_path = &target.target_path;
         // create a lock file to protect directory
@@ -1284,60 +1386,64 @@ impl Installer {
         let mut output = target_path.clone();
         output.push("package.tmp");
 
-        let file = File::create(&output).context("Failed to create download tmp file")?;
+        let file = File::create(&output).map_err(|err| {
+            InstallerError::FailedToCreateDownloadTmp(output.to_string_lossy().to_string(), err)
+        })?;
         let mut writer = BufWriter::new(file);
 
         let mut reader = BufReader::new(res);
 
         if let Some(prog) = &prog {
             prog.set_message(format!("Downloading {}", target.package.get_path()));
-            // progressbar is enabled, so possibly waste some extra cpu cycles accomodating for it
-            const BUFFER_LENGTH: usize = 8 * 1024;
-            let mut buf: [u8; BUFFER_LENGTH] = [0; BUFFER_LENGTH];
-            loop {
-                let read = reader.read(&mut buf)?;
-                if read == 0 {
-                    break;
-                }
+        }
 
-                let written = writer.write(&buf[0..read])?;
-                if written != read {
-                    return Err(anyhow!("Failed to copy all bytes from the network stream to a local file: read {}, written: {}", read, written));
-                }
+        // progressbar is enabled, so possibly waste some extra cpu cycles accomodating for it
+        const BUFFER_LENGTH: usize = 8 * 1024;
+        let mut buf: [u8; BUFFER_LENGTH] = [0; BUFFER_LENGTH];
+        loop {
+            if !running.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            let read = reader.read(&mut buf)?;
+            if read == 0 {
+                break;
+            }
 
+            let written = writer.write(&buf[0..read])?;
+            if written != read {
+                return Err(InstallerError::IOCopyFailed(read, written));
+            }
+
+            if let Some(prog) = &prog {
                 prog.inc(read as u64);
             }
-            writer.flush().context(format!(
-                "An error occured while trying to flush remaining bytes to disk at ({:?}) at {}",
-                &output,
-                target.package.get_path()
-            ))?;
-            drop(writer);
-            drop(reader);
-        } else {
-            // pipe input to output
-            io::copy(&mut reader, &mut writer)?;
-            writer.flush().context(format!(
-                "An error occured while trying to flush remaining bytes to disk at ({:?}) at {}",
-                &output,
-                target.package.get_path()
-            ))?;
-            drop(writer);
-            drop(reader);
         }
+        writer
+            .flush()
+            .map_err(|err| InstallerError::IOFlushFailed {
+                path: output.to_string_lossy().to_string(),
+                package: target.package.get_path().to_string(),
+                source: err,
+            })?;
+        drop(writer);
+        drop(reader);
         // calculate checksum
-        let checksum = Self::calculate_checksum(&output, prog).context(format!(
-            "Failed to compute sha1 checksum for ({:?})",
-            &output
-        ))?;
-
+        let checksum = Self::calculate_checksum(&output, prog)?;
         if !checksum.eq(archive.get_checksum()) {
-            bail!(checksum_err(target.package.to_id(), archive, checksum));
+            return Err(InstallerError::ChecksumMismatch {
+                path: output.to_string_lossy().to_string(),
+                expected: archive.get_checksum().to_owned(),
+                calculated: checksum,
+            });
         }
 
         // unzip
-        let file = File::open(&output).context("Failed to open download tmp file")?;
-        let mut archive = zip::ZipArchive::new(file)?;
+        let file = File::open(&output).map_err(|err| {
+            InstallerError::FailedToOpenDownloadTmp(output.to_string_lossy().to_string(), err)
+        })?;
+
+        let mut archive =
+            zip::ZipArchive::new(file).map_err(|err| InstallerError::Other(anyhow!(err)))?;
         if !self.quiet {
             let prog = indicatif::ProgressBar::new(archive.len() as u64).with_style(
                 ProgressStyle::with_template(
@@ -1352,7 +1458,9 @@ impl Installer {
                 target_path
             ))?;
         } else {
-            archive.extract(target_path)?;
+            archive
+                .extract(target_path)
+                .map_err(|err| InstallerError::Other(anyhow!(err)))?;
         }
         info!(target: SDKMANAGER_TARGET, "Extracted {} entries to ({:?}).", archive.len(), target_path);
 
@@ -1379,31 +1487,41 @@ impl Installer {
         target: InstallerTarget,
         prog: Option<ProgressBar>,
         quiet: bool,
-    ) -> anyhow::Result<InstalledPackage> {
+        running: Arc<AtomicBool>,
+    ) -> Result<InstalledPackage, InstallerError> {
         use tokio::io::AsyncWriteExt;
         let archive =
             Self::select_archive(target.package.get_archives(), &target.host_os, &target.bits)?;
         let archive_url = archive.get_url();
         let url =
-                // if archive url is a full url use it otherwise treat the url like a file name
-                if archive_url.starts_with("http://") || archive_url.starts_with("https://") {
-                    Url::parse(archive_url).context("Invalid archive url encountered")?
-                } else {
-                    target.download_url.join(archive_url).context(format!("Failed to join url {} with {}", target.download_url, archive_url))?
-                };
+                    // if archive url is a full url use it otherwise treat the url like a file name
+                    if archive_url.starts_with("http://") || archive_url.starts_with("https://") {
+                        Url::parse(archive_url).map_err(|err| {
+                            InstallerError::UrlParseError { url: archive_url.to_string(), err: err.to_string() }
+                        })?
+                    } else {
+                        target.download_url.join(archive_url).map_err(|err| {
+                            InstallerError::UrlParseError { url: archive_url.to_string(), err: err.to_string() }
+                        })?
+                    };
+        if !running.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(InstallerError::Canceled {
+                path: target.package.get_path().to_string(),
+            });
+        }
         let req = client.get(url.clone());
         let res = req
             .send()
             .await
-            .context(format!(
-                "Failed to complete request to {url} for {}",
-                target.package.get_path()
-            ))?
+            .map_err(|err| InstallerError::FailedToSendRequest {
+                url: url.to_string(),
+                source: anyhow!(err),
+            })?
             .error_for_status()
-            .context(format!(
-                "Server responded with an error while trying to fetch {}",
-                target.package.get_path()
-            ))?;
+            .map_err(|err| InstallerError::BadServerResponse {
+                url: url.to_string(),
+                source: anyhow!(err),
+            })?;
         if let Some(prog) = &prog {
             prog.set_length(archive.get_size() as u64);
             prog.set_message(format!("Downloading {}", target.package.get_path()));
@@ -1417,17 +1535,30 @@ impl Installer {
         let mut output = target_path.clone();
         output.push("package.tmp");
 
-        let file = tokio::fs::File::create(&output)
-            .await
-            .context("Failed to create download tmp file")?;
+        let file = tokio::fs::File::create(&output).await.map_err(|err| {
+            InstallerError::FailedToCreateDownloadTmp(output.to_string_lossy().to_string(), err)
+        })?;
         let mut writer = tokio::io::BufWriter::new(file);
 
         let mut stream = res.bytes_stream();
-        while let Some(item) = stream.next().await {
-            let bytes = item?;
+
+        loop {
+            let item = match tokio::time::timeout(Duration::from_secs(10), stream.next()).await {
+                Ok(Some(bytes)) => bytes,
+                Ok(None) => break,
+                Err(err) => {
+                    return Err(InstallerError::RequestTimedOut(anyhow!(err)));
+                }
+            };
+
+            if !running.load(std::sync::atomic::Ordering::SeqCst) {
+                info!(target: SDKMANAGER_TARGET, "Download canceled for {} ", url);
+                break;
+            }
+            let bytes = item.map_err(|err| InstallerError::Other(anyhow!(err)))?;
             let written = writer.write(&bytes[0..]).await?;
             if written != bytes.len() {
-                return Err(anyhow!("Failed to copy all bytes from the network stream to a local file: read {}, written: {}", bytes.len(), written));
+                return Err(InstallerError::IOCopyFailed(bytes.len(), written));
             }
 
             if let Some(prog) = &prog {
@@ -1440,6 +1571,16 @@ impl Installer {
             target.package.get_path()
         ))?;
         drop(writer);
+
+        if !running.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Some(prog) = prog {
+                prog.finish_and_clear();
+            }
+            return Err(InstallerError::Canceled {
+                path: target.package.get_path().to_string(),
+            });
+        }
+
         let extract_path = target_path.clone();
         let package_path_name = target.package.get_path().to_owned();
         let package_path_id = target.package.to_id();
@@ -1450,13 +1591,10 @@ impl Installer {
         tokio::task::spawn_blocking(move || {
             let prog = prog;
             // calculate checksum
-            let checksum = Self::calculate_checksum(&output_file, prog).context(format!(
-                "Failed to compute sha1 checksum for ({:?})",
-                &output_file
-            ))?;
+            let checksum = Self::calculate_checksum(&output_file, prog)?;
 
             if !checksum.eq(archive.get_checksum()) {
-                bail!(checksum_err(package_path_id, &archive, checksum));
+                return Err(InstallerError::ChecksumMismatch { path: package_path_id, expected: archive.get_checksum().to_string(), calculated: checksum });
             }
 
             // unzip file
@@ -1485,8 +1623,10 @@ impl Installer {
                 ))?;
             }
             info!(target: SDKMANAGER_TARGET, "Extracted {} entries to ({:?}).", archive.len(), extract_path);
-            Ok::<_, anyhow::Error>(())
-        }).await??;
+            Ok::<_, InstallerError>(())
+        }).await.map_err(|err| {
+                InstallerError::UnzipError(anyhow!(err))
+            })??;
 
         log::trace!(target: SDKMANAGER_TARGET, "Removing download temp file ({:?})", output);
         remove_file(&output).context(format!(
@@ -1521,6 +1661,7 @@ impl Installer {
             let mut tasks = Vec::new();
 
             for target in &self.install_targets {
+                let running = self.running.clone();
                 let prog = if !quiet {
                     let prog = indicatif::ProgressBar::new(0).with_style(
                                 ProgressStyle::with_template(
@@ -1533,30 +1674,45 @@ impl Installer {
                     None
                 };
                 tasks.push((
-                    target.package.to_id(),
+                    target,
                     tokio::spawn(Self::download_package_async(
                         client.clone(),
                         target.clone(),
                         prog,
                         self.quiet,
+                        running
                     )),
                 ));
             }
-            let mut result: Vec<anyhow::Result<InstalledPackage>> = Vec::new();
+            let mut result: Vec<(&InstallerTarget, anyhow::Result<InstalledPackage>)> = Vec::new();
             for (target, task) in tasks {
-                result.push(
+                result.push((target,
                     task.await?
-                        .context(format!("Failed to install package: {}", target)),
-                );
+                        .context(format!("Failed to install package: {}", target.package.to_id())),
+                ));
             }
 
-            Ok::<Vec<anyhow::Result<InstalledPackage>>, anyhow::Error>(result)
+            Ok::<Vec<(&InstallerTarget, anyhow::Result<InstalledPackage>)>, anyhow::Error>(result)
         })?;
 
-        for result in results {
+        for (target, result) in results {
             match result {
                 Ok(package) => self.complete_tasks.push(package),
                 Err(err) => {
+                    if let Err(err) = Uninstaller::remove_package(
+                        &mut InstalledPackage {
+                            repository_name: target.repository_name.to_string(),
+                            path: target.package.get_path().to_string(),
+                            version: target.package.get_revision().clone(),
+                            channel: target.package.get_channel().clone(),
+                            url: String::new(),
+                            directory: Some(target.target_path.clone()),
+                        },
+                        self.quiet,
+                        true,
+                    ) {
+                        error!(target: SDKMANAGER_TARGET, "{:?}", err);
+                    };
                     log::error!(target: SDKMANAGER_TARGET, "{:?}", err);
                 }
             }
@@ -1569,12 +1725,31 @@ impl Installer {
             .user_agent(USER_AGENT)
             .build()?;
         for target in &self.install_targets {
-            let installed_package =
-                self.download_package_blocking(&client, target)
-                    .context(format!(
-                        "Failed to install package: {}",
-                        target.package.to_id()
-                    ))?;
+            let installed_package = match self
+                .download_package_blocking(&client, target, self.running.clone())
+                .context(format!(
+                    "Failed to install package: {}",
+                    target.package.to_id()
+                )) {
+                Err(err) => {
+                    if let Err(err) = Uninstaller::remove_package(
+                        &mut InstalledPackage {
+                            repository_name: target.repository_name.to_string(),
+                            path: target.package.get_path().to_string(),
+                            version: target.package.get_revision().clone(),
+                            channel: target.package.get_channel().clone(),
+                            url: String::new(),
+                            directory: Some(target.target_path.clone()),
+                        },
+                        self.quiet,
+                        true,
+                    ) {
+                        error!(target: SDKMANAGER_TARGET, "{:?}", err);
+                    };
+                    return Err(err);
+                }
+                Ok(package) => package,
+            };
             self.complete_tasks.push(installed_package);
         }
 
@@ -1583,6 +1758,12 @@ impl Installer {
 
     /// Starts the installation process
     pub fn install(&mut self) -> anyhow::Result<()> {
+        let r = self.running.clone();
+        ctrlc::set_handler(move || {
+            r.store(false, std::sync::atomic::Ordering::SeqCst);
+        })
+        .expect("Error setting Ctrl-C handler");
+
         if self.install_targets.len() > 1 {
             self.install_async()?;
         } else {

@@ -4,7 +4,7 @@ use std::{
     fs::{create_dir_all, read_to_string, File},
     io::Write,
     path::PathBuf,
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
 
@@ -386,7 +386,14 @@ pub fn fetch_plugin(
 
         let (host_os, bits) = Sdk::get_host_os_and_bits(None)?;
 
-        let mut installer = Installer::new(Url::parse(DEFAULT_URL)?, bits, host_os.clone(), false);
+        let running = Arc::new(AtomicBool::new(true));
+        let mut installer = Installer::new(
+            Url::parse(DEFAULT_URL)?,
+            bits,
+            host_os.clone(),
+            false,
+            running,
+        );
 
         // A very rough caching for the repository lists
         let mut repositories: HashMap<String, RepositoryXml> = HashMap::new();
