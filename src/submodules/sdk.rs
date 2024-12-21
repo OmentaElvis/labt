@@ -1074,6 +1074,10 @@ impl Uninstaller {
             sdk.push(&package.repository_name);
             sdk.join(path)
         };
+
+        if !dir.exists() {
+            return Ok(());
+        }
         let lock = dir.join(LOCK_FILE);
         if lock.exists() && !ignore_lock {
             let pid = process::id();
@@ -1127,7 +1131,7 @@ impl Uninstaller {
 pub struct Installer {
     /// The installer mode
     // pub mode: InstallerMode,
-    install_targets: Vec<InstallerTarget>,
+    pub install_targets: Vec<InstallerTarget>,
     pub complete_tasks: Vec<InstalledPackage>,
 
     default_url: Arc<Url>,

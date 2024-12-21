@@ -519,12 +519,21 @@ pub fn fetch_plugin(
         }
         drop(repositories);
         installer.install()?;
+        let install_target_count = installer.install_targets.len();
+        let installed_count = installer.complete_tasks.len();
+
         for package in installer.complete_tasks {
             installed_list.add_installed_package(package);
         }
         installed_list
             .save_to_file()
             .context("Failed to update installed package list with installed packages")?;
+
+        // now complain about the failed installs
+        if install_target_count != installed_count {
+            log::error!(target: "plugin", "Failed to install all sdk packages required by {}@{} plugin. Canceling the installation. If this was due to a network error, please re-run the install command, and we will attempt to install the failed packages.", plugin_toml.name, plugin_toml.version);
+            return Ok(());
+        }
     }
     // check if its a fs path
     if update_config {
