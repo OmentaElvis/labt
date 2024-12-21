@@ -40,7 +40,8 @@ use crate::{
 // consts
 pub const DEFAULT_URL: &str = "https://dl.google.com/android/repository/";
 pub const GOOGLE_REPO_NAME_STR: &str = "google";
-const DEFAULT_RESOURCES_URL: &str = "https://dl.google.com/android/repository/repository2-1.xml";
+pub const DEFAULT_RESOURCES_URL: &str =
+    "https://dl.google.com/android/repository/repository2-1.xml";
 const SDKMANAGER_TARGET: &str = "sdkmanager";
 const LOCK_FILE: &str = ".lock";
 

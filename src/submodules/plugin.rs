@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env::current_dir,
     fs::{create_dir_all, read_to_string, File},
     io::Write,
@@ -26,7 +26,7 @@ use crate::{
         resolvers::GOOGLE_REPO_URL,
         sdk::{
             get_sdk_path, parse_repository_toml, toml_strings, Installer, InstallerTarget, Sdk,
-            DEFAULT_URL, FAILED_TO_PARSE_SDK_STR, GOOGLE_REPO_NAME_STR,
+            DEFAULT_RESOURCES_URL, DEFAULT_URL, FAILED_TO_PARSE_SDK_STR, GOOGLE_REPO_NAME_STR,
         },
         sdkmanager::{installed_list::InstalledList, ToIdLong},
     },
@@ -311,7 +311,7 @@ pub fn fetch_plugin(
         plugin_toml_path.to_string_lossy()
     ))?;
 
-    let plugin_toml = toml_string.parse::<PluginToml>().context(format!(
+    let mut plugin_toml = toml_string.parse::<PluginToml>().context(format!(
         "Failed to parse plugin.toml from {}",
         plugin_toml_path.to_string_lossy()
     ))?;
@@ -360,6 +360,29 @@ pub fn fetch_plugin(
     if !plugin_toml.sdk.is_empty() {
         let mut installed_list = InstalledList::parse_from_sdk()?;
         const PLUGIN_SDK: &str = "plugin sdk";
+
+        // detect the google repo and include it in the installation of repos if it was not specified
+        if !installed_list
+            .repositories
+            .contains_key(GOOGLE_REPO_NAME_STR)
+            && !plugin_toml.sdk_repo.contains_key(GOOGLE_REPO_NAME_STR)
+        {
+            // loop though all the requested sdk modules and look for the use of default google
+            if plugin_toml
+                .sdk
+                .iter()
+                .any(|sdk| sdk.repo == GOOGLE_REPO_NAME_STR)
+            {
+                plugin_toml.sdk_repo.insert(
+                    GOOGLE_REPO_NAME_STR.to_string(),
+                    crate::submodules::sdkmanager::installed_list::RepositoryInfo {
+                        url: DEFAULT_RESOURCES_URL.to_string(),
+                        accepted_licenses: HashSet::new(),
+                        path: PathBuf::new(),
+                    },
+                );
+            }
+        }
 
         // add all the repositories specified by the plugin.
         for (name, repo) in plugin_toml.sdk_repo.iter() {
