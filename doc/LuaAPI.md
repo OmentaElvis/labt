@@ -77,7 +77,6 @@ author="omentum"
 build = { path = "build-tools;33.0.2", version = "33.0.2.0", channel = "stable"}
 # or a full id in format (path:version:channel)
 platform = "platforms;android-33:3.0.0.0:stable"
-r55 = {repo = "labt", path = "r55;lua", version = "0.1.0", channel = "stable"}
 
 #or some toml dot table
 [sdk.cmdtools]
@@ -234,6 +233,8 @@ r55 = {repo = "labt", path = "r55;lua", version = "0.1.0", channel = "stable"}
 
 #### Custom behaviour implemented in parsing the repository xml.
 You can specify an archive download url using `<base-url>` tag.
+You need to specify this for archives otherwise it will default to google repo base url.
+
 ```xml
 <remotePackage path="platforms;android-34">
 	<revision>
@@ -249,6 +250,8 @@ You can specify an archive download url using `<base-url>` tag.
 				<size>63446827</size>
 					<checksum>dfb498e3d0d97769aef5e1eb9ddff5b001e65829</checksum>
 					<url>platform-34-ext11_r01.zip</url>
+					<!-- or -->
+					<!-- <url>https://example.com/repository/platform-34-ext11_r01.zip</url> -->
 			</complete>
 		</archive>
 	</archives>
