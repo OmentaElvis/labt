@@ -77,6 +77,7 @@ author="omentum"
 build = { path = "build-tools;33.0.2", version = "33.0.2.0", channel = "stable"}
 # or a full id in format (path:version:channel)
 platform = "platforms;android-33:3.0.0.0:stable"
+r55 = {repo = "labt", path = "r55;lua", version = "0.1.0", channel = "stable"}
 
 #or some toml dot table
 [sdk.cmdtools]
@@ -209,6 +210,49 @@ local d8_jar = build.file("d8.jar")
 
 -- `d8_jar` would expand to:
 -- $LABT_HOME/sdk/build-tools/33.0.2/lib/d8.jar
+```
+### Third party repositories
+The default repository for sdk packages is google [https://dl.google.com/android/repository/repository2-1.xml](https://dl.google.com/android/repository/repository2-1.xml).
+You can host your own repository by using the google android repository format and providing an accessible url to the repository xml.
+
+To use the repository in your plugin:
+
+```toml
+name="example"
+version="0.1.0"
+author="omentum"
+
+[[repository]]
+name = "labt"
+url = "https://example.com/labt/sdk/repository.xml"
+
+[sdk]
+r55 = {repo = "labt", path = "r55;lua", version = "0.1.0", channel = "stable"}
+# or
+# r55 = "labt:r55;lua:0.1.0:stable"
+```
+
+#### Custom behaviour implemented in parsing the repository xml.
+You can specify an archive download url using `<base-url>` tag.
+```xml
+<remotePackage path="platforms;android-34">
+	<revision>
+		<major>1</major>
+	</revision>
+	<display-name>Android SDK Platform 34-ext11</display-name>
+	<uses-license ref="android-sdk-license"/>
+	<channelRef ref="channel-0"/>
+	+ <base-url>https://example.com/</base-url>
+	<archives>
+		<archive>
+			<complete>
+				<size>63446827</size>
+					<checksum>dfb498e3d0d97769aef5e1eb9ddff5b001e65829</checksum>
+					<url>platform-34-ext11_r01.zip</url>
+			</complete>
+		</archive>
+	</archives>
+</remotePackage>
 ```
 
 ### Validation and Security
