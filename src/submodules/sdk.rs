@@ -542,7 +542,6 @@ impl Sdk {
         // let repo = if !toml.exists() || self.update {
         info!(target: SDKMANAGER_TARGET, "Fetching {} repository xml from {}", name, url.as_str());
         let prog = MULTI_PROGRESS_BAR.add(ProgressBar::new_spinner());
-        prog.set_message("Downloading xml");
         let client = reqwest::blocking::Client::builder()
             .user_agent(crate::USER_AGENT)
             .build()
@@ -554,12 +553,21 @@ impl Sdk {
             .get(url.clone())
             .send()
             .context(format!("Failed to complete request to {}", url.as_str()))?;
+        if let Some(size) = resp.content_length() {
+            prog.set_style(
+                ProgressStyle::with_template("{spinner} {percent}% {bytes_per_sec} {msg}").unwrap(),
+            );
+            prog.set_length(size);
+        } else {
+            prog.set_style(
+                ProgressStyle::with_template("{spinner} {msg} {bytes_per_sec}").unwrap(),
+            );
+        }
         let reader = BufReader::new(resp);
-        let mut repo = parse_repository_xml(reader).context(format!(
+        let mut repo = parse_repository_xml(reader, Some(prog)).context(format!(
             "Failed to parse android repository from {}",
             url.as_str()
         ))?;
-        prog.finish_and_clear();
         repo.set_url(url.to_string());
         repo.set_name(name.to_string());
 

@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::{bail, Context};
+use indicatif::ProgressBar;
 use quick_xml::{events::Event, Reader};
 
 use crate::submodules::sdkmanager::ToId;
@@ -964,7 +965,10 @@ impl Default for RepositoryXmlParser {
 }
 /// Parses a repository.xml file from a given stream and produces a Result
 /// containing the Repo object
-pub fn parse_repository_xml<R>(r: BufReader<R>) -> anyhow::Result<RepositoryXml>
+pub fn parse_repository_xml<R>(
+    r: BufReader<R>,
+    prog: Option<ProgressBar>,
+) -> anyhow::Result<RepositoryXml>
 where
     R: Read,
 {
@@ -973,16 +977,32 @@ where
     let mut buf = Vec::with_capacity(BUFFER_SIZE);
 
     let mut parser = RepositoryXmlParser::default();
+    if let Some(prog) = &prog {
+        prog.set_message("Parsing repository xml");
+    }
 
     loop {
         match reader
             .read_event_into(&mut buf)
-            .context("Reading xml events")?
+            .context("Error while reading xml events")?
         {
             Event::Eof => {
+                if let Some(prog) = &prog {
+                    prog.finish_and_clear();
+                }
                 break;
             }
-            ev => parser.process(ev).context("Processing xml events")?,
+            ev => {
+                if let Err(err) = parser.process(ev) {
+                    if let Some(prog) = &prog {
+                        prog.finish_and_clear();
+                    }
+                    bail!(err.context("Error while processing xml events"));
+                }
+            }
+        }
+        if let Some(prog) = &prog {
+            prog.inc(buf.len() as u64);
         }
         buf.clear()
     }
