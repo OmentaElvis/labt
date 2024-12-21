@@ -526,7 +526,11 @@ impl Sdk {
 
         Ok(())
     }
-    pub fn add_repository(name: &str, url: &str) -> anyhow::Result<()> {
+    pub fn add_repository(
+        name: &str,
+        url: &str,
+        installed: &mut InstalledList,
+    ) -> anyhow::Result<()> {
         let sdk = get_sdk_path().context(super::sdkmanager::installed_list::SDK_PATH_ERR_STRING)?;
 
         let url = Url::parse(url).context("Failed to parse repository url")?;
@@ -574,8 +578,6 @@ impl Sdk {
         write_repository_config(&repo, &toml)
             .context("Failed to write repository config to LABt home cache")?;
 
-        let mut installed =
-            InstalledList::parse_from_sdk().context("Failed to parse installed.toml")?;
         installed.repositories.insert(
             name.to_string(),
             crate::submodules::sdkmanager::installed_list::RepositoryInfo {
@@ -584,8 +586,6 @@ impl Sdk {
                 path: toml,
             },
         );
-
-        installed.save_to_file()?;
 
         Ok(())
     }
@@ -663,7 +663,11 @@ impl Submodule for Sdk {
                 } else {
                     DEFAULT_RESOURCES_URL
                 };
-                Sdk::add_repository(name, url).context("Failed to add repository")?;
+                let mut installed =
+                    InstalledList::parse_from_sdk().context("Failed to parse installed.toml")?;
+                Sdk::add_repository(name, url, &mut installed)
+                    .context("Failed to add repository")?;
+                installed.save_to_file()?;
             }
         }
 

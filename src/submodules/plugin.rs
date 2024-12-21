@@ -388,7 +388,7 @@ pub fn fetch_plugin(
         for (name, repo) in plugin_toml.sdk_repo.iter() {
             // TODO possiblitity of repository name collisions.
             info!(target: PLUGIN_SDK, "Installing {} sdk repo for plugin {}@{}.", name, plugin_toml.name, plugin_toml.version);
-            Sdk::add_repository(name, &repo.url).context(format!(
+            Sdk::add_repository(name, &repo.url, &mut installed_list).context(format!(
                 "Failed to install {} sdk repo requested by plugin {}@{}.",
                 name, plugin_toml.name, plugin_toml.version
             ))?;
