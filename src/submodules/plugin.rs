@@ -28,7 +28,7 @@ use crate::{
             get_sdk_path, parse_repository_toml, toml_strings, Installer, InstallerTarget, Sdk,
             DEFAULT_URL, FAILED_TO_PARSE_SDK_STR, GOOGLE_REPO_NAME_STR,
         },
-        sdkmanager::installed_list::InstalledList,
+        sdkmanager::{installed_list::InstalledList, ToIdLong},
     },
     LABT_VERSION, MULTI_PROGRESS_BAR,
 };
@@ -382,13 +382,19 @@ pub fn fetch_plugin(
             running,
         );
 
+        // filter all repositories already installed
+        let installed_list_map = installed_list.get_hash_map_long();
+        // this should prevent re installation of already available packages or "uninstallation" of things we did not install
+        let sdk_list = plugin_toml
+            .sdk
+            .iter()
+            .filter(|sdk| !installed_list_map.contains_key(&sdk.to_id_long()));
+
         // A very rough caching for the repository lists
         let mut repositories: HashMap<String, RepositoryXml> = HashMap::new();
 
         // the plugin requested for an sdk, so try to check for their existance an install if necessary
-        for sdk in plugin_toml.sdk {
-            // check if repo is specified
-
+        for sdk in sdk_list {
             // =================== INSTALL PLAN ===================
             // - We assume at this point all the repositories are ready
             // - The installer needs the repository "RemotePackage"
@@ -465,6 +471,7 @@ pub fn fetch_plugin(
                 installer.add_target(target);
             }
         }
+        drop(repositories);
         installer.install()?;
         for package in installer.complete_tasks {
             installed_list.add_installed_package(package);

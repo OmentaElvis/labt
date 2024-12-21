@@ -11,7 +11,7 @@ use toml_edit::{value, ArrayOfTables, Document, Table};
 use crate::config::repository::{ChannelType, Revision};
 use crate::submodules::sdk::{get_sdk_path, toml_strings};
 
-use super::ToId;
+use super::{ToId, ToIdLong};
 
 const INSTALLED_LIST: &str = "installed.toml";
 const INSTALLED_LIST_OPEN_ERR: &str = "Failed to open sdk installed.toml";
@@ -48,6 +48,17 @@ impl InstalledPackage {
 impl ToId for InstalledPackage {
     fn create_id(&self) -> (&String, &Revision, &ChannelType) {
         (&self.path, &self.version, &self.channel)
+    }
+}
+
+impl ToIdLong for InstalledPackage {
+    fn create_id(&self) -> (&String, &String, &Revision, &ChannelType) {
+        (
+            &self.repository_name,
+            &self.path,
+            &self.version,
+            &self.channel,
+        )
     }
 }
 
@@ -155,6 +166,9 @@ impl InstalledList {
     }
     pub fn get_hash_map(&self) -> HashMap<String, &InstalledPackage> {
         self.packages.iter().map(|p| (p.to_id(), p)).collect()
+    }
+    pub fn get_hash_map_long(&self) -> HashMap<String, &InstalledPackage> {
+        self.packages.iter().map(|p| (p.to_id_long(), p)).collect()
     }
     pub fn contains(&self, package: &InstalledPackage) -> bool {
         self.packages.contains(package)

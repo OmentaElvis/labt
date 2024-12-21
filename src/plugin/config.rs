@@ -18,7 +18,7 @@ use crate::{
     submodules::{
         build::Step,
         sdk::{toml_strings, GOOGLE_REPO_NAME_STR},
-        sdkmanager::{installed_list::RepositoryInfo, ToId},
+        sdkmanager::{installed_list::RepositoryInfo, ToId, ToIdLong},
     },
 };
 
@@ -71,6 +71,11 @@ impl Default for SdkEntry {
 impl ToId for SdkEntry {
     fn create_id(&self) -> (&String, &Revision, &ChannelType) {
         (&self.path, &self.version, &self.channel)
+    }
+}
+impl ToIdLong for SdkEntry {
+    fn create_id(&self) -> (&String, &String, &Revision, &ChannelType) {
+        (&self.repo, &self.path, &self.version, &self.channel)
     }
 }
 
