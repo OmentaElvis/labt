@@ -10,6 +10,7 @@ use std::{
 
 use anyhow::{bail, Context};
 use clap::{Args, Subcommand};
+use dialoguer::Confirm;
 use git2::{DescribeFormatOptions, DescribeOptions, Repository, WorktreeAddOptions};
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{info, trace, warn};
@@ -40,6 +41,10 @@ pub struct PluginArgs {
     /// Plugin subcommand
     #[command(subcommand)]
     command: Option<PluginSubcommands>,
+
+    #[arg(long, action)]
+    /// Trust the installation of the plugin(s), as they have the ability to execute arbitrary code.
+    trust: bool,
 
     /// Specify the plugin url in the format URL[@version]
     plugin_id: Option<String>,
@@ -112,14 +117,18 @@ impl<'a> Submodule for Plugin<'a> {
                         arg.local,
                     )
                     .context("Failed to create the new plugin")?;
+                    return Ok(());
                 }
                 PluginSubcommands::Remove(arg) => {
                     // removes the plugin from config only and remains globally
                     remove_plugin_from_config(arg.name.clone())
                         .context("Failed to remove plugin from config")?;
+                    return Ok(());
                 }
                 PluginSubcommands::Fetch => {
-                    fetch_plugins_from_config().context("Failed to fetch plugins")?;
+                    fetch_plugins_from_config(self.args.trust)
+                        .context("Failed to fetch plugins")?;
+                    return Ok(());
                 }
             }
         }
@@ -128,8 +137,9 @@ impl<'a> Submodule for Plugin<'a> {
             let mut split = id.split('@');
             let url = split.next().unwrap();
             let version = split.next();
-
-            fetch_plugin(url, version, true).context("Failed to configure plugin.")?;
+            let mut iknow_what_iam_doing = self.args.trust;
+            fetch_plugin(url, version, true, &mut iknow_what_iam_doing)
+                .context("Failed to configure plugin.")?;
         }
         Ok(())
     }
@@ -169,7 +179,20 @@ pub fn fetch_plugin(
     location: &str,
     version: Option<&str>,
     update_config: bool,
+    iknow_what_iam_doing: &mut bool,
 ) -> anyhow::Result<()> {
+    if !*iknow_what_iam_doing {
+        warn!(target: "plugin", "You are about to install a plugin that may run arbitrary code on your system. Please ensure that you trust the source of this plugin before proceeding. Installing unverified plugins can pose significant security risks, including data loss or unauthorized access to your system. Proceed with caution and verify the plugin's authenticity.");
+        let trust = Confirm::new()
+            .with_prompt("Proceed with installation?")
+            .default(false)
+            .interact()?;
+        if !trust {
+            info!(target: "plugin", "The installation has been canceled. Remember to stay safe by only install plugins from trusted sources. Have a wonderful day!");
+            return Ok(());
+        }
+    }
+
     const LATEST: &str = "latest";
     let version = version.unwrap_or(LATEST);
 
@@ -521,9 +544,10 @@ pub fn fetch_plugin(
 
 /// Fetches all plugin listed on the project config
 /// Returns an error if the underlying io/parsing operations fail.
-pub fn fetch_plugins_from_config() -> anyhow::Result<()> {
+pub fn fetch_plugins_from_config(iknow_what_iam_doing: bool) -> anyhow::Result<()> {
     let config = get_config().context("Failed reading project configuration")?;
     if let Some(plugins) = config.plugins {
+        let mut iknow_what_iam_doing = iknow_what_iam_doing;
         for (name, plugin) in plugins {
             fetch_plugin(
                 &plugin.location.unwrap_or(
@@ -535,6 +559,7 @@ pub fn fetch_plugins_from_config() -> anyhow::Result<()> {
                 ),
                 Some(plugin.version.as_str()),
                 false,
+                &mut iknow_what_iam_doing,
             )
             .context(format!(
                 "Failed to fetch plugin: {}@{}",
