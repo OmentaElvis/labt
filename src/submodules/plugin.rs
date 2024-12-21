@@ -327,7 +327,7 @@ pub fn fetch_plugin(
 
         let reject = match labt {
             VersionRange::Gt(v) => {
-                version_compare::compare_to(LABT_VERSION, v, version_compare::Cmp::Gt)
+                !version_compare::compare_to(LABT_VERSION, v, version_compare::Cmp::Gt)
                     .map_err(|_| anyhow::anyhow!(give_err(v)))?
             }
             VersionRange::Ge(v) => {
