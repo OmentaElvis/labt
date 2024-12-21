@@ -357,19 +357,6 @@ pub fn fetch_plugin(
         }
     }
 
-    // check if its a fs path
-    if update_config {
-        // TODO check which is best to use. plugin_toml.version or version passed by user.
-        add_plugin_to_config(
-            plugin_toml.name.clone(),
-            plugin_toml.version.clone(),
-            location.to_string(),
-        )
-        .context("Failed to add plugin to project config")?;
-    }
-
-    info!(target: "plugin", "Installed plugin: {}@{}", plugin_toml.name, plugin_toml.version);
-
     if !plugin_toml.sdk.is_empty() {
         let mut installed_list = InstalledList::parse_from_sdk()?;
         const PLUGIN_SDK: &str = "plugin sdk";
@@ -486,6 +473,18 @@ pub fn fetch_plugin(
             .save_to_file()
             .context("Failed to update installed package list with installed packages")?;
     }
+    // check if its a fs path
+    if update_config {
+        // TODO check which is best to use. plugin_toml.version or version passed by user.
+        add_plugin_to_config(
+            plugin_toml.name.clone(),
+            plugin_toml.version.clone(),
+            location.to_string(),
+        )
+        .context("Failed to add plugin to project config")?;
+    }
+
+    info!(target: "plugin", "Installed plugin: {}@{}", plugin_toml.name, plugin_toml.version);
 
     Ok(())
 }
