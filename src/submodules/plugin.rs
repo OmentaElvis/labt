@@ -21,13 +21,14 @@ use crate::{
         add_plugin_to_config, get_config, remove_plugin_from_config, repository::RepositoryXml,
     },
     get_home,
-    plugin::config::PluginToml,
+    plugin::config::{PluginToml, SdkEntry},
     pom::VersionRange,
     submodules::{
         resolvers::GOOGLE_REPO_URL,
         sdk::{
             get_sdk_path, parse_repository_toml, toml_strings, Installer, InstallerTarget, Sdk,
             DEFAULT_RESOURCES_URL, DEFAULT_URL, FAILED_TO_PARSE_SDK_STR, GOOGLE_REPO_NAME_STR,
+            SDKMANAGER_TARGET,
         },
         sdkmanager::{installed_list::InstalledList, ToIdLong},
     },
@@ -431,10 +432,11 @@ pub fn fetch_plugin(
         // filter all repositories already installed
         let installed_list_map = installed_list.get_hash_map_long();
         // this should prevent re installation of already available packages or "uninstallation" of things we did not install
-        let sdk_list = plugin_toml
+        let sdk_list: Vec<&SdkEntry> = plugin_toml
             .sdk
             .iter()
-            .filter(|sdk| !installed_list_map.contains_key(&sdk.to_id_long()));
+            .filter(|sdk| !installed_list_map.contains_key(&sdk.to_id_long()))
+            .collect();
 
         // A very rough caching for the repository lists
         let mut repositories: HashMap<String, RepositoryXml> = HashMap::new();
@@ -515,6 +517,19 @@ pub fn fetch_plugin(
                 };
 
                 installer.add_target(target);
+            }
+            if !package.get_uses_license().is_empty() {
+                // auto accept license
+                let mut license_path = installed_list
+                    .repositories
+                    .get(&sdk.repo)
+                    .unwrap()
+                    .path
+                    .clone();
+                license_path.push("licenses");
+                license_path.push(package.get_uses_license());
+                log::info!(target: SDKMANAGER_TARGET, "Auto accepting license for {}. You can review it at {:#?}.", package.get_path(), license_path);
+                installed_list.accept_license(&sdk.repo, package.get_uses_license().to_string());
             }
         }
         drop(repositories);

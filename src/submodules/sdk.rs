@@ -42,7 +42,7 @@ pub const DEFAULT_URL: &str = "https://dl.google.com/android/repository/";
 pub const GOOGLE_REPO_NAME_STR: &str = "google";
 pub const DEFAULT_RESOURCES_URL: &str =
     "https://dl.google.com/android/repository/repository2-1.xml";
-const SDKMANAGER_TARGET: &str = "sdkmanager";
+pub const SDKMANAGER_TARGET: &str = "sdkmanager";
 const LOCK_FILE: &str = ".lock";
 
 pub const FAILED_TO_PARSE_SDK_STR: &str = "Failed to parse sdk repository config from cache. try --update-repository-list to force update config.";
