@@ -15,6 +15,7 @@ use crate::submodules::sdkmanager::ToId;
 use super::api::fs::load_fs_table;
 use super::api::labt::load_labt_table;
 use super::api::log::load_log_table;
+use super::api::sys::load_sys_table;
 use super::api::zip::load_zip_table;
 use super::api::MluaAnyhowWrapper;
 use super::config::{SdkEntry, CHANNEL, PATH, VERSION};
@@ -320,6 +321,7 @@ impl<'lua, 'a> ExecutableLua {
         load_fs_table(&mut self.lua).context("Failed to add fs table into lua context")?;
         load_log_table(&mut self.lua).context("Failed to add log table into lua context")?;
         load_zip_table(&mut self.lua).context("Failed to add zip table into lua context")?;
+        load_sys_table(&mut self.lua).context("Failed to add sys table into lua context")?;
         Ok(())
     }
 }
