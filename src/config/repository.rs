@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::{bail, Context};
+use indicatif::ProgressBar;
 use quick_xml::{events::Event, Reader};
 
 use crate::submodules::sdkmanager::ToId;
@@ -18,6 +19,7 @@ mod tags {
     // pub const SDK_REPOSITORY: &[u8] = b"sdk-repository";
     pub const CHANNEL: &[u8] = b"channel";
     pub const DISPLAY_NAME: &[u8] = b"display-name";
+    pub const BASE_URL: &[u8] = b"base-url";
     pub const REMOTE_PACKAGE: &[u8] = b"remotePackage";
     pub const CHANNEL_REF: &[u8] = b"channelRef";
     pub const USES_LICENSE: &[u8] = b"uses-license";
@@ -156,6 +158,10 @@ pub struct RepositoryXml {
     remote_packages: Vec<RemotePackage>,
     /// List of licenses
     licenses: HashMap<String, String>,
+    /// The repository url
+    url: String,
+    /// The repository name
+    name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -171,6 +177,8 @@ pub struct RemotePackage {
     /// A list of file archives for this package.
     archives: Vec<Archive>,
     revision: Revision,
+    /// This remote package base url
+    base_url: Option<String>,
 }
 
 impl ToId for RemotePackage {
@@ -198,6 +206,7 @@ impl RemotePackage {
             archives: Vec::new(),
             revision: Revision::default(),
             channel: ChannelType::Unset,
+            base_url: None,
         }
     }
     // The following methods are self explanatory
@@ -240,6 +249,9 @@ impl RemotePackage {
     }
     pub fn get_uses_license(&self) -> &String {
         &self.uses_license
+    }
+    pub fn get_base_url(&self) -> &Option<String> {
+        &self.base_url
     }
     /// Adds am archive entry
     pub fn add_archive(&mut self, archive: Archive) {
@@ -292,6 +304,8 @@ impl RepositoryXml {
         Self {
             remote_packages: Vec::new(),
             licenses: HashMap::new(),
+            url: String::new(),
+            name: String::new(),
         }
     }
     pub fn add_remote_package(&mut self, package: RemotePackage) {
@@ -305,6 +319,20 @@ impl RepositoryXml {
     }
     pub fn get_licenses(&self) -> &HashMap<String, String> {
         &self.licenses
+    }
+
+    pub fn set_url(&mut self, url: String) {
+        self.url = url;
+    }
+    pub fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
+
+    pub fn get_url(&self) -> &str {
+        &self.url
+    }
+    pub fn get_name(&self) -> &str {
+        &self.name
     }
 }
 
@@ -331,6 +359,7 @@ enum RemotePackageState {
     ReadDisplayName,
     Archives(ArchiveState),
     Revision(RevisionState),
+    ReadBaseUrl,
 }
 
 #[derive(Clone, Copy)]
@@ -738,6 +767,7 @@ impl RepositoryXmlParser {
             RemotePackageState::RemotePackage => match event {
                 Event::Start(tag) => match tag.local_name().into_inner() {
                     tags::DISPLAY_NAME => RemotePackageState::ReadDisplayName,
+                    tags::BASE_URL => RemotePackageState::ReadBaseUrl,
                     tags::ARCHIVES => RemotePackageState::Archives(ArchiveState::Archives),
                     tags::REVISION => {
                         self.current_revision = Revision::default();
@@ -781,6 +811,18 @@ impl RepositoryXmlParser {
                     RemotePackageState::ReadDisplayName
                 }
                 _ => RemotePackageState::ReadDisplayName,
+            },
+
+            // <base-url></base-url>
+            RemotePackageState::ReadBaseUrl => match event {
+                Event::End(tag) if tag.local_name().into_inner() == tags::BASE_URL => {
+                    RemotePackageState::RemotePackage
+                }
+                Event::Text(text) => {
+                    self.current_package.base_url = Some(text.unescape()?.to_string());
+                    RemotePackageState::ReadBaseUrl
+                }
+                _ => RemotePackageState::ReadBaseUrl,
             },
 
             // <archives></archives>
@@ -923,7 +965,10 @@ impl Default for RepositoryXmlParser {
 }
 /// Parses a repository.xml file from a given stream and produces a Result
 /// containing the Repo object
-pub fn parse_repository_xml<R>(r: BufReader<R>) -> anyhow::Result<RepositoryXml>
+pub fn parse_repository_xml<R>(
+    r: BufReader<R>,
+    prog: Option<ProgressBar>,
+) -> anyhow::Result<RepositoryXml>
 where
     R: Read,
 {
@@ -932,16 +977,32 @@ where
     let mut buf = Vec::with_capacity(BUFFER_SIZE);
 
     let mut parser = RepositoryXmlParser::default();
+    if let Some(prog) = &prog {
+        prog.set_message("Parsing repository xml");
+    }
 
     loop {
         match reader
             .read_event_into(&mut buf)
-            .context("Reading xml events")?
+            .context("Error while reading xml events")?
         {
             Event::Eof => {
+                if let Some(prog) = &prog {
+                    prog.finish_and_clear();
+                }
                 break;
             }
-            ev => parser.process(ev).context("Processing xml events")?,
+            ev => {
+                if let Err(err) = parser.process(ev) {
+                    if let Some(prog) = &prog {
+                        prog.finish_and_clear();
+                    }
+                    bail!(err.context("Error while processing xml events"));
+                }
+            }
+        }
+        if let Some(prog) = &prog {
+            prog.inc(buf.len() as u64);
         }
         buf.clear()
     }

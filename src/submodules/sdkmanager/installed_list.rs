@@ -11,7 +11,7 @@ use toml_edit::{value, ArrayOfTables, Document, Table};
 use crate::config::repository::{ChannelType, Revision};
 use crate::submodules::sdk::{get_sdk_path, toml_strings};
 
-use super::ToId;
+use super::{ToId, ToIdLong};
 
 const INSTALLED_LIST: &str = "installed.toml";
 const INSTALLED_LIST_OPEN_ERR: &str = "Failed to open sdk installed.toml";
@@ -21,6 +21,7 @@ pub const SDK_PATH_ERR_STRING: &str = "Failed to get android sdk path";
 
 #[derive(Debug, Default, PartialEq, Eq, Hash, Clone)]
 pub struct InstalledPackage {
+    pub repository_name: String,
     pub path: String,
     pub version: Revision,
     pub channel: ChannelType,
@@ -28,8 +29,14 @@ pub struct InstalledPackage {
     pub directory: Option<PathBuf>,
 }
 impl InstalledPackage {
-    pub fn new(path: String, version: Revision, channel: ChannelType) -> Self {
+    pub fn new(
+        path: String,
+        version: Revision,
+        channel: ChannelType,
+        repository_name: String,
+    ) -> Self {
         Self {
+            repository_name,
             path,
             version,
             channel,
@@ -41,6 +48,17 @@ impl InstalledPackage {
 impl ToId for InstalledPackage {
     fn create_id(&self) -> (&String, &Revision, &ChannelType) {
         (&self.path, &self.version, &self.channel)
+    }
+}
+
+impl ToIdLong for InstalledPackage {
+    fn create_id(&self) -> (&String, &String, &Revision, &ChannelType) {
+        (
+            &self.repository_name,
+            &self.path,
+            &self.version,
+            &self.channel,
+        )
     }
 }
 
@@ -105,16 +123,25 @@ impl std::error::Error for InstalledListErr {}
 
 #[derive(Default, Debug)]
 pub struct InstalledList {
+    pub packages: Vec<InstalledPackage>,
+    pub repositories: HashMap<String, RepositoryInfo>,
+}
+
+#[derive(Debug)]
+pub struct RepositoryInfo {
+    /// The repository url
+    pub url: String,
     /// A list of licenses that the user pressed accept
     pub accepted_licenses: HashSet<String>,
-    pub packages: Vec<InstalledPackage>,
+    /// The repository directory. This is where all the repository data is stored and managed
+    pub path: PathBuf,
 }
 
 impl InstalledList {
     pub fn new() -> Self {
         Self {
             packages: Vec::new(),
-            accepted_licenses: HashSet::new(),
+            repositories: HashMap::new(),
         }
     }
     /// Reads file from disk and parses it into an installed list struct
@@ -139,6 +166,9 @@ impl InstalledList {
     }
     pub fn get_hash_map(&self) -> HashMap<String, &InstalledPackage> {
         self.packages.iter().map(|p| (p.to_id(), p)).collect()
+    }
+    pub fn get_hash_map_long(&self) -> HashMap<String, &InstalledPackage> {
+        self.packages.iter().map(|p| (p.to_id_long(), p)).collect()
     }
     pub fn contains(&self, package: &InstalledPackage) -> bool {
         self.packages.contains(package)
@@ -189,12 +219,16 @@ impl InstalledList {
     }
     /// Checks if user has already accepted a license.
     /// This allows displaying of license for only one time
-    pub fn has_accepted(&self, license_id: &String) -> bool {
-        self.accepted_licenses.contains(license_id)
+    pub fn has_accepted(&self, name: &str, license_id: &String) -> Option<bool> {
+        self.repositories
+            .get(name)
+            .map(|repo| repo.accepted_licenses.contains(license_id))
     }
     /// Marks a license as accepted so we don't have to nag the user again to accept
-    pub fn accept_license(&mut self, license_id: String) {
-        self.accepted_licenses.insert(license_id);
+    pub fn accept_license(&mut self, name: &str, license_id: String) {
+        if let Some(repo) = self.repositories.get_mut(name) {
+            repo.accepted_licenses.insert(license_id);
+        }
     }
     pub fn save_to_file(&mut self) -> anyhow::Result<()> {
         let mut sdk = get_sdk_path().context(SDK_PATH_ERR_STRING)?;
@@ -219,20 +253,87 @@ impl FromStr for InstalledList {
             .parse()
             .context(format!("Failed to parse {INSTALLED_LIST}"))?;
 
-        let mut accepted_licenses: HashSet<String> = HashSet::new();
-        if doc.contains_key(ACCEPTED_LICENSES) {
-            if let Some(list) = doc[ACCEPTED_LICENSES].as_array() {
-                for (i, value) in list.iter().enumerate() {
-                    let id = value
-                        .as_str()
-                        .ok_or_else(|| {
-                            InstalledListErr::new(
-                                InstalledListErrKind::LicenseIdStrError(ACCEPTED_LICENSES, i),
-                                Some(INSTALLED_LIST.to_string()),
-                            )
-                        })?
-                        .to_string();
-                    accepted_licenses.insert(id);
+        let mut repositories: HashMap<String, RepositoryInfo> = HashMap::new();
+        if doc.contains_array_of_tables(toml_strings::REPOSITORY) {
+            if let Some(repos) = doc[toml_strings::REPOSITORY].as_array_of_tables() {
+                for (i, repo_table) in repos.iter().enumerate() {
+                    let name = if let Some(name) = repo_table.get(toml_strings::NAME) {
+                        name.as_str()
+                            .ok_or_else(|| {
+                                InstalledListErr::new(
+                                    InstalledListErrKind::ToStringErr(PATH, i),
+                                    Some(INSTALLED_LIST.to_string()),
+                                )
+                            })?
+                            .to_string()
+                    } else {
+                        bail!(InstalledListErr::new(
+                            InstalledListErrKind::MissingKey(PATH, i),
+                            Some(INSTALLED_LIST.to_string()),
+                        ));
+                    };
+                    let path: PathBuf = if let Some(path) = repo_table.get(toml_strings::PATH) {
+                        PathBuf::from(
+                            path.as_str()
+                                .ok_or_else(|| {
+                                    InstalledListErr::new(
+                                        InstalledListErrKind::ToStringErr(PATH, i),
+                                        Some(INSTALLED_LIST.to_string()),
+                                    )
+                                })?
+                                .to_string(),
+                        )
+                    } else {
+                        bail!(InstalledListErr::new(
+                            InstalledListErrKind::MissingKey(PATH, i),
+                            Some(INSTALLED_LIST.to_string()),
+                        ));
+                    };
+                    let url = if let Some(url) = repo_table.get(toml_strings::URL) {
+                        url.as_str()
+                            .ok_or_else(|| {
+                                InstalledListErr::new(
+                                    InstalledListErrKind::ToStringErr(PATH, i),
+                                    Some(INSTALLED_LIST.to_string()),
+                                )
+                            })?
+                            .to_string()
+                    } else {
+                        bail!(InstalledListErr::new(
+                            InstalledListErrKind::MissingKey(PATH, i),
+                            Some(INSTALLED_LIST.to_string()),
+                        ));
+                    };
+
+                    let mut accepted_licenses: HashSet<String> = HashSet::new();
+                    if repo_table.contains_key(ACCEPTED_LICENSES) {
+                        if let Some(list) = repo_table[ACCEPTED_LICENSES].as_array() {
+                            for (i, value) in list.iter().enumerate() {
+                                let id = value
+                                    .as_str()
+                                    .ok_or_else(|| {
+                                        InstalledListErr::new(
+                                            InstalledListErrKind::LicenseIdStrError(
+                                                ACCEPTED_LICENSES,
+                                                i,
+                                            ),
+                                            Some(INSTALLED_LIST.to_string()),
+                                        )
+                                    })?
+                                    .to_string();
+                                accepted_licenses.insert(id);
+                            }
+                        }
+                    }
+
+                    repositories.insert(
+                        name,
+                        RepositoryInfo {
+                            url,
+                            accepted_licenses,
+                            path,
+                        },
+                    );
                 }
             }
         }
@@ -255,6 +356,24 @@ impl FromStr for InstalledList {
                                 )
                             })?
                             .to_string();
+                    } else {
+                        bail!(InstalledListErr::new(
+                            InstalledListErrKind::MissingKey(PATH, position),
+                            Some(INSTALLED_LIST.to_string()),
+                        ));
+                    }
+
+                    // the repository name
+                    if let Some(name) = package.get(toml_strings::REPOSITORY_NAME) {
+                        p.repository_name = name
+                            .as_str()
+                            .ok_or_else(|| {
+                                InstalledListErr::new(
+                                    InstalledListErrKind::ToStringErr(PATH, position),
+                                    Some(INSTALLED_LIST.to_string()),
+                                )
+                            })?
+                            .to_string()
                     } else {
                         bail!(InstalledListErr::new(
                             InstalledListErrKind::MissingKey(PATH, position),
@@ -338,7 +457,7 @@ impl FromStr for InstalledList {
         }
         let installed = Self {
             packages: package_list,
-            accepted_licenses,
+            repositories,
         };
         Ok(installed)
     }
@@ -349,17 +468,40 @@ impl Display for InstalledList {
         let mut doc = toml_edit::Document::new();
 
         let mut packages = toml_edit::ArrayOfTables::new();
-        let mut licenses: Vec<&String> = self.accepted_licenses.iter().collect();
-        licenses.sort_unstable();
 
-        let mut accepted = toml_edit::Array::new();
-        for id in licenses {
-            accepted.push(id);
+        let mut repository = toml_edit::ArrayOfTables::new();
+        for (name, repo) in self.repositories.iter() {
+            let mut table = toml_edit::Table::new();
+            table.insert(toml_strings::NAME, toml_edit::value(name));
+
+            table.insert(toml_strings::URL, toml_edit::value(&repo.url));
+
+            table.insert(
+                toml_strings::PATH,
+                toml_edit::value(repo.path.to_string_lossy().to_string()),
+            );
+
+            let mut licenses: Vec<&String> = repo.accepted_licenses.iter().collect();
+            licenses.sort_unstable();
+
+            let mut accepted = toml_edit::Array::new();
+            for id in licenses {
+                accepted.push(id);
+            }
+            table.insert(ACCEPTED_LICENSES, toml_edit::value(accepted));
+            repository.push(table);
         }
-        doc.insert(ACCEPTED_LICENSES, toml_edit::value(accepted));
+        doc.insert(
+            toml_strings::REPOSITORY,
+            toml_edit::Item::ArrayOfTables(repository),
+        );
 
         for package in &self.packages {
             let mut table = toml_edit::Table::new();
+            table.insert(
+                toml_strings::REPOSITORY_NAME,
+                value(&package.repository_name),
+            );
             table.insert(toml_strings::PATH, value(&package.path));
             table.insert(toml_strings::VERSION, value(package.version.to_string()));
             table.insert(toml_strings::CHANNEL, value(package.channel.to_string()));
@@ -481,16 +623,20 @@ pub fn update_installed_list(
 
 #[cfg(test)]
 mod installed_list_test {
+    use std::collections::HashSet;
+
     use crate::{
         config::repository::{ChannelType, Revision},
-        submodules::sdkmanager::ToId,
+        submodules::sdkmanager::{installed_list::RepositoryInfo, ToId},
     };
+    use pretty_assertions::assert_eq;
 
     use super::{InstalledList, InstalledPackage};
 
     #[test]
     fn add_package() {
         let package_1: InstalledPackage = InstalledPackage {
+            repository_name: "google".to_string(),
             path: "sdk:package1".to_string(),
             version: Revision::new(1),
             channel: ChannelType::Stable,
@@ -507,6 +653,7 @@ mod installed_list_test {
     #[test]
     fn insert_package() {
         let package_1: InstalledPackage = InstalledPackage {
+            repository_name: "google".to_string(),
             path: "sdk:package1".to_string(),
             version: Revision::new(1),
             channel: ChannelType::Stable,
@@ -514,6 +661,7 @@ mod installed_list_test {
             directory: None,
         };
         let package_2: InstalledPackage = InstalledPackage {
+            repository_name: "google".to_string(),
             path: "sdk:package2".to_string(),
             version: Revision::new(1),
             channel: ChannelType::Stable,
@@ -527,6 +675,7 @@ mod installed_list_test {
 
         // insert a package not available in list
         let package_3: InstalledPackage = InstalledPackage {
+            repository_name: "google".to_string(),
             path: "sdk:package3".to_string(),
             version: Revision::new(1),
             channel: ChannelType::Stable,
@@ -551,7 +700,14 @@ mod installed_list_test {
     #[test]
     fn installed_package_list_from_str() {
         let toml = r#"
+[[repository]]
+name = "google"
+url = "https://repo.google.com"
+path = ".labt/sdk/google"
+accepted_licenses = []
+
 [[package]]
+repository_name = "google"
 path = "extras;google;auto"
 version = "2.0.0.0"
 channel = "stable"
@@ -563,6 +719,7 @@ url = "http://example.com"
         let value: &InstalledPackage = iter.next().unwrap();
 
         let package = InstalledPackage {
+            repository_name: "google".to_string(),
             path: "extras;google;auto".to_string(),
             version: "2.0.0.0".parse().unwrap(),
             channel: ChannelType::Stable,
@@ -572,12 +729,35 @@ url = "http://example.com"
 
         assert_eq!(value.to_id(), package.to_id());
         assert_eq!(value, &package);
+
+        let repo = RepositoryInfo {
+            url: "https://repo.google.com".to_string(),
+            accepted_licenses: HashSet::new(),
+            path: ".labt/sdk/google".into(),
+        };
+
+        assert_eq!(result.repositories.len(), 1);
+        let google_repo = result.repositories.get("google").unwrap();
+
+        assert_eq!(google_repo.url, repo.url);
+        assert_eq!(google_repo.path, repo.path);
+        assert_eq!(google_repo.accepted_licenses, repo.accepted_licenses);
     }
     #[test]
     fn installed_package_list_to_toml() {
         let mut list = InstalledList::new();
 
+        list.repositories.insert(
+            "google".to_string(),
+            RepositoryInfo {
+                url: "https://repo.google.com".to_string(),
+                accepted_licenses: HashSet::new(),
+                path: ".labt/sdk/google".into(),
+            },
+        );
+
         let package = InstalledPackage {
+            repository_name: "google".to_string(),
             path: "extras;google;auto".to_string(),
             version: "2.0.0.0".parse().unwrap(),
             channel: ChannelType::Stable,
@@ -588,9 +768,14 @@ url = "http://example.com"
         list.add_installed_package(package.clone());
 
         let toml = r#"
+[[repository]]
+name = "google"
+url = "https://repo.google.com"
+path = ".labt/sdk/google"
 accepted_licenses = []
 
 [[package]]
+repository_name = "google"
 path = "extras;google;auto"
 version = "2.0.0.0"
 channel = "stable"

@@ -200,7 +200,11 @@ impl<'a> StatefulWidget for &MainListPage<'a> {
         {
             Paragraph::new("Installed packages").render(layout[0], buf);
         } else {
-            Paragraph::new("Available packages").render(layout[0], buf);
+            Paragraph::new(format!(
+                "Available packages: {} repo",
+                state.repository_name
+            ))
+            .render(layout[0], buf);
         }
 
         let header_style = Style::new().fg(Color::DarkGray).underlined();
@@ -569,6 +573,7 @@ impl<'a> StatefulWidget for &DetailsWidget<'a> {
                 package.get_path().clone(),
                 package.get_revision().clone(),
                 channel.clone(),
+                state.repository_name.to_string(),
             ))
             .is_some()
         {
@@ -763,10 +768,15 @@ struct AppState<'installed_list, 'repo> {
     pub pending_accepts: HashSet<String>,
     /// The current page being rendered
     pub current_page: Pages,
+
+    pub repository_name: &'repo str,
 }
 
 impl<'installed_list, 'repo> AppState<'installed_list, 'repo> {
-    pub fn new(packages: &'installed_list mut FilteredPackages<'installed_list, 'repo>) -> Self {
+    pub fn new(
+        repository_name: &'repo str,
+        packages: &'installed_list mut FilteredPackages<'installed_list, 'repo>,
+    ) -> Self {
         Self {
             selected_package: 0,
             license_scroll_position: 0,
@@ -780,6 +790,7 @@ impl<'installed_list, 'repo> AppState<'installed_list, 'repo> {
             pending_actions: HashMap::new(),
             pending_accepts: HashSet::new(),
             current_page: Pages::MainList,
+            repository_name,
         }
     }
     /// Selects the next package. Wraps around if the end is reached
@@ -896,6 +907,7 @@ impl<'installed_list, 'repo> AppState<'installed_list, 'repo> {
 
         let mut sdk = get_home().context("Failed to get LABt home while fetching licenses")?;
         sdk.push("sdk");
+        sdk.push(self.repository_name);
         sdk.push("licenses");
         sdk.push(id);
 
@@ -928,6 +940,7 @@ impl<'installed_list, 'repo> AppState<'installed_list, 'repo> {
             package.get_path().to_string(),
             package.get_revision().to_owned(),
             package.get_channel().clone(),
+            self.repository_name.to_string(),
         );
 
         if self
@@ -963,7 +976,8 @@ impl<'installed_list, 'repo> AppState<'installed_list, 'repo> {
             && !self
                 .filtered_packages
                 .installed
-                .has_accepted(package.get_uses_license())
+                .has_accepted(self.repository_name, package.get_uses_license())
+                .unwrap_or(false)
         {
             self.current_page = Pages::AcceptLicense(package.get_uses_license().clone());
             return;
@@ -1058,13 +1072,16 @@ pub struct SdkManager<'a> {
 }
 
 impl<'sdk> SdkManager<'sdk> {
-    pub fn new(packages: &'sdk mut FilteredPackages<'sdk, 'sdk>) -> Self {
+    pub fn new(
+        repository_name: &'sdk str,
+        packages: &'sdk mut FilteredPackages<'sdk, 'sdk>,
+    ) -> Self {
         let mut channel_state = ListState::default();
         let mut channels: Vec<String> = AVAILABLE_CHANNELS.iter().map(|c| c.to_string()).collect();
         channel_state.select(Some(channels.len()));
         channels.push("ALL".to_string());
 
-        let state = AppState::new(packages);
+        let state = AppState::new(repository_name, packages);
 
         SdkManager {
             exit: false,

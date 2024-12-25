@@ -2,6 +2,7 @@ use anyhow::Context;
 use anyhow::Result;
 use quick_xml::{events::Event, Reader};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::io::BufReader;
 use std::io::Read;
@@ -15,11 +16,13 @@ mod tags {
     pub const GROUP_ID: &[u8] = b"groupId";
     pub const VERSION: &[u8] = b"version";
     pub const DEPENDENCIES: &[u8] = b"dependencies";
+    pub const DEPENDENCY_MANAGEMENT: &[u8] = b"dependencyManagement";
     pub const PROJECT: &[u8] = b"project";
     pub const DEPENDENCY: &[u8] = b"dependency";
     pub const EXCLUSIONS: &[u8] = b"exclusions";
     pub const EXCLUSION: &[u8] = b"exclusion";
     pub const PACKAGING: &[u8] = b"packaging";
+    pub const OPTIONAL: &[u8] = b"optional";
     pub const SCOPE: &[u8] = b"scope";
     pub const COMPILE: &[u8] = b"compile";
     pub const TEST: &[u8] = b"test";
@@ -27,6 +30,8 @@ mod tags {
     pub const IMPORT: &[u8] = b"import";
     pub const SYSTEM: &[u8] = b"system";
     pub const RUNTIME: &[u8] = b"runtime";
+    pub const PROPERTIES: &[u8] = b"properties";
+    pub const PARENT: &[u8] = b"parent";
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize)]
@@ -257,6 +262,40 @@ impl VersionRequirement {
             VersionRange::Ge(v) => VersionRange::Lt(v),
             VersionRange::Lt(v) => VersionRange::Ge(v),
             VersionRange::Le(v) => VersionRange::Gt(v),
+        }
+    }
+}
+impl Display for VersionRequirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Soft(soft) => write!(f, "{}", soft),
+            Self::Hard(hard) => {
+                // This is a nightmare
+                // Here is what we are going to do. We are going to dump the ranges as is
+                // without caring about syntatic sugars like [1.0, 2.0] which is seen by the parser as [1.0,),(,2.0]
+                // because its the parser going to parse it anyway.
+                let mut ranges: Vec<String> = Vec::new();
+                for range in hard {
+                    match range {
+                        // We can only have one eq so short circuit here
+                        VersionRange::Eq(eq) => return write!(f, "[{}]", eq),
+                        VersionRange::Gt(v) => {
+                            ranges.push(format!("({v},)"));
+                        }
+                        VersionRange::Ge(v) => {
+                            ranges.push(format!("[{v},)"));
+                        }
+                        VersionRange::Lt(v) => {
+                            ranges.push(format!("(,{v})"));
+                        }
+                        VersionRange::Le(v) => {
+                            ranges.push(format!("(,{v}]"));
+                        }
+                    }
+                }
+                write!(f, "{}", ranges.join(","))
+            }
+            Self::Unset => write!(f, ""),
         }
     }
 }
@@ -502,6 +541,20 @@ impl FromStr for VersionRequirement {
     }
 }
 
+type Properties = HashMap<String, String>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParentPom {
+    /// The organization name/package name
+    pub group_id: String,
+    /// The actual project name
+    pub artifact_id: String,
+    /// The project version number
+    pub version: String,
+    /// Relative path
+    pub relative_path: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Project {
     /// The actual project name
@@ -514,12 +567,20 @@ pub struct Project {
     group_id: String,
     /// The project main dependencies
     dependencies: Vec<Project>,
+    /// This project's dependencyManagement section
+    dependency_management: HashMap<String, Project>,
     /// This module excludes
     excludes: Vec<Exclusion>,
     /// The scope of the project
     scope: Scope,
     /// The packaging of the project
     packaging: String,
+    /// Properties of the project
+    properties: Properties,
+    /// Is Optional
+    optional: bool,
+    /// Parent pom
+    pub parent: Option<ParentPom>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -549,9 +610,13 @@ impl Default for Project {
             selected_version: None,
             group_id: "com.my_organization.name".to_string(),
             dependencies: vec![],
+            dependency_management: HashMap::new(),
             excludes: vec![],
             scope: Scope::COMPILE,
             packaging: String::from("jar"),
+            properties: HashMap::new(),
+            parent: None,
+            optional: false,
         }
     }
 }
@@ -614,11 +679,32 @@ impl Project {
     pub fn add_dependency(&mut self, dep: Project) {
         self.dependencies.push(dep);
     }
+    /// Adds a dependency to this project
+    pub fn add_to_dependency_management(&mut self, dep: Project) {
+        self.dependency_management
+            .insert(format!("{}:{}", dep.group_id, dep.artifact_id), dep);
+    }
     pub fn get_dependencies(&self) -> &Vec<Project> {
         &self.dependencies
     }
+    pub fn get_dependency_management(&self) -> &HashMap<String, Project> {
+        &self.dependency_management
+    }
     pub fn get_dependencies_mut(&mut self) -> &mut Vec<Project> {
         &mut self.dependencies
+    }
+    pub fn get_dependencies_owned(self) -> Vec<Project> {
+        self.dependencies
+    }
+    pub fn copy_parent(&mut self, parent: &Project) {
+        if let Some(version) = &parent.selected_version {
+            self.version = VersionRequirement::Soft(version.clone());
+        }
+        self.selected_version = parent.selected_version.clone();
+        if !parent.excludes.is_empty() {
+            self.excludes.extend(parent.excludes.iter().cloned());
+        }
+        self.scope = parent.scope.clone();
     }
     pub fn qualified_name(&self) -> anyhow::Result<String> {
         let version = self
@@ -645,6 +731,102 @@ impl Project {
     pub fn set_packaging(&mut self, packaging: String) {
         self.packaging = packaging;
     }
+    pub fn is_optional(&self) -> bool {
+        self.optional
+    }
+    pub fn get_property(&self, key: &str) -> Option<String> {
+        // if we fail to get it from the map it must be one of those java, env or project things
+        let value = self.properties.get(key);
+        if value.is_some() {
+            return value.cloned();
+        }
+
+        let segments = key.split_once(".");
+        segments?;
+
+        let (group, item) = segments.unwrap();
+
+        match group {
+            "env" => {
+                // do env stuff
+                match std::env::var(item) {
+                    Ok(v) => Some(v),
+                    _ => None,
+                }
+            }
+            "project" => {
+                // reply with project stuff
+                match item {
+                    "version" => Some(self.version.to_string()),
+                    "artifactId" => Some(self.get_artifact_id()),
+                    "groupId" => Some(self.get_group_id()),
+                    "scope" => Some(self.get_scope().to_string()),
+                    "packaging" => Some(self.get_packaging()),
+                    _ => None,
+                }
+            }
+            // TODO
+            // "java" => {
+            //     // reply with java stuff
+            // }
+            _ => {
+                // you are lost
+                None
+            }
+        }
+    }
+    pub fn substitute_string(&self, data: &str) -> String {
+        // Parse the string for ${}
+        // Yet another state machine
+        let mut result = String::with_capacity(data.len());
+        #[derive(Debug)]
+        enum SubState {
+            Normal,
+            PlaceholderDollar,
+            PlaceholderBody,
+        }
+
+        let mut state = SubState::Normal;
+        let mut current_placeholder_start = 0;
+
+        for (i, c) in data.chars().enumerate() {
+            match state {
+                SubState::Normal if c == '$' => {
+                    state = SubState::PlaceholderDollar;
+                    continue;
+                }
+                SubState::Normal => {
+                    result.push(c);
+                }
+                SubState::PlaceholderDollar if c == '{' => {
+                    state = SubState::PlaceholderBody;
+                    current_placeholder_start = i;
+                    continue;
+                }
+                SubState::PlaceholderDollar if c.is_whitespace() => {
+                    continue;
+                }
+                SubState::PlaceholderDollar => {
+                    result.push(c);
+                    state = SubState::Normal;
+                    continue;
+                }
+                SubState::PlaceholderBody if c == '}' => {
+                    // The end of our tag
+                    // obtain the tag
+                    let substring = &data[(current_placeholder_start + 1)..i].trim();
+                    if let Some(property) = self.get_property(substring) {
+                        result.push_str(&property);
+                    }
+                    state = SubState::Normal;
+                }
+                SubState::PlaceholderBody => {
+                    continue;
+                }
+            }
+        }
+        result
+    }
 }
 
 /// Parser states, helps in keeping track of the current event
@@ -666,9 +848,22 @@ enum ParserState {
     /// Indicates that the state machine is handling a dependency
     /// <dependencies></dependencies>
     Dependencies(DependencyState),
+    /// Indicates that the state machine is handling a dependencyManagement Section
+    /// <dependencyManagement></dependencyManagement>
+    DependencyManagement(DependencyState),
+    /// Indicates that the state machine is handling a dependency
+    /// <parent></parent>
+    Parent(ParentState),
     /// The packaging of this project
     /// <packaging></packaging>
     ReadPackaging,
+    /// The properties of this project
+    /// <properties></properties>
+    Properties(PropertiesState),
+    /// Used to indicate that under project we are in a tag we dont care about
+    /// The argument is the level of xml tree we are at. 0 is at project level.
+    /// Increment if we go deeper (Start tag) and decrement when we go up (End tag)
+    Other(usize),
 }
 
 /// Keeps track of the dependency specific events
@@ -695,6 +890,36 @@ enum DependencyState {
     /// The scope
     /// <scope></scope>
     ReadScope,
+    /// If not optional
+    /// <optional></optional>
+    ReadOptional,
+}
+/// Keeps track of the parent specific events
+#[derive(Clone, Debug)]
+enum ParentState {
+    /// Root of the parent tag
+    /// <parent></parent>
+    Parent,
+    /// The Dependency artifactId/name
+    /// <artifactId><)artifactId>
+    ReadArtifactId,
+    /// The Dependency groupId/package name
+    /// <groupId></groupId>
+    ReadGroupId,
+    /// The Dependency version number
+    /// <version></version>
+    ReadVersion,
+}
+
+/// Keeps track of the properties specific events
+#[derive(Clone, Debug)]
+enum PropertiesState {
+    /// Root properties tag
+    ///<properties></properties>
+    Properties,
+    /// Tries to read a specific property.
+    /// Since these are dynamic tag names we just use this generic enum name
+    ReadEntry,
 }
 
 /// Keeps track of the exclusions specific events
@@ -719,6 +944,10 @@ struct Parser {
     project: Project,
     /// Used to keep track of a dependency while parsing xml
     current_dependency: Option<Project>,
+    /// Used to store the currently processed property tag
+    current_property_tag: Vec<u8>,
+    /// Used to carry the current property tag value
+    current_property_value: Vec<String>,
 }
 
 impl Parser {
@@ -728,6 +957,8 @@ impl Parser {
             state: ParserState::Project,
             project,
             current_dependency: None,
+            current_property_tag: Vec::new(),
+            current_property_value: Vec::new(),
         }
     }
     /// Filters through xml stream events matching through accepted dependency tags
@@ -753,6 +984,7 @@ impl Parser {
                     tags::VERSION => DependencyState::ReadVersion,
                     tags::EXCLUSIONS => DependencyState::Exclusions(ExclusionsState::Exclusions),
                     tags::SCOPE => DependencyState::ReadScope,
+                    tags::OPTIONAL => DependencyState::ReadOptional,
                     _ => DependencyState::Dependency,
                 },
                 Event::End(end) if end.local_name().into_inner() == tags::DEPENDENCY => {
@@ -799,7 +1031,7 @@ impl Parser {
                 }
                 Event::Text(e) => {
                     if let Some(dep) = &mut self.current_dependency {
-                        dep.version = e.unescape()?.to_string().parse()?;
+                        dep.selected_version = Some(e.unescape()?.to_string());
                     }
                     DependencyState::ReadVersion
                 }
@@ -828,6 +1060,55 @@ impl Parser {
                 }
                 event => DependencyState::Exclusions(self.parse_exclusions(event, exclu_state)?),
             },
+
+            // <optional></optional>
+            DependencyState::ReadOptional => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::OPTIONAL => {
+                    DependencyState::Dependency
+                }
+                Event::Text(e) => {
+                    if let Some(dep) = &mut self.current_dependency {
+                        let optional = e.unescape()?;
+                        if optional.trim() == "true" {
+                            dep.optional = true;
+                        }
+                    }
+                    DependencyState::ReadOptional
+                }
+                _ => DependencyState::ReadOptional,
+            },
+        };
+        Ok(new_state)
+    }
+    /// Filters through xml stream events matching through accepted dependency tags
+    /// triggered when <dependencies></dependencies> tag is encountered
+    fn parse_dependency_management(
+        &mut self,
+        event: Event,
+        state: DependencyState,
+    ) -> Result<DependencyState> {
+        let new_state = match state {
+            // <dependency> </dependency>
+            DependencyState::Dependency => match event {
+                Event::Start(tag) => match tag.local_name().into_inner() {
+                    tags::ARTIFACT_ID => DependencyState::ReadArtifactId,
+                    tags::GROUP_ID => DependencyState::ReadGroupId,
+                    tags::VERSION => DependencyState::ReadVersion,
+                    tags::SCOPE => DependencyState::ReadScope,
+                    tags::EXCLUSIONS => DependencyState::Exclusions(ExclusionsState::Exclusions),
+                    _ => DependencyState::Dependency,
+                },
+                Event::End(end) if end.local_name().into_inner() == tags::DEPENDENCY => {
+                    // FIXME also fix this: It doesn't feel correct that i had to clone this field
+                    if let Some(dep) = self.current_dependency.clone() {
+                        self.project.add_to_dependency_management(dep);
+                        self.current_dependency = None;
+                    }
+                    DependencyState::Dependencies
+                }
+                _ => DependencyState::Dependency,
+            },
+            _ => self.parse_deps(event, state)?,
         };
         Ok(new_state)
     }
@@ -893,6 +1174,104 @@ impl Parser {
 
         Ok(new_state)
     }
+    fn parse_props(&mut self, event: Event, state: PropertiesState) -> Result<PropertiesState> {
+        let new_state = match state {
+            // <properties></properties>
+            PropertiesState::Properties => match event {
+                Event::End(end) => match end.local_name().into_inner() {
+                    tags::PROPERTIES => PropertiesState::Properties,
+                    tag => {
+                        self.current_property_tag = Vec::from(tag);
+                        PropertiesState::ReadEntry
+                    }
+                },
+                Event::Start(tag) => {
+                    self.current_property_tag = tag.local_name().into_inner().to_vec();
+                    PropertiesState::ReadEntry
+                }
+                _ => PropertiesState::Properties,
+            },
+            // Handle the current tag
+            PropertiesState::ReadEntry => match event {
+                Event::End(end) if end.local_name().into_inner() == self.current_property_tag => {
+                    let tag = String::from_utf8_lossy(&self.current_property_tag);
+
+                    let value: String = self.current_property_value.join("");
+                    self.project.properties.insert(tag.to_string(), value);
+                    self.current_property_value.clear();
+
+                    PropertiesState::Properties
+                }
+                Event::Text(e) => {
+                    let value = e.unescape()?.to_string();
+                    self.current_property_value.push(value);
+
+                    PropertiesState::ReadEntry
+                }
+                _ => PropertiesState::ReadEntry,
+            },
+        };
+
+        Ok(new_state)
+    }
+    fn parse_parent(&mut self, event: Event, state: ParentState) -> Result<ParentState> {
+        let new_state = match state {
+            // <parent></parent>
+            ParentState::Parent => match event {
+                Event::Start(tag) => match tag.local_name().into_inner() {
+                    tags::ARTIFACT_ID => ParentState::ReadArtifactId,
+                    tags::GROUP_ID => ParentState::ReadGroupId,
+                    tags::VERSION => ParentState::ReadVersion,
+                    _ => ParentState::Parent,
+                },
+                Event::End(end) if end.local_name().into_inner() == tags::PARENT => {
+                    ParentState::Parent
+                }
+                _ => ParentState::Parent,
+            },
+            // <artifactId> </artifactId>
+            ParentState::ReadArtifactId => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::ARTIFACT_ID => {
+                    ParentState::Parent
+                }
+                Event::Text(e) => {
+                    if let Some(parent) = &mut self.project.parent {
+                        parent.artifact_id = e.unescape()?.to_string();
+                    }
+                    ParentState::Parent
+                }
+                _ => ParentState::Parent,
+            },
+            // <groupId></groupId>
+            ParentState::ReadGroupId => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::GROUP_ID => {
+                    ParentState::Parent
+                }
+
+                Event::Text(e) => {
+                    if let Some(parent) = &mut self.project.parent {
+                        parent.group_id = e.unescape()?.to_string();
+                    }
+                    ParentState::ReadGroupId
+                }
+                _ => ParentState::ReadGroupId,
+            },
+            // <version></version>
+            ParentState::ReadVersion => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::VERSION => {
+                    ParentState::Parent
+                }
+                Event::Text(e) => {
+                    if let Some(parent) = &mut self.project.parent {
+                        parent.version = e.unescape()?.to_string();
+                    }
+                    ParentState::ReadVersion
+                }
+                _ => ParentState::ReadVersion,
+            },
+        };
+        Ok(new_state)
+    }
 
     /// Processes the xml stream events into its respective tags.
     /// The matched tags are used to update the state machine.
@@ -903,13 +1282,33 @@ impl Parser {
                 Event::Start(tag) => match tag.local_name().into_inner() {
                     tags::PROJECT => ParserState::Project,
                     tags::DEPENDENCIES => ParserState::Dependencies(DependencyState::Dependencies),
+                    tags::DEPENDENCY_MANAGEMENT => {
+                        ParserState::DependencyManagement(DependencyState::Dependencies)
+                    }
                     tags::ARTIFACT_ID => ParserState::ReadArtifactId,
                     tags::GROUP_ID => ParserState::ReadGroupId,
                     tags::VERSION => ParserState::ReadVersion,
                     tags::PACKAGING => ParserState::ReadPackaging,
-                    _ => ParserState::Project,
+                    tags::PARENT => {
+                        self.project.parent = Some(ParentPom {
+                            group_id: String::new(),
+                            artifact_id: String::new(),
+                            version: String::new(),
+                            relative_path: None,
+                        });
+                        ParserState::Parent(ParentState::Parent)
+                    }
+                    tags::PROPERTIES => ParserState::Properties(PropertiesState::Properties),
+                    _ => ParserState::Other(1),
                 },
                 _ => ParserState::Project,
+            },
+            ParserState::Other(level) => match event {
+                // We dont care about these tags. So ignore them
+                Event::Start(_) => ParserState::Other(level + 1),
+                Event::End(_) if level == 1 => ParserState::Project,
+                Event::End(_) => ParserState::Other(level - 1),
+                _ => ParserState::Other(level),
             },
 
             // <artifactId> </artifactId>
@@ -966,12 +1365,61 @@ impl Parser {
                 }
                 event => ParserState::Dependencies(self.parse_deps(event, dep_state)?),
             },
+            // <dependencyManagement></dependencyManagement>
+            ParserState::DependencyManagement(dep_state) => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::DEPENDENCY_MANAGEMENT => {
+                    ParserState::Project
+                }
+                event => ParserState::DependencyManagement(
+                    self.parse_dependency_management(event, dep_state)?,
+                ),
+            },
+            // <properties></properties>
+            ParserState::Properties(prop_state) => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::PROPERTIES => {
+                    ParserState::Project
+                }
+                event => ParserState::Properties(self.parse_props(event, prop_state)?),
+            },
+            // <parent></parent>
+            ParserState::Parent(parent_state) => match event {
+                Event::End(end) if end.local_name().into_inner() == tags::PARENT => {
+                    ParserState::Project
+                }
+                event => ParserState::Parent(self.parse_parent(event, parent_state)?),
+            },
         };
         Ok(())
     }
     // pub fn get_project(&self) -> &Project {
     //     return &self.project;
     // }
+}
+fn substitute_properties_vars(project: &mut Project) -> anyhow::Result<()> {
+    // try to substitute properties.
+    // some basic intelligence can be applied here since not all projects use variables
+
+    if !project.properties.is_empty() {
+        project.group_id = project.substitute_string(project.group_id.as_str());
+        project.artifact_id = project.substitute_string(project.artifact_id.as_str());
+        if let Some(version) = &project.selected_version {
+            project.selected_version = Some(project.substitute_string(version.as_str()));
+        }
+    }
+
+    // loop through all dependencies
+    for (i, dep) in project.dependencies.clone().iter().enumerate() {
+        project.dependencies[i].artifact_id = project.substitute_string(&dep.artifact_id);
+        project.dependencies[i].group_id = project.substitute_string(&dep.group_id);
+        if let Some(v) = &project.dependencies[i].selected_version {
+            project.dependencies[i].version = project
+                .substitute_string(v)
+                .parse()
+                .context("Failed to select a suitable version for dependency")?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Parses a pom xml file from a given stream and produces a Result
@@ -998,7 +1446,7 @@ where
         }
         buf.clear()
     }
-
+    substitute_properties_vars(&mut parser.project)?;
     Ok(parser.project)
 }
 
@@ -1026,12 +1474,63 @@ pub async fn parse_pom_async<R: AsyncRead + Unpin>(
         buf.clear()
     }
 
+    substitute_properties_vars(&mut parser.project)?;
     Ok(parser.project)
 }
 #[cfg(test)]
 use pretty_assertions::assert_eq;
 
 use crate::submodules::resolve::Constraint;
+
+#[test]
+fn project_substitute_property_string() {
+    let mut project = Project::new("com.example", "artifact_1", "22.0.0");
+    project
+        .properties
+        .insert("glorious".to_string(), "bustard".to_string());
+
+    assert_eq!(
+        project.substitute_string("${glorious}"),
+        "bustard".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("${   glorious}"),
+        "bustard".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("${   glorious   }"),
+        "bustard".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("${glorious   }"),
+        "bustard".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("$   {glorious}"),
+        "bustard".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("$x{glorious}"),
+        "x{glorious}".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("${project.groupId}"),
+        "com.example".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("${project.artifactId}"),
+        "artifact_1".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("${project.version}"),
+        "22.0.0".to_string()
+    );
+    assert_eq!(
+        project.substitute_string("${project.groupId}:${project.artifactId}:${project.version}"),
+        "com.example:artifact_1:22.0.0".to_string()
+    );
+    assert_eq!(project.substitute_string("pro"), "pro".to_string());
+}
 
 #[test]
 fn parse_pom_version_requirements() {
@@ -1345,6 +1844,107 @@ fn parse_pom_version_requirements() {
             VersionRange::Lt(String::from("1.1")),
             VersionRange::Gt(String::from("1.1"))
         ])
+    );
+}
+
+/// Tests conversion between version requirement and string. Remember we dont
+/// care about the various syntatic sugars. What we care about is if the parser
+/// can reproduce the same result regardless of what the to_string produces
+#[test]
+fn version_requirement_to_string() {
+    assert_eq!(
+        VersionRequirement::Soft("4.0".to_string()).to_string(),
+        String::from("4.0")
+    );
+
+    assert_eq!(VersionRequirement::Unset.to_string(), String::new());
+
+    // Now the complicated stuff.
+    // The test plan:
+    //  - Convert to string
+    //  - Convert the resulting string back to VersionRequirement.
+    //  - Compare if the resulting VersionRequirement is identical
+
+    // Eq
+    let version = VersionRequirement::Hard(vec![VersionRange::Eq("4.0".to_string())]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+
+    // Gt
+    let version = VersionRequirement::Hard(vec![VersionRange::Gt("4.0".to_string())]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+
+    // Ge
+    let version = VersionRequirement::Hard(vec![VersionRange::Ge("4.0".to_string())]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+
+    // Lt
+    let version = VersionRequirement::Hard(vec![VersionRange::Lt("4.0".to_string())]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+
+    // Le
+    let version = VersionRequirement::Hard(vec![VersionRange::Lt("4.0".to_string())]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+
+    // more complex stuff
+    // [1.0, 2.0]
+    let version = VersionRequirement::Hard(vec![
+        VersionRange::Ge(String::from("1.0")),
+        VersionRange::Le(String::from("2.0")),
+    ]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+    // [1.0,2.0)
+    let version = VersionRequirement::Hard(vec![
+        VersionRange::Ge(String::from("1.0")),
+        VersionRange::Lt(String::from("2.0")),
+    ]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+    // (1.0,2.0)
+    let version = VersionRequirement::Hard(vec![
+        VersionRange::Gt(String::from("1.0")),
+        VersionRange::Lt(String::from("2.0")),
+    ]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+    // (,1.0],[1.2,)
+    let version = VersionRequirement::Hard(vec![
+        VersionRange::Le(String::from("1.0")),
+        VersionRange::Ge(String::from("1.2")),
+    ]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
+    );
+    // (,1.1),(1.1,)
+    let version = VersionRequirement::Hard(vec![
+        VersionRange::Lt(String::from("1.1")),
+        VersionRange::Gt(String::from("1.1")),
+    ]);
+    assert_eq!(
+        version.to_string().parse::<VersionRequirement>().unwrap(),
+        version
     );
 }
 

@@ -15,3 +15,11 @@ pub trait ToId {
         format!("{}:{}:{}", path, version, channel)
     }
 }
+/// Creates a package id based on package repo, path, version and channel
+pub trait ToIdLong {
+    fn create_id(&self) -> (&String, &String, &Revision, &ChannelType);
+    fn to_id_long(&self) -> String {
+        let (repo, path, version, channel) = self.create_id();
+        format!("{}:{}:{}:{}", repo, path, version, channel)
+    }
+}

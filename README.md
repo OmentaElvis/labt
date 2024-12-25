@@ -48,13 +48,13 @@ You can also fetch the dependencies manually by running.
 labt resolve
 ```
 
-Labt on its own just manages your projects and its dependencies. To do a build of your app, 
+Labt on its own just manages your projects, its dependencies and sdkmodules. To do a build of your app, 
 you will need a plugin. Choose a plugin of your choice from any git compatible repository
 and `use` it for your build proccess. For example, use [labt-java](https://gitlab.com/lab-tool/plugins/labt-java)
 to build a java application.
 
 ```
-labt plugin use labt-java v0.1.0 https://gitlab.com/lab-tool/plugins/labt-java
+labt plugin https://gitlab.com/lab-tool/plugins/labt-java@v0.1.0
 ```
 
 Now you can run `labt build` and the plugin will build the application for you. If you have special 
@@ -86,12 +86,13 @@ Here's a more concise version:
 
 ## SDK Manager
 LABt's SDK Manager lets you manage Android SDK packages via a 
-terminal interface.
+terminal interface. Sdk packages provide development tools to plugins e.g. aapt, r8, d8 and adb from google Android SDK packages.
 
-- **Interactive Management**: Use `labt sdk list` to view 
+- **Add repository**: Use `labt sdk add google` for default android google repo or any third party repository by `labt sdk add <name> <url>`.
+- **Interactive Management**: Use `labt sdk list <repo-name>` to view 
   and toggle package actions (install, uninstall, upgrade/downgrade) 
   in a TUI.
-- **Installing**: `labt sdk install <id>` to install a package non interactively.
+- **Installing**: `labt sdk install <repo-name> --path <id> --version <version>` to install a package non interactively.
 - **Lua API Integration**: Plugins can access SDK packages directly through 
   LABt's Lua API. [More details here](doc/LuaAPI.md).
   
@@ -118,6 +119,6 @@ For more information on plugin system check the [LABt Lua API documentation](doc
 - [x] Add a FFI capability for plugins
 - [x] Support for windows file system
 - [ ] Add a configurable template system
-- [ ] Stabilize the plugin api and interpret versions of plugins
-- [ ] Shorten the plugin use command
-- [ ] Sdkmanager support multiple repositories
+- [x] Stabilize the plugin api and interpret versions of plugins
+- [x] Shorten the plugin use command
+- [x] Sdkmanager support multiple repositories
