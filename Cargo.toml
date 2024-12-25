@@ -1,7 +1,7 @@
 workspace = { members = ["labt-proc-macro"] }
 [package]
 name = "labt"
-version = "0.3.6"
+version = "0.3.7"
 edition = "2021"
 description = "Lab-t Lightweight Android build tool" 
 homepage = "https://gitlab.com/lab-tool/labt"
