@@ -20,6 +20,7 @@ prepare:
     image: "rust:latest"
     rules:
       - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      - if: $CI_COMMIT_TAG
     script:
         - echo LABT_VERSION=$(awk -F ' = ' '$1 ~ /^version$/ {gsub(/["]/, "", $2); print($2)}' Cargo.toml) > variables.env
         - echo "PKG_REGISTRY_URL=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic" >> variables.env
@@ -34,6 +35,7 @@ cargo_test:
   image: "rust:latest"
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
   before_script:
    - apt-get update -yqq
    - apt-get install -yqq --no-install-recommends build-essential
