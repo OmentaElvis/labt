@@ -492,6 +492,71 @@ local java = fs.glob("app/java/**/*.java")
 -- pass the source files to the java compiler
 
 ```
+## `sys` table
+The sys table provides a mechanism for executing system commands directly from Lua scripts. 
+It includes an __index metatable for dynamically resolving command names to executable functions.
+This functions are implemented in rust at [src/plugin/api/sys.rs](../src/plugin/api/sys.rs).
+
+***
+### `<command>`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: ... string: Arguments to be passed to the system command. <br>
+**returns**: 
+
+- boolean: Indicates whether the command executed successfully., 
+- number?: The exit code of the command (if available).
+
+***
+
+Executes a system command without using a shell, ensuring that arguments are passed directly 
+to the command without interpretation. 
+This avoids issues with shell-based operations and improves security.
+
+```lua
+local ok, exitcode = sys.ls("-l");
+```
+or call javac to compile your code
+
+```lua
+local ok, exitcode = sys.javac("app/java/com/example/Main.java", "-classpath", android_jar, "-d", "build")
+if not ok then
+  log.error("javac", "Failed to compile java code")
+	return
+end
+
+```
+***
+### `get_<command>`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: ... string: Arguments to be passed to the system command. <br>
+**returns**: 
+
+ - boolean: Indicates whether the command executed successfully., 
+ - stdout: Captured standard output (stdout) of the command., 
+ - stderr: Captured standard error (stderr) of the command.
+
+***
+
+Executes a system command and captures its output streams (stdout and stderr) for further processing. Like the `<command>` function, 
+it does not use a shell to interpret the arguments.
+
+```lua
+local ok, stdout, stderr = sys.get_ls("-l");
+```
+or call javac to compile your code
+
+```lua
+local ok, stdout, stderr = sys.get_javac("app/java/com/example/Main.java", "-classpath", android_jar, "-d", "build")
+if not ok then
+  log.error("javac"  stderr)
+  log.error("javac", "Failed to compile java code")
+	return
+end
+
+```
+Returns an error if:
+
+- The command was not found on system PATH
 
 ## `log` table
 Provides log utility functions used by labt internally. This allows for consistency
