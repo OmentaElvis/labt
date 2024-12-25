@@ -1,7 +1,7 @@
 workspace = { members = ["labt-proc-macro"] }
 [package]
 name = "labt"
-version = "0.3.4"
+version = "0.3.6"
 edition = "2021"
 description = "Lab-t Lightweight Android build tool" 
 homepage = "https://gitlab.com/lab-tool/labt"
@@ -42,6 +42,8 @@ crossterm = "0.27.0"
 fuzzy-matcher = "0.3.7"
 sha1 = "0.10.6"
 lazy_static = "1.5.0"
+ctrlc = { version = "3.4.5", features = ["termination"] }
+thiserror = "2.0.8"
 
 [features]
 vendored-lua = ["mlua/vendored"]

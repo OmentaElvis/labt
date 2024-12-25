@@ -14,13 +14,19 @@ use toml_edit::{value, Document};
 use crate::{
     config::repository::{ChannelType, Revision},
     get_project_root,
-    submodules::{build::Step, sdkmanager::ToId},
+    pom::VersionRange,
+    submodules::{
+        build::Step,
+        sdk::{toml_strings, GOOGLE_REPO_NAME_STR},
+        sdkmanager::{installed_list::RepositoryInfo, ToId, ToIdLong},
+    },
 };
 
 use super::Plugin;
 
 pub(super) const NAME: &str = "name";
 pub(super) const VERSION: &str = "version";
+pub(super) const LABT: &str = "labt";
 pub(super) const STAGE: &str = "stage";
 pub(super) const FILE: &str = "file";
 pub(super) const PRIORITY: &str = "priority";
@@ -28,6 +34,7 @@ pub(super) const INPUTS: &str = "inputs";
 pub(super) const OUTPUTS: &str = "outputs";
 pub(super) const PACKAGE_PATHS: &str = "package_paths";
 pub(super) const SDK: &str = "sdk";
+pub(super) const REPO: &str = "repo";
 pub(super) const PATH: &str = "path";
 pub(super) const CHANNEL: &str = "channel";
 pub(super) const UNSAFE: &str = "unsafe";
@@ -40,17 +47,35 @@ const BUNDLE: &str = "bundle";
 const POST: &str = "post";
 
 /// The sdk entries that this plugin requires
-#[derive(Default, PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone)]
 pub struct SdkEntry {
+    pub repo: String,
     pub name: String,
     pub path: String,
     pub version: Revision,
     pub channel: ChannelType,
 }
 
+impl Default for SdkEntry {
+    fn default() -> Self {
+        SdkEntry {
+            repo: GOOGLE_REPO_NAME_STR.to_string(),
+            name: String::default(),
+            path: String::default(),
+            version: Revision::default(),
+            channel: ChannelType::Unset,
+        }
+    }
+}
+
 impl ToId for SdkEntry {
     fn create_id(&self) -> (&String, &Revision, &ChannelType) {
         (&self.path, &self.version, &self.channel)
+    }
+}
+impl ToIdLong for SdkEntry {
+    fn create_id(&self) -> (&String, &String, &Revision, &ChannelType) {
+        (&self.repo, &self.path, &self.version, &self.channel)
     }
 }
 
@@ -62,6 +87,10 @@ pub struct PluginToml {
     pub version: String,
     /// plugin states
     pub stages: HashMap<Step, PluginStage>,
+
+    /// A list of plugin specified repositories
+    pub sdk_repo: HashMap<String, RepositoryInfo>,
+
     /// plugin sdk dependencies
     pub sdk: Vec<SdkEntry>,
 
@@ -70,6 +99,8 @@ pub struct PluginToml {
     pub package_paths: Option<Vec<PathBuf>>,
     /// Enable unsafe lua api for entire plugin
     pub enable_unsafe: bool,
+    /// required Labt version
+    pub labt: Option<VersionRange>,
 }
 
 #[derive(Default, Debug, Deserialize, Serialize)]
@@ -332,6 +363,19 @@ impl FromStr for PluginToml {
             false
         };
 
+        let labt_version = if doc.contains_key(LABT) {
+            let v = doc[LABT]
+                .as_str()
+                .ok_or_else(|| {
+                    PluginTomlError::new(PluginTomlErrorKind::ToStringErr(NAME, None, None))
+                })?
+                .to_string();
+
+            Some(v.parse::<VersionRange>()?)
+        } else {
+            None
+        };
+
         let package_paths = doc
             .get(PACKAGE_PATHS)
             .and_then(|f| f.as_array())
@@ -437,8 +481,23 @@ impl FromStr for PluginToml {
                 if value.is_str() {
                     // must be a sdk package id path:version:channel
                     let value = value.as_str().unwrap();
-                    let mut segments = value.splitn(3, ':');
-                    if let Some(path) = segments.next() {
+                    let segments: Vec<&str> = value.splitn(4, ':').collect();
+                    let length = segments.len();
+
+                    let mut iter = segments.iter();
+                    if length >= 4 {
+                        // if length is at 4 then the first is
+                        if let Some(repo) = iter.next() {
+                            sdk.repo = repo.to_string();
+                        } else {
+                            bail!(PluginTomlError::new(PluginTomlErrorKind::InvalidSdkKey(
+                                key.to_string(),
+                                value.to_string()
+                            )));
+                        }
+                    }
+
+                    if let Some(path) = iter.next() {
                         sdk.path = path.to_string();
                     } else {
                         bail!(PluginTomlError::new(PluginTomlErrorKind::InvalidSdkKey(
@@ -447,7 +506,7 @@ impl FromStr for PluginToml {
                         )));
                     }
                     // revision
-                    if let Some(revision) = segments.next() {
+                    if let Some(revision) = iter.next() {
                         sdk.version = revision.parse().context(PluginTomlError::new(
                             PluginTomlErrorKind::InvalidSdkVersionString(key.to_string()),
                         ))?;
@@ -458,7 +517,7 @@ impl FromStr for PluginToml {
                         )));
                     }
                     // channel
-                    if let Some(channel) = segments.next() {
+                    if let Some(channel) = iter.next() {
                         sdk.channel = channel.parse().context(PluginTomlError::new(
                             PluginTomlErrorKind::InvalidChannel(key.to_string()),
                         ))?;
@@ -470,6 +529,10 @@ impl FromStr for PluginToml {
                     }
                 } else if value.is_table_like() {
                     let value = value.as_table_like().unwrap();
+                    if let Some(repo) = value.get(REPO).and_then(|p| p.as_str()) {
+                        sdk.repo = repo.to_string();
+                    }
+
                     if let Some(path) = value.get(PATH).and_then(|p| p.as_str()) {
                         sdk.path = path.to_string();
                     } else {
@@ -507,6 +570,56 @@ impl FromStr for PluginToml {
                 sdk_deps.push(sdk);
             }
         }
+        let mut repositories: HashMap<String, RepositoryInfo> = HashMap::new();
+        if doc.contains_array_of_tables(toml_strings::REPOSITORY) {
+            if let Some(repos) = doc[toml_strings::REPOSITORY].as_array_of_tables() {
+                for (i, repo_table) in repos.iter().enumerate() {
+                    let name = if let Some(name) = repo_table.get(toml_strings::NAME) {
+                        name.as_str()
+                            .ok_or_else(|| {
+                                PluginTomlError::new(PluginTomlErrorKind::ToStringErr(
+                                    toml_strings::NAME,
+                                    Some(toml_strings::REPOSITORY),
+                                    Some(i),
+                                ))
+                            })?
+                            .to_string()
+                    } else {
+                        bail!(PluginTomlError::new(PluginTomlErrorKind::MissingTableKey(
+                            toml_strings::NAME,
+                            toml_strings::REPOSITORY.to_string(),
+                            Some(i)
+                        )));
+                    };
+                    let url = if let Some(url) = repo_table.get(toml_strings::URL) {
+                        url.as_str()
+                            .ok_or_else(|| {
+                                PluginTomlError::new(PluginTomlErrorKind::ToStringErr(
+                                    toml_strings::URL,
+                                    None,
+                                    Some(i),
+                                ))
+                            })?
+                            .to_string()
+                    } else {
+                        bail!(PluginTomlError::new(PluginTomlErrorKind::MissingTableKey(
+                            toml_strings::NAME,
+                            toml_strings::REPOSITORY.to_string(),
+                            Some(i)
+                        )));
+                    };
+
+                    repositories.insert(
+                        name,
+                        RepositoryInfo {
+                            url,
+                            accepted_licenses: HashSet::new(),
+                            path: PathBuf::default(),
+                        },
+                    );
+                }
+            }
+        }
 
         Ok(Self {
             name,
@@ -516,6 +629,8 @@ impl FromStr for PluginToml {
             package_paths,
             sdk: sdk_deps,
             enable_unsafe,
+            labt: labt_version,
+            sdk_repo: repositories,
         })
     }
 }
@@ -578,6 +693,7 @@ fn parse_plugin_toml_from_string() {
 name="example"
 version="0.1.0"
 author="omentum"
+labt=">=0.3.4"
 
 [sdk]
 build = "build-tools:33.0.2:stable"
@@ -624,6 +740,7 @@ priority=1
     assert_eq!(plugin.name, String::from("example"));
     assert_eq!(plugin.version, String::from("0.1.0"));
     assert_eq!(plugin.path, PathBuf::default());
+    assert_eq!(plugin.labt, Some(VersionRange::Ge(String::from("0.3.4"))));
     assert_eq!(plugin.sdk.len(), 3);
 
     let mut sdks = plugin.sdk.iter();
@@ -633,7 +750,8 @@ priority=1
             name: String::from("build"),
             path: String::from("build-tools"),
             version: "33.0.2".parse().unwrap(),
-            channel: ChannelType::Stable
+            channel: ChannelType::Stable,
+            ..Default::default()
         })
     );
     assert_eq!(
@@ -642,7 +760,8 @@ priority=1
             name: String::from("platform"),
             path: String::from("platform-tools"),
             version: "35.0.2.0".parse().unwrap(),
-            channel: ChannelType::Stable
+            channel: ChannelType::Stable,
+            ..Default::default()
         })
     );
     assert_eq!(
@@ -651,7 +770,8 @@ priority=1
             name: String::from("cmd"),
             path: String::from("cmdline-tools;latest"),
             version: "16.0.0.1".parse().unwrap(),
-            channel: ChannelType::Stable
+            channel: ChannelType::Stable,
+            ..Default::default()
         })
     );
     assert_eq!(sdks.next(), None);
@@ -728,6 +848,8 @@ fn plugin_toml_to_string() {
         path: PathBuf::new(),
         package_paths: None,
         enable_unsafe: false,
+        labt: None,
+        sdk_repo: HashMap::new(),
     };
 
     plugin.sdk.push(SdkEntry {
@@ -735,18 +857,21 @@ fn plugin_toml_to_string() {
         path: String::from("build-tools"),
         version: "33.0.2".parse().unwrap(),
         channel: ChannelType::Stable,
+        ..Default::default()
     });
     plugin.sdk.push(SdkEntry {
         name: String::from("platform"),
         path: String::from("platform-tools"),
         version: "35.0.2.0".parse().unwrap(),
         channel: ChannelType::Stable,
+        ..Default::default()
     });
     plugin.sdk.push(SdkEntry {
         name: String::from("cmd"),
         path: String::from("cmdline-tools;latest"),
         version: "16.0.0.1".parse().unwrap(),
         channel: ChannelType::Stable,
+        ..Default::default()
     });
 
     plugin.stages.insert(

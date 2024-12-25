@@ -8,6 +8,7 @@ use mlua::{Chunk, IntoLuaMulti, Lua, MultiValue, Table, Value};
 
 use crate::get_project_root;
 use crate::submodules::build::Step;
+use crate::submodules::sdk::toml_strings::REPOSITORY_NAME;
 use crate::submodules::sdk::{get_sdk_path, InstalledPackage};
 use crate::submodules::sdkmanager::ToId;
 
@@ -104,7 +105,8 @@ impl<'lua, 'a> ExecutableLua {
             return Ok(dir.clone());
         }
 
-        let sdk = get_sdk_path()?;
+        let mut sdk = get_sdk_path()?;
+        sdk.push(&package.repository_name);
         let sdk = sdk.join(package.path.split(';').collect::<PathBuf>());
 
         Ok(sdk)
@@ -254,7 +256,7 @@ impl<'lua, 'a> ExecutableLua {
         let sdk = Rc::clone(&self.sdk);
         let sdk_resolver = self
             .lua
-            .create_function(move |lua, module: String| -> mlua::Result<(Value, Value)>{
+            .create_function(move |lua, module: String| -> mlua::Result<Value>{
                 // only resolve packages that begin with sdk.
                 if module.starts_with(PREFIX) {
                     let module = module.strip_prefix(PREFIX).unwrap();
@@ -267,20 +269,17 @@ impl<'lua, 'a> ExecutableLua {
                     // only allow explicitly declared sdk modules in plugin.toml
                     if let Some(sdk) = sdk.iter().find(|s| s.name.eq(module)).cloned() {
                         if let Some(package) = installed_list.get(&sdk.to_id()) {
-                            let table = lua.create_table()?;
-                            // only load the bare minimal required to index the hashmap
-                            table.set("name", sdk.name)?;
-                            table.set(VERSION, package.version.to_string())?;
-                            table.set(PATH, package.path.clone())?;
-                            table.set(CHANNEL, package.channel.to_string())?;
-
                             Ok(
-                                (
-                                    Value::Function(lua.create_function(|lua, (module, sdk):(String, Table) | {
-                                        Self::build_sdk_module(lua, module, package.to_id(), sdk)
+                                    Value::Function(lua.create_function(move |lua, module:String | {
+                                        let table = lua.create_table()?;
+                                        // only load the bare minimal required to index the hashmap
+                                        table.set("name", sdk.name.clone())?;
+                                        table.set(REPOSITORY_NAME, package.repository_name.to_string())?;
+                                        table.set(VERSION, package.version.to_string())?;
+                                        table.set(PATH, package.path.clone())?;
+                                        table.set(CHANNEL, package.channel.to_string())?;
+                                        Self::build_sdk_module(lua, module, package.to_id(), table)
                                     })?),
-                                    Value::Table(table)
-                                )
                             )
                         } else {
                             Err(MluaAnyhowWrapper::external(anyhow!(
@@ -293,9 +292,9 @@ impl<'lua, 'a> ExecutableLua {
                             module))))
                     }
                 } else {
-                    Ok((
-                        Value::String(lua.create_string("Not a sdk module name. Prefix with 'sdk:' if you intended to load a LABt android sdk module.")?)
-                        , Value::Nil))
+                    Ok(
+                        Value::String(lua.create_string("\n\tNot a sdk module name. Prefix with 'sdk:' if you intended to load a LABt android sdk module.")?)
+                        )
                 }
             })
             .context("Failed to create sdk loader function for lua package.searchers")?;
