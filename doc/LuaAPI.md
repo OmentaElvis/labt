@@ -440,6 +440,34 @@ Returns an error if:
 - creating the directory fails
 
 ***
+### `copy`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string - source path, string - destination path, boolean? - recursive <br>
+**returns**: Nil
+***
+
+Copies a file or directory from the source path to the destination path. 
+If the source is a directory, the recursive argument must be set to 
+true to enable copying of its contents. If recursive is false and the 
+source is a directory, an error will be returned.
+
+If the destination path is a directory, the source file's name 
+will be appended to the destination path. If the source path is relative
+, it will be resolved against the project root directory.
+
+Returns an error if: 
+
+- The source path does not exist.
+- The destination path cannot be created.
+- An attempt is made to copy a directory without enabling recursive mode.
+- Any I/O operation fails during the copy process.
+
+```lua
+fs.copy("path/to/source.txt", "path/to/destination.txt") -- Copy a file
+fs.copy("path/to/source_dir", "path/to/destination_dir", true) -- Copy a directory recursively
+```
+
+***
 ### `exists`
 **stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
 **arguments**: string - path <br>
