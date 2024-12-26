@@ -1,7 +1,11 @@
+use std::fs;
 use std::fs::create_dir;
 use std::fs::create_dir_all;
+use std::io;
+use std::path::Path;
 use std::path::PathBuf;
 
+use anyhow::anyhow;
 use anyhow::Context;
 use labt_proc_macro::labt_lua;
 use mlua::Lua;
@@ -31,6 +35,203 @@ fn mkdir(_lua: &Lua, path: String) {
     create_dir(&path)
         .context(format!("Failed to create directory {:?}", path))
         .map_err(MluaAnyhowWrapper::external)?;
+
+    Ok(())
+}
+
+pub fn copy_recursively(src: &Path, dest: &Path) -> io::Result<()> {
+    fs::create_dir_all(dest)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let filetype = entry.file_type()?;
+        if filetype.is_dir() {
+            copy_recursively(&entry.path(), &dest.join(entry.file_name()))?;
+        } else {
+            fs::copy(entry.path(), dest.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+/// Copies a file or directory from the source path to the destination path.
+///
+/// This function supports both file and directory copying. If the source is a directory,
+/// the `recursive` parameter must be set to `true` to enable recursive copying of its contents.
+/// If `recursive` is `false` and the source is a directory, an error will be returned.
+///
+/// If the destination path is a directory, the source file's name will be appended to the destination path.
+/// If the source path is relative, it will be resolved against the project root directory.
+///
+/// # Parameters
+///
+/// - `lua`: A reference to the Lua state, used for error handling and context.
+/// - `src`: A string representing the source file or directory path.
+/// - `dest`: A string representing the destination file or directory path.
+/// - `recursive`: An optional boolean indicating whether to enable recursive copying. Defaults to `false`.
+///
+/// # Errors
+///
+/// This function will return an error if:
+/// - The source path does not exist.
+/// - The destination path cannot be created.
+/// - An attempt is made to copy a directory without enabling recursive mode.
+/// - Any I/O operation fails during the copy process.
+///
+/// # Example
+///
+/// ```rust
+/// copy("path/to/source.txt", "path/to/destination.txt", None)?;
+/// copy("path/to/source_dir", "path/to/destination_dir", Some(true))?;
+/// ```
+///
+#[labt_lua]
+fn copy(_lua: &Lua, (src, dest, recursive): (String, String, Option<bool>)) {
+    let src_path = PathBuf::from(src);
+    let src_path = if src_path.is_relative() {
+        // if path is relative, then build from project root
+        let mut root = crate::get_project_root()
+            .context("Failed to get project root directory")
+            .map_err(MluaAnyhowWrapper::external)?
+            .clone();
+        root.push(src_path);
+        root
+    } else {
+        src_path
+    };
+    let dest_path = PathBuf::from(dest);
+    let mut dest_path = if dest_path.is_relative() {
+        // if path is relative, then build from project root
+        let mut root = crate::get_project_root()
+            .context("Failed to get project root directory")
+            .map_err(MluaAnyhowWrapper::external)?
+            .clone();
+        root.push(dest_path);
+        root
+    } else {
+        dest_path
+    };
+
+    let recursive = recursive.unwrap_or(false);
+
+    // recursive mode must be enabled to copy folders
+    if src_path.is_dir() {
+        if !recursive {
+            Err(anyhow!("Attempt to copy directory without recursive mode"))
+                .map_err(MluaAnyhowWrapper::external)?;
+        }
+
+        copy_recursively(&src_path, &dest_path)
+            .context("Failed to copy folder recursively")
+            .map_err(MluaAnyhowWrapper::external)?;
+    } else {
+        // if dest path is a directory, then append the target file name to the end
+        if dest_path.is_dir() {
+            let name = src_path
+                .file_name()
+                .context("Unable to obtain the source file name")
+                .map_err(MluaAnyhowWrapper::external)?;
+            dest_path.push(name);
+        }
+        fs::copy(src_path, dest_path)
+            .context("Failed to copy file to destination")
+            .map_err(MluaAnyhowWrapper::external)?;
+    }
+
+    Ok(())
+}
+/// Renames or moves a file or directory from the source path to the destination path.
+///
+/// This function supports moving both files and directories. If the source path is relative,
+/// it will be resolved against the project root directory.
+///
+/// # Parameters
+///
+/// - `lua`: A reference to the Lua state, used for error handling and context.
+/// - `src`: A string representing the source file or directory path.
+/// - `dest`: A string representing the destination file or directory path.
+///
+/// # Errors
+///
+/// This function will return an error if:
+/// - The source path does not exist.
+/// - The destination path cannot be created or is invalid.
+/// - Any I/O operation fails during the rename/move process.
+///
+#[labt_lua]
+fn mv(_lua: &Lua, (src, dest): (String, String)) {
+    let src_path = PathBuf::from(src);
+    let src_path = if src_path.is_relative() {
+        // if path is relative, then build from project root
+        let mut root = crate::get_project_root()
+            .context("Failed to get project root directory")
+            .map_err(MluaAnyhowWrapper::external)?
+            .clone();
+        root.push(src_path);
+        root
+    } else {
+        src_path
+    };
+    let dest_path = PathBuf::from(dest);
+    let dest_path = if dest_path.is_relative() {
+        // if path is relative, then build from project root
+        let mut root = crate::get_project_root()
+            .context("Failed to get project root directory")
+            .map_err(MluaAnyhowWrapper::external)?
+            .clone();
+        root.push(dest_path);
+        root
+    } else {
+        dest_path
+    };
+
+    fs::rename(src_path, dest_path)?;
+    Ok(())
+}
+/// Removes a file or directory at the specified path.
+///
+/// If the path is a directory, it can be removed either recursively or non-recursively.
+/// If `recursive` is set to `true`, the directory and all its contents will be deleted.
+/// **Warning**: Recursive deletion is dangerous if not used correctly.
+///
+/// If the path is relative, it will be resolved against the project root directory.
+///
+/// # Parameters
+///
+/// - `lua`: A reference to the Lua state, used for error handling and context.
+/// - `path`: A string representing the file or directory path to be removed.
+/// - `recursive`: An optional boolean indicating whether to enable recursive deletion. Defaults to `false`.
+///
+/// # Errors
+///
+/// This function will return an error if:
+/// - The specified path does not exist.
+/// - The path is a directory and cannot be removed (e.g., if it is not empty and recursive is not set).
+/// - Any I/O operation fails during the removal process.
+///
+#[labt_lua]
+fn rm(_lua: &Lua, (path, recursive): (String, Option<bool>)) {
+    let path = PathBuf::from(path);
+    let path = if path.is_relative() {
+        // if path is relative, then build from project root
+        let mut root = crate::get_project_root()
+            .context("Failed to get project root directory")
+            .map_err(MluaAnyhowWrapper::external)?
+            .clone();
+        root.push(path);
+        root
+    } else {
+        path
+    };
+
+    let recursive = recursive.unwrap_or(false);
+    if path.is_dir() {
+        if recursive {
+            fs::remove_dir_all(path)?;
+        } else {
+            fs::remove_dir(path)?;
+        }
+    } else {
+        fs::remove_file(path)?;
+    }
 
     Ok(())
 }
@@ -147,6 +348,9 @@ pub fn load_fs_table(lua: &mut Lua) -> anyhow::Result<()> {
     exists(lua, &table)?;
     glob(lua, &table)?;
     is_newer(lua, &table)?;
+    copy(lua, &table)?;
+    mv(lua, &table)?;
+    rm(lua, &table)?;
 
     lua.globals().set("fs", table)?;
 

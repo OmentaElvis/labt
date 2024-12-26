@@ -118,6 +118,47 @@ priority=1
 for every stage that the plugin needs to be executed, it must provide
 a target file to be loaded relative to the plugin root directory.
 
+## Selective execution
+For each plugin stage, you can specify the inputs and outputs the stage depends on.
+LABt will compare the inputs based on their last modification date. It checks if the
+inputs are more recent than the output. If true, then we can execute the stage otherwise
+we skip the stage. This gives a basis of a simple caching system to plugins.
+
+Example to only resolve the project dependencies when `Labt.toml` changes.
+
+```toml
+# plugin.toml
+#... other config
+
+[stage.pre]
+file="pre.lua"
+priority=2
+inputs=["Labt.toml"]
+outputs=["Labt.lock"]
+#... other config
+```
+and in your lua
+
+```lua
+-- pre.lua
+-- other code
+labt.resolve()
+-- other code
+```
+
+for folders and multiple files you can use globbing patterns and LABt will compare
+all files that match that pattern. This uses "short circuiting" which means only one 
+entry needs to be outdated for the execution of the stage to trigger.
+
+```toml
+# only run aapt when app resources change or res.apk is missing (first time execution)
+[stage.aapt]
+file = "aapt.lua"
+priority = 1
+inputs = ["app/res/**/*", "app/AndroidManifest.xml"]
+outputs = ["build/res.apk"]
+```
+
 # The Lua API
 At plugin loading, labt injects several functions and tables into the Lua
 context. These provide the plugin with utility functions and the project
@@ -438,6 +479,81 @@ Returns an error if:
 
 - obtaining the project root directory fails
 - creating the directory fails
+
+***
+### `copy`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string - source path, string - destination path, boolean? - recursive <br>
+**returns**: Nil
+***
+
+Copies a file or directory from the source path to the destination path. 
+If the source is a directory, the recursive argument must be set to 
+true to enable copying of its contents. If recursive is false and the 
+source is a directory, an error will be returned.
+
+If the destination path is a directory, the source file's name 
+will be appended to the destination path. If the source path is relative
+, it will be resolved against the project root directory.
+
+Returns an error if: 
+
+- The source path does not exist.
+- The destination path cannot be created.
+- An attempt is made to copy a directory without enabling recursive mode.
+- Any I/O operation fails during the copy process.
+
+```lua
+fs.copy("path/to/source.txt", "path/to/destination.txt") -- Copy a file
+fs.copy("path/to/source_dir", "path/to/destination_dir", true) -- Copy a directory recursively
+```
+
+***
+### `mv`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string - source path, string - destination path <br>
+**returns**: Nil
+***
+
+Renames or moves a file or directory from the source path to the destination 
+path. If the source path is relative, it will be resolved against the project root directory.
+
+Returns an error if: 
+
+- The source path does not exist.
+- The destination path cannot be created or is invalid.
+- Any I/O operation fails during the rename/move process.
+
+```lua
+fs.mv("path/to/source.txt", "path/to/destination.txt") -- Move a file
+fs.mv("path/to/source_dir", "path/to/destination_dir") -- Move a directory
+```
+
+***
+### `rm`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string - target path <br>
+**returns**: Nil
+***
+
+Removes a file or directory at the specified path. If the path is 
+a directory, it can be removed either recursively or non-recursively. 
+If recursive is set to true, the directory and all its contents will 
+be deleted. Warning: Recursive deletion is very dangerous if not implemented correctly.
+
+If the path is relative, it will be resolved against the project root 
+directory.
+
+Returns an error if: 
+
+- The specified path does not exist.
+- The path is a directory and cannot be removed (e.g., if it is not empty and recursive is not set).
+- Any I/O operation fails during the removal process.
+
+```lua
+fs.rm("path/to/file.txt") -- Remove a file
+fs.rm("path/to/directory", true) -- Recursive delete
+```
 
 ***
 ### `exists`
