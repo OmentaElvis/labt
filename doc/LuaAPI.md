@@ -468,6 +468,27 @@ fs.copy("path/to/source_dir", "path/to/destination_dir", true) -- Copy a directo
 ```
 
 ***
+### `mv`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string - source path, string - destination path <br>
+**returns**: Nil
+***
+
+Renames or moves a file or directory from the source path to the destination 
+path. If the source path is relative, it will be resolved against the project root directory.
+
+Returns an error if: 
+
+- The source path does not exist.
+- The destination path cannot be created or is invalid.
+- Any I/O operation fails during the rename/move process.
+
+```lua
+fs.mv("path/to/source.txt", "path/to/destination.txt") -- Move a file
+fs.mv("path/to/source_dir", "path/to/destination_dir") -- Move a directory
+```
+
+***
 ### `exists`
 **stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
 **arguments**: string - path <br>

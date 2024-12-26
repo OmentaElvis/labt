@@ -138,6 +138,54 @@ fn copy(_lua: &Lua, (src, dest, recursive): (String, String, Option<bool>)) {
 
     Ok(())
 }
+/// Renames or moves a file or directory from the source path to the destination path.
+///
+/// This function supports moving both files and directories. If the source path is relative,
+/// it will be resolved against the project root directory.
+///
+/// # Parameters
+///
+/// - `lua`: A reference to the Lua state, used for error handling and context.
+/// - `src`: A string representing the source file or directory path.
+/// - `dest`: A string representing the destination file or directory path.
+///
+/// # Errors
+///
+/// This function will return an error if:
+/// - The source path does not exist.
+/// - The destination path cannot be created or is invalid.
+/// - Any I/O operation fails during the rename/move process.
+///
+#[labt_lua]
+fn mv(_lua: &Lua, (src, dest): (String, String)) {
+    let src_path = PathBuf::from(src);
+    let src_path = if src_path.is_relative() {
+        // if path is relative, then build from project root
+        let mut root = crate::get_project_root()
+            .context("Failed to get project root directory")
+            .map_err(MluaAnyhowWrapper::external)?
+            .clone();
+        root.push(src_path);
+        root
+    } else {
+        src_path
+    };
+    let dest_path = PathBuf::from(dest);
+    let dest_path = if dest_path.is_relative() {
+        // if path is relative, then build from project root
+        let mut root = crate::get_project_root()
+            .context("Failed to get project root directory")
+            .map_err(MluaAnyhowWrapper::external)?
+            .clone();
+        root.push(dest_path);
+        root
+    } else {
+        dest_path
+    };
+
+    fs::rename(src_path, dest_path)?;
+    Ok(())
+}
 /// creates the directory specified and all the parent directories if missing
 /// Returns en error if obtaining the project root directory fails or
 /// creating the directory fails
@@ -252,6 +300,7 @@ pub fn load_fs_table(lua: &mut Lua) -> anyhow::Result<()> {
     glob(lua, &table)?;
     is_newer(lua, &table)?;
     copy(lua, &table)?;
+    mv(lua, &table)?;
 
     lua.globals().set("fs", table)?;
 
