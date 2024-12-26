@@ -422,17 +422,23 @@ impl FromStr for PluginToml {
                     };
 
                     let inputs: Option<Vec<String>> = if let Some(inputs) = stage.get(INPUTS) {
-                        inputs
-                            .as_array()
-                            .map(|array| array.iter().map(|a| a.to_string()).collect())
+                        inputs.as_array().map(|array| {
+                            array
+                                .iter()
+                                .map(|a| a.as_str().unwrap_or("").to_string())
+                                .collect()
+                        })
                     } else {
                         None
                     };
 
                     let outputs: Option<Vec<String>> = if let Some(outputs) = stage.get(OUTPUTS) {
-                        outputs
-                            .as_array()
-                            .map(|array| array.iter().map(|a| a.to_string()).collect())
+                        outputs.as_array().map(|array| {
+                            array
+                                .iter()
+                                .map(|a| a.as_str().unwrap_or("").to_string())
+                                .collect()
+                        })
                     } else {
                         None
                     };
