@@ -118,6 +118,47 @@ priority=1
 for every stage that the plugin needs to be executed, it must provide
 a target file to be loaded relative to the plugin root directory.
 
+## Selective execution
+For each plugin stage, you can specify the inputs and outputs the stage depends on.
+LABt will compare the inputs based on their last modification date. It checks if the
+inputs are more recent than the output. If true, then we can execute the stage otherwise
+we skip the stage. This gives a basis of a simple caching system to plugins.
+
+Example to only resolve the project dependencies when `Labt.toml` changes.
+
+```toml
+# plugin.toml
+#... other config
+
+[stage.pre]
+file="pre.lua"
+priority=2
+inputs=["Labt.toml"]
+outputs=["Labt.lock"]
+#... other config
+```
+and in your lua
+
+```lua
+-- pre.lua
+-- other code
+labt.resolve()
+-- other code
+```
+
+for folders and multiple files you can use globbing patterns and LABt will compare
+all files that match that pattern. This uses "short circuiting" which means only one 
+entry needs to be outdated for the execution of the stage to trigger.
+
+```toml
+# only run aapt when app resources change or res.apk is missing (first time execution)
+[stage.aapt]
+file = "aapt.lua"
+priority = 1
+inputs = ["app/res/**/*", "app/AndroidManifest.xml"]
+outputs = ["build/res.apk"]
+```
+
 # The Lua API
 At plugin loading, labt injects several functions and tables into the Lua
 context. These provide the plugin with utility functions and the project
