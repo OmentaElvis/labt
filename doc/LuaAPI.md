@@ -489,6 +489,32 @@ fs.mv("path/to/source_dir", "path/to/destination_dir") -- Move a directory
 ```
 
 ***
+### `rm`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string - target path <br>
+**returns**: Nil
+***
+
+Removes a file or directory at the specified path. If the path is 
+a directory, it can be removed either recursively or non-recursively. 
+If recursive is set to true, the directory and all its contents will 
+be deleted. Warning: Recursive deletion is very dangerous if not implemented correctly.
+
+If the path is relative, it will be resolved against the project root 
+directory.
+
+Returns an error if: 
+
+- The specified path does not exist.
+- The path is a directory and cannot be removed (e.g., if it is not empty and recursive is not set).
+- Any I/O operation fails during the removal process.
+
+```lua
+fs.rm("path/to/file.txt") -- Remove a file
+fs.rm("path/to/directory", true) -- Recursive delete
+```
+
+***
 ### `exists`
 **stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
 **arguments**: string - path <br>
