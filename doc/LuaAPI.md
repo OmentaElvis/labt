@@ -710,6 +710,41 @@ Logs at the warn log level
 ***
 Logs at the error log level
 
+## `prompt` table
+This table offers utility functions to obtain input from users.
+The Rust internal implementation can be found at
+[src/plugin/api/prompt.rs](../src/plugin/api/prompt.rs)
+
+```lua
+local confirm = prompt.confirm("Launch adb?")
+```
+
+***
+### `confirm`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: prompt, boolean?: default<br>
+**returns**: boolean
+***
+Prompt the user with a true false question. This prompt is not
+cancellable.
+
+Errors if:
+
+- Failed to show prompt to user
+
+***
+### `confirm_optional`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: prompt, boolean?: default<br>
+**returns**: boolean | nil
+***
+Prompt the user with a true false question. This prompt can be cancelled if the user presses ESC.
+Returns nil if the user cancels the prompt.
+
+Errors if:
+
+- Failed to show prompt to user
+
 ## `zip` Module
 Android apks are just fancy zip files. So it makes sense to include
 a zip modules so that you can zip and unzip at ease. LABt injects 

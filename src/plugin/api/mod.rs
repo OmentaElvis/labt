@@ -6,6 +6,7 @@ use std::{
 pub mod fs;
 pub mod labt;
 pub mod log;
+pub mod prompt;
 pub mod sys;
 pub mod zip;
 
