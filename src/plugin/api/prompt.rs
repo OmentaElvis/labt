@@ -1,7 +1,7 @@
 use std::{fmt::Display, str::FromStr};
 
 use anyhow::Context;
-use dialoguer::{self, theme::ColorfulTheme, Confirm, Input, Password, Select};
+use dialoguer::{self, theme::ColorfulTheme, Confirm, Input, MultiSelect, Password, Select};
 use labt_proc_macro::labt_lua;
 use mlua::{Function, IntoLua, Lua, Number};
 
@@ -151,6 +151,26 @@ fn select(_lua: &Lua, (prompt, options, default): (String, Vec<String>, Option<u
 
     Ok(response + 1)
 }
+#[labt_lua]
+fn multi_select(_lua: &Lua, (prompt, options, default): (String, Vec<String>, Option<Vec<bool>>)) {
+    let theme = ColorfulTheme::default();
+
+    let mut p = MultiSelect::with_theme(&theme).with_prompt(prompt);
+    for option in options {
+        p = p.item(option);
+    }
+
+    if let Some(default) = default {
+        p = p.defaults(&default);
+    }
+
+    let response = p
+        .interact()
+        .context("Failed to show selection prompt.")
+        .map_err(MluaAnyhowWrapper::external)?;
+
+    Ok(response.iter().map(|i| i + 1).collect::<Vec<usize>>())
+}
 
 /// Generates prompt table and loads all its api functions
 ///
@@ -166,6 +186,7 @@ pub fn load_prompt_table(lua: &mut Lua) -> anyhow::Result<()> {
     input_number(lua, &table)?;
     input_password(lua, &table)?;
     select(lua, &table)?;
+    multi_select(lua, &table)?;
     lua.globals().set("prompt", table)?;
     Ok(())
 }

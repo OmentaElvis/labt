@@ -857,6 +857,38 @@ Errors if:
 
 - Failed to show prompt to user
 
+***
+### `multi_select`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: prompt, table: array of choices, table?: array of default values<br>
+**returns**: table: array of selected indexes
+***
+
+Prompt the user to choose multiple choices from a list of choices.
+You can set a default selected coices. The array of default options
+ are matched in order of their indexes on the choices table.
+
+Returns the selected choices as an array of lua indexes into the choices table.
+
+```lua
+local features = {
+  "tea", "mug", "power", "noise"
+};
+
+local select = prompt.multi_select("Select additional features", features, {
+  true, false, true
+});
+
+print("Adding: ")
+for i = 1, #select do
+  print(features[i]);
+end
+```
+
+Errors if:
+
+- Failed to show prompt to user
+
 ## `zip` Module
 Android apks are just fancy zip files. So it makes sense to include
 a zip modules so that you can zip and unzip at ease. LABt injects 
