@@ -831,6 +831,32 @@ Errors if:
 
 - Failed to show prompt to user
 
+***
+### `select`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: prompt, table: array of choices, number?: default index<br>
+**returns**: number
+***
+
+Prompt the user to choose a value from a list of choices.
+You can set a default choice which is highlighted.
+
+Returns the selected option as a lua index to the provided array.
+
+```lua
+local devices = {
+	  "emulator 1", "device a", "device b"
+};
+
+local select = prompt.select("Select adb device to push apk.", devices, 1);
+
+print(devices[select])
+```
+
+Errors if:
+
+- Failed to show prompt to user
+
 ## `zip` Module
 Android apks are just fancy zip files. So it makes sense to include
 a zip modules so that you can zip and unzip at ease. LABt injects 
