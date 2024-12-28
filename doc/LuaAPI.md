@@ -745,6 +745,92 @@ Errors if:
 
 - Failed to show prompt to user
 
+***
+### `input`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: prompt, string?: default, validator?: function<br>
+**returns**: string
+***
+
+Prompt the user for a string input.
+You can set a default value
+You can provide an optional validator callback that is going to verify the input and return an error string if invalid or nil if valid.
+
+Returns the entered string
+
+```lua
+local file = prompt.input("Enter output file name?", nil, function(input)
+  if input == "COMM" then
+    return "You cannot use COMM as a file name."
+  end
+end)
+
+print(file)
+
+local b = prompt.input("Enter package name?", "com.labt") -- with default
+local c = prompt.input("Enter package name?") -- with no default
+```
+
+Errors if:
+
+- Failed to show prompt to user
+
+***
+### `input_number`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: prompt, number?: default, validator?: function<br>
+**returns**: number
+***
+
+Prompt the user for a number input.
+You can set a default value
+You can provide an optional validator callback that is going to verify the input and return an error string if invalid or nil if valid.
+
+Returns the entered string
+
+```lua
+local percentage = prompt.input_number("Enter percentage?", nil, function(input)
+  if input < 0 or input > 100 then
+    return "Select a number between 0 and 100"
+  end
+end)
+
+print(percentage)
+```
+
+Errors if:
+
+- Failed to show prompt to user
+
+***
+### `input_password`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: prompt, validator?: function<br>
+**returns**: string
+***
+
+Prompt the user for a hidden input.
+You can provide an optional validator callback that is going to verify the input and return an error string if invalid or nil if valid.
+
+Returns the entered string
+
+```lua
+local password = prompt.input_password("Enter password for signing certificate?", function(password)
+  if #password == 0 then
+    return "Password cannot be empty"
+  end
+end)
+
+print(password)
+
+-- without validation
+local p = prompt.input_password("Enter secret key?")
+```
+
+Errors if:
+
+- Failed to show prompt to user
+
 ## `zip` Module
 Android apks are just fancy zip files. So it makes sense to include
 a zip modules so that you can zip and unzip at ease. LABt injects 

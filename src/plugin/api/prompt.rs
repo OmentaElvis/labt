@@ -1,7 +1,9 @@
+use std::{fmt::Display, str::FromStr};
+
 use anyhow::Context;
-use dialoguer::{self, theme::ColorfulTheme, Confirm};
+use dialoguer::{self, theme::ColorfulTheme, Confirm, Input, Password};
 use labt_proc_macro::labt_lua;
-use mlua::Lua;
+use mlua::{Function, IntoLua, Lua, Number};
 
 use super::MluaAnyhowWrapper;
 
@@ -40,6 +42,96 @@ fn confirm_optional(_lua: &Lua, (prompt, default): (String, Option<bool>)) {
     Ok(response)
 }
 
+fn input_prompt<T>(
+    prompt: String,
+    default: Option<T>,
+    validator: Option<Function>,
+) -> mlua::Result<T>
+where
+    T: for<'lua> IntoLua<'lua> + ToOwned<Owned = T> + FromStr + Clone + Display,
+    <T as FromStr>::Err: ToString,
+{
+    let theme = ColorfulTheme::default();
+    let mut p = Input::<T>::with_theme(&theme).with_prompt(prompt);
+    if let Some(default) = default {
+        p = p.default(default).show_default(true);
+    }
+
+    if let Some(validator) = validator {
+        p = p.validate_with(move |input: &T| {
+            let res = validator
+                .call::<T, Option<String>>(input.to_owned())
+                .context("Failed to execute lua validator callback function.")
+                .map_err(MluaAnyhowWrapper::external)
+                .unwrap();
+
+            if let Some(err) = res {
+                Err(err)
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    let response = p
+        .interact_text()
+        .context("Failed to show input prompt.")
+        .map_err(MluaAnyhowWrapper::external)?;
+
+    Ok(response)
+}
+
+/// Prompt the user for a string input.
+/// You can set a default value
+/// You can provide an optional validator callback that is going to verify the input and return an error string if invalid or nil if valid.
+/// Returns the entered string
+#[labt_lua]
+fn input(_lua: &Lua, (prompt, default, validator): (String, Option<String>, Option<Function>)) {
+    input_prompt::<String>(prompt, default, validator)
+}
+/// Prompt the user for a number input.
+/// You can set a default value
+/// You can provide an optional validator callback that is going to verify the input and return an error string if invalid or nil if valid.
+/// Returns the entered number
+#[labt_lua]
+fn input_number(
+    _lua: &Lua,
+    (prompt, default, validator): (String, Option<Number>, Option<Function>),
+) {
+    input_prompt::<Number>(prompt, default, validator)
+}
+
+/// Prompt the user for a hidden input.
+/// You can provide an optional validator callback that is going to verify the input and return an error string if invalid or nil if valid.
+/// Returns the entered string
+#[labt_lua]
+fn input_password(_lua: &Lua, (prompt, validator): (String, Option<Function>)) {
+    let theme = ColorfulTheme::default();
+    let mut p = Password::with_theme(&theme).with_prompt(prompt);
+    if let Some(validator) = validator {
+        p = p.validate_with(move |input: &String| {
+            let res = validator
+                .call::<String, Option<String>>(input.to_owned())
+                .context("Failed to execute lua validator callback function.")
+                .map_err(MluaAnyhowWrapper::external)
+                .unwrap();
+
+            if let Some(err) = res {
+                Err(err)
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    let response = p
+        .interact()
+        .context("Failed to show password input prompt.")
+        .map_err(MluaAnyhowWrapper::external)?;
+
+    Ok(response)
+}
+
 /// Generates prompt table and loads all its api functions
 ///
 /// # Errors
@@ -50,6 +142,9 @@ pub fn load_prompt_table(lua: &mut Lua) -> anyhow::Result<()> {
     let table = lua.create_table()?;
     confirm(lua, &table)?;
     confirm_optional(lua, &table)?;
+    input(lua, &table)?;
+    input_number(lua, &table)?;
+    input_password(lua, &table)?;
     lua.globals().set("prompt", table)?;
     Ok(())
 }
