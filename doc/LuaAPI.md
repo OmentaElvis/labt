@@ -710,6 +710,185 @@ Logs at the warn log level
 ***
 Logs at the error log level
 
+## `prompt` table
+This table offers utility functions to obtain input from users.
+The Rust internal implementation can be found at
+[src/plugin/api/prompt.rs](../src/plugin/api/prompt.rs)
+
+```lua
+local confirm = prompt.confirm("Launch adb?")
+```
+
+***
+### `confirm`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: prompt, boolean?: default<br>
+**returns**: boolean
+***
+Prompt the user with a true false question. This prompt is not
+cancellable.
+
+Errors if:
+
+- Failed to show prompt to user
+
+***
+### `confirm_optional`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: prompt, boolean?: default<br>
+**returns**: boolean | nil
+***
+Prompt the user with a true false question. This prompt can be cancelled if the user presses ESC.
+Returns nil if the user cancels the prompt.
+
+Errors if:
+
+- Failed to show prompt to user
+
+***
+### `input`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: prompt, string?: default, validator?: function<br>
+**returns**: string
+***
+
+Prompt the user for a string input.
+You can set a default value
+You can provide an optional validator callback that is going to verify the input and return an error string if invalid or nil if valid.
+
+Returns the entered string
+
+```lua
+local file = prompt.input("Enter output file name?", nil, function(input)
+  if input == "COMM" then
+    return "You cannot use COMM as a file name."
+  end
+end)
+
+print(file)
+
+local b = prompt.input("Enter package name?", "com.labt") -- with default
+local c = prompt.input("Enter package name?") -- with no default
+```
+
+Errors if:
+
+- Failed to show prompt to user
+
+***
+### `input_number`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: prompt, number?: default, validator?: function<br>
+**returns**: number
+***
+
+Prompt the user for a number input.
+You can set a default value
+You can provide an optional validator callback that is going to verify the input and return an error string if invalid or nil if valid.
+
+Returns the entered string
+
+```lua
+local percentage = prompt.input_number("Enter percentage?", nil, function(input)
+  if input < 0 or input > 100 then
+    return "Select a number between 0 and 100"
+  end
+end)
+
+print(percentage)
+```
+
+Errors if:
+
+- Failed to show prompt to user
+
+***
+### `input_password`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: prompt, validator?: function<br>
+**returns**: string
+***
+
+Prompt the user for a hidden input.
+You can provide an optional validator callback that is going to verify the input and return an error string if invalid or nil if valid.
+
+Returns the entered string
+
+```lua
+local password = prompt.input_password("Enter password for signing certificate?", function(password)
+  if #password == 0 then
+    return "Password cannot be empty"
+  end
+end)
+
+print(password)
+
+-- without validation
+local p = prompt.input_password("Enter secret key?")
+```
+
+Errors if:
+
+- Failed to show prompt to user
+
+***
+### `select`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: prompt, table: array of choices, number?: default index<br>
+**returns**: number
+***
+
+Prompt the user to choose a value from a list of choices.
+You can set a default choice which is highlighted.
+
+Returns the selected option as a lua index to the provided array.
+
+```lua
+local devices = {
+	  "emulator 1", "device a", "device b"
+};
+
+local select = prompt.select("Select adb device to push apk.", devices, 1);
+
+print(devices[select])
+```
+
+Errors if:
+
+- Failed to show prompt to user
+
+***
+### `multi_select`
+**stage**: `PRE, AAPT, COMPILE, DEX, BUNDLE, POST`
+**arguments**: string: prompt, table: array of choices, table?: array of default values<br>
+**returns**: table: array of selected indexes
+***
+
+Prompt the user to choose multiple choices from a list of choices.
+You can set a default selected coices. The array of default options
+ are matched in order of their indexes on the choices table.
+
+Returns the selected choices as an array of lua indexes into the choices table.
+
+```lua
+local features = {
+  "tea", "mug", "power", "noise"
+};
+
+local select = prompt.multi_select("Select additional features", features, {
+  true, false, true
+});
+
+print("Adding: ")
+for i = 1, #select do
+  print(features[i]);
+end
+```
+
+Errors if:
+
+- Failed to show prompt to user
+
 ## `zip` Module
 Android apks are just fancy zip files. So it makes sense to include
 a zip modules so that you can zip and unzip at ease. LABt injects 

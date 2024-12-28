@@ -15,6 +15,7 @@ use crate::submodules::sdkmanager::ToId;
 use super::api::fs::load_fs_table;
 use super::api::labt::load_labt_table;
 use super::api::log::load_log_table;
+use super::api::prompt::load_prompt_table;
 use super::api::sys::load_sys_table;
 use super::api::zip::load_zip_table;
 use super::api::MluaAnyhowWrapper;
@@ -322,6 +323,7 @@ impl<'lua, 'a> ExecutableLua {
         load_log_table(&mut self.lua).context("Failed to add log table into lua context")?;
         load_zip_table(&mut self.lua).context("Failed to add zip table into lua context")?;
         load_sys_table(&mut self.lua).context("Failed to add sys table into lua context")?;
+        load_prompt_table(&mut self.lua).context("Failed to add prompt table into lua context")?;
         Ok(())
     }
 }
