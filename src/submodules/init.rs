@@ -99,7 +99,7 @@ impl Submodule for Init {
         }
 
         let init = config.init.unwrap();
-        let init_file = path.join(init.file);
+        let init_file = path.join(&init.file);
 
         // override the project path with the current working dir
         let cwd = current_dir()?;
@@ -115,6 +115,7 @@ impl Submodule for Init {
         exec.load_api_tables()
             .context("Error injecting api tables into lua context")?;
         let lua = exec.get_lua();
+        lua.globals().set("PLUGIN_VERSION", config.version)?;
         load_template_table(lua)?;
 
         let chunk = exec.load().context("Failed to load project init script")?;

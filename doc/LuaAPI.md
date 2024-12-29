@@ -1451,7 +1451,8 @@ When LABt loads a plugin, it provides access to all standard tables
 from the plugin API. Note that unsafe mode is disabled, meaning 
 that the `ffi` module and loading of Lua shared objects are not available
 . Additionally, an extra global Lua table is introduced to facilitate interaction 
-with the templating API.
+with the templating API. A global variable named `PLUGIN_VERSION` is automatically added
+which contains this plugin version.
 
 ### `template` table
 The template table contains functions that allow you to call rendering functions for 
