@@ -139,7 +139,7 @@ impl<'a> Submodule for Plugin<'a> {
             let url = split.next().unwrap();
             let version = split.next();
             let mut iknow_what_iam_doing = self.args.trust;
-            fetch_plugin(url, version, true, &mut iknow_what_iam_doing)
+            fetch_plugin(url, version, true, true, &mut iknow_what_iam_doing)
                 .context("Failed to configure plugin.")?;
         }
         Ok(())
@@ -173,6 +173,26 @@ fn fetch_version<'a>(
     ))
 }
 
+// fn version_map_parse(versions_map: String) -> anyhow::Result<HashMap<String, String>> {
+//     let mut map: HashMap<String, String> = HashMap::new();
+//     for line in versions_map.lines() {
+//         let mut iter = line.split_ascii_whitespace();
+//         let version = iter.next().context("Version is required")?;
+//         let tag = iter.next().context("Tag for version is required!")?;
+
+//         map.insert(version.to_string(), tag.to_string());
+//     }
+
+//     Ok(map)
+// }
+
+// fn version_map_to_string(map: HashMap<String, String>) -> String {
+//     map.iter()
+//         .map(|(k, v)| format!("{} {}", k, v))
+//         .collect::<Vec<String>>()
+//         .join("\n")
+// }
+
 /// Do a clone if the location is a http url
 /// else if the path exists on os file system, add it to the config
 /// Returns an error if the underlying io/parsing operations fail.
@@ -180,8 +200,9 @@ pub fn fetch_plugin(
     location: &str,
     version: Option<&str>,
     update_config: bool,
+    install_sdk: bool,
     iknow_what_iam_doing: &mut bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<(PluginToml, PathBuf)>> {
     if !*iknow_what_iam_doing {
         warn!(target: "plugin", "You are about to install a plugin that may run arbitrary code on your system. Please ensure that you trust the source of this plugin before proceeding. Installing unverified plugins can pose significant security risks, including data loss or unauthorized access to your system. Proceed with caution and verify the plugin's authenticity.");
         let trust = Confirm::new()
@@ -190,7 +211,7 @@ pub fn fetch_plugin(
             .interact()?;
         if !trust {
             info!(target: "plugin", "The installation has been canceled. Remember to stay safe by only install plugins from trusted sources. Have a wonderful day!");
-            return Ok(());
+            return Ok(None);
         }
     }
 
@@ -381,7 +402,7 @@ pub fn fetch_plugin(
         }
     }
 
-    if !plugin_toml.sdk.is_empty() {
+    if !plugin_toml.sdk.is_empty() && install_sdk {
         let mut installed_list = InstalledList::parse_from_sdk()?;
         const PLUGIN_SDK: &str = "plugin sdk";
 
@@ -547,7 +568,7 @@ pub fn fetch_plugin(
         // now complain about the failed installs
         if install_target_count != installed_count {
             log::error!(target: "plugin", "Failed to install all sdk packages required by {}@{} plugin. Canceling the installation. If this was due to a network error, please re-run the install command, and we will attempt to install the failed packages.", plugin_toml.name, plugin_toml.version);
-            return Ok(());
+            return Ok(None);
         }
     }
     // check if its a fs path
@@ -563,7 +584,7 @@ pub fn fetch_plugin(
 
     info!(target: "plugin", "Installed plugin: {}@{}", plugin_toml.name, plugin_toml.version);
 
-    Ok(())
+    Ok(Some((plugin_toml, path)))
 }
 
 /// Fetches all plugin listed on the project config
@@ -582,6 +603,7 @@ pub fn fetch_plugins_from_config(iknow_what_iam_doing: bool) -> anyhow::Result<(
                         .to_string(),
                 ),
                 Some(plugin.version.as_str()),
+                false,
                 false,
                 &mut iknow_what_iam_doing,
             )
@@ -615,6 +637,7 @@ pub fn create_new_plugin(
         sdk: Vec::new(),
         labt: None,
         sdk_repo: HashMap::new(),
+        init: None,
     };
 
     let mut path = if local_plugin {

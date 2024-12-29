@@ -38,6 +38,8 @@ pub(super) const REPO: &str = "repo";
 pub(super) const PATH: &str = "path";
 pub(super) const CHANNEL: &str = "channel";
 pub(super) const UNSAFE: &str = "unsafe";
+pub(super) const INIT: &str = "init";
+pub(super) const TEMPLATES: &str = "templates";
 
 const PRE: &str = "pre";
 const AAPT: &str = "aapt";
@@ -94,6 +96,9 @@ pub struct PluginToml {
     /// plugin sdk dependencies
     pub sdk: Vec<SdkEntry>,
 
+    /// this plugin templating script
+    pub init: Option<PluginInit>,
+
     pub path: PathBuf,
     /// Paths to search for required lua modules
     pub package_paths: Option<Vec<PathBuf>>,
@@ -134,6 +139,14 @@ pub struct PluginStage {
     /// Enable unsafe lua api
     #[serde(rename = "unsafe", default)]
     pub enable_unsafe: bool,
+}
+
+#[derive(Default, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PluginInit {
+    /// File for the template based initialization
+    pub file: PathBuf,
+    /// The templates directory to load from
+    pub templates: Option<String>,
 }
 
 impl PluginToml {
@@ -603,7 +616,7 @@ impl FromStr for PluginToml {
                             .to_string()
                     } else {
                         bail!(PluginTomlError::new(PluginTomlErrorKind::MissingTableKey(
-                            toml_strings::NAME,
+                            toml_strings::URL,
                             toml_strings::REPOSITORY.to_string(),
                             Some(i)
                         )));
@@ -621,9 +634,51 @@ impl FromStr for PluginToml {
             }
         }
 
+        let init = if doc.contains_table(INIT) {
+            if let Some(table) = doc[INIT].as_table() {
+                let file = if let Some(file) = table.get(FILE) {
+                    file.as_str()
+                        .ok_or_else(|| {
+                            PluginTomlError::new(PluginTomlErrorKind::ToStringErr(FILE, None, None))
+                        })?
+                        .to_string()
+                } else {
+                    bail!(PluginTomlError::new(PluginTomlErrorKind::MissingTableKey(
+                        FILE,
+                        toml_strings::REPOSITORY.to_string(),
+                        None
+                    )));
+                };
+                let templates = if let Some(templates) = table.get(TEMPLATES) {
+                    Some(
+                        templates
+                            .as_str()
+                            .ok_or_else(|| {
+                                PluginTomlError::new(PluginTomlErrorKind::ToStringErr(
+                                    FILE, None, None,
+                                ))
+                            })?
+                            .to_string(),
+                    )
+                } else {
+                    None
+                };
+
+                Some(PluginInit {
+                    file: PathBuf::from(file),
+                    templates,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             name,
             version,
+            init,
             stages: stages_map,
             path: PathBuf::default(),
             package_paths,
@@ -704,6 +759,10 @@ path = "cmdline-tools;latest"
 version = "16.0.0.1"
 channel = "stable"
 
+[init]
+file = "template.lua"
+templates = "my-templates"
+
 # pre build
 [stage.pre]
 file="pre.lua"
@@ -742,6 +801,14 @@ priority=1
     assert_eq!(plugin.path, PathBuf::default());
     assert_eq!(plugin.labt, Some(VersionRange::Ge(String::from("0.3.4"))));
     assert_eq!(plugin.sdk.len(), 3);
+
+    assert_eq!(
+        plugin.init,
+        Some(PluginInit {
+            file: PathBuf::from("template.lua"),
+            templates: Some(String::from("my-templates"))
+        })
+    );
 
     let mut sdks = plugin.sdk.iter();
     assert_eq!(
@@ -850,6 +917,7 @@ fn plugin_toml_to_string() {
         enable_unsafe: false,
         labt: None,
         sdk_repo: HashMap::new(),
+        init: None,
     };
 
     plugin.sdk.push(SdkEntry {

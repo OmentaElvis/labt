@@ -24,7 +24,6 @@ pub mod config;
 pub mod plugin;
 pub mod pom;
 pub mod submodules;
-pub mod templating;
 pub mod tui;
 
 lazy_static! {

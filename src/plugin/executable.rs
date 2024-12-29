@@ -326,4 +326,7 @@ impl<'lua, 'a> ExecutableLua {
         load_prompt_table(&mut self.lua).context("Failed to add prompt table into lua context")?;
         Ok(())
     }
+    pub fn get_lua(&self) -> &Lua {
+        &self.lua
+    }
 }

@@ -8,6 +8,7 @@ pub mod maven_metadata;
 pub mod repository;
 
 use anyhow::Context;
+use mlua::UserData;
 use serde::{Deserialize, Serialize};
 use toml_edit::Document;
 
@@ -92,6 +93,8 @@ pub struct PluginTable {
     /// The plugin version to fetch
     pub version: String,
 }
+
+impl UserData for LabToml {}
 
 const LABT_TOML_FILE_NAME: &str = "Labt.toml";
 const VERSION_STRING: &str = "version";
