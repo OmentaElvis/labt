@@ -1,12 +1,13 @@
 use crate::{
     config::LabToml,
     plugin::{api::MluaAnyhowWrapper, config::load_package_paths, executable::ExecutableLua},
+    PROJECT_ROOT,
 };
 use anyhow::{bail, Context};
 use clap::Args;
 use labt_proc_macro::labt_lua;
 use mlua::{Lua, LuaSerdeExt, Table};
-use std::{fs::File, io::Write, path::PathBuf, rc::Rc, sync::OnceLock};
+use std::{env::current_dir, fs::File, io::Write, path::PathBuf, rc::Rc, sync::OnceLock};
 use tera::Tera;
 
 use super::{plugin::fetch_plugin, Submodule};
@@ -100,6 +101,10 @@ impl Submodule for Init {
         let init = config.init.unwrap();
         let init_file = path.join(init.file);
 
+        // override the project path with the current working dir
+        let cwd = current_dir()?;
+        let _ = PROJECT_ROOT.set(cwd);
+
         let package_paths = if let Some(package_paths) = &config.package_paths {
             load_package_paths(package_paths, &path)
         } else {
@@ -134,13 +139,18 @@ impl Submodule for Init {
             .get("init")
             .context("Unable to load project init function")?;
 
-        let project_table = init_function
-            .call::<String, Table>(output.to_string_lossy().to_string())
+        let (project_table, override_path) = init_function
+            .call::<String, (Table, Option<String>)>(output.to_string_lossy().to_string())
             .context("Failed to execute plugin init function")?;
 
         let project: LabToml = lua.from_value(mlua::Value::Table(project_table))?;
         let toml = toml::to_string(&project).context("Serializing LabtToml to toml string")?;
-        let mut output = self.args.path.as_ref().unwrap().clone();
+
+        let mut output = if let Some(path) = override_path {
+            PathBuf::from(path)
+        } else {
+            self.args.path.as_ref().unwrap().clone()
+        };
 
         output.push("Labt.toml");
 

@@ -1396,7 +1396,10 @@ template script file and the template files defined in the `templates` field.
 LABt calls the `init` function defined in the loaded script. The first 
 argument is the path provided by the user as the target directory, 
 or the current directory if no target path is specified. This function 
-should return a Lua table equivalent to `Labt.toml`.
+should return a Lua table equivalent to `Labt.toml`. The init function can have 
+a second return value that point to a new target directory that the `Labt.toml` 
+will be written to. If not provided LABt will write it to the path passed to the
+init function path argment.
 
 Example init Function
 
