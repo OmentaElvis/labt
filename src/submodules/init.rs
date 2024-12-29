@@ -1,6 +1,6 @@
 use crate::{
     config::LabToml,
-    plugin::{api::MluaAnyhowWrapper, executable::ExecutableLua},
+    plugin::{api::MluaAnyhowWrapper, config::load_package_paths, executable::ExecutableLua},
 };
 use anyhow::{bail, Context};
 use clap::Args;
@@ -100,7 +100,13 @@ impl Submodule for Init {
         let init = config.init.unwrap();
         let init_file = path.join(init.file);
 
-        let mut exec = ExecutableLua::new(init_file, &Vec::new(), Rc::new(Vec::new()), false);
+        let package_paths = if let Some(package_paths) = &config.package_paths {
+            load_package_paths(package_paths, &path)
+        } else {
+            load_package_paths(&[], &path)
+        };
+
+        let mut exec = ExecutableLua::new(init_file, &package_paths, Rc::new(Vec::new()), false);
         exec.load_api_tables()
             .context("Error injecting api tables into lua context")?;
         let lua = exec.get_lua();

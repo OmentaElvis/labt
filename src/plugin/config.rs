@@ -717,7 +717,7 @@ fn expand_globs(patterns: Vec<String>) -> anyhow::Result<Vec<PathBuf>> {
 }
 /// tries to check is the provided package paths are relative, and adds
 /// the plugin root dir to them to make a valid path
-fn load_package_paths(paths: &[PathBuf], plugin_root: &Path) -> Vec<PathBuf> {
+pub fn load_package_paths(paths: &[PathBuf], plugin_root: &Path) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = paths
         .iter()
         .map(|p| {
