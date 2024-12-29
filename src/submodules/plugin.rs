@@ -162,7 +162,12 @@ fn fetch_version<'a>(
             .format(Some(DescribeFormatOptions::new().abbreviated_size(0)))
             .context("Failed fo format git describe")?
     } else {
-        version.to_string()
+        // check if version starts with v
+        if version.starts_with("v") {
+            version.to_string()
+        } else {
+            format!("v{}", version)
+        }
     };
     let reference_string = format!("refs/tags/{}", version);
 
