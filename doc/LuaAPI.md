@@ -1322,7 +1322,7 @@ memory safety an prevent memory leaks as it would greatly degrade performance.
 
 Using this module would require devs to ensure cross compatibility with other platforms.
 
-## Templating system
+# Templating system
 The templating system in LABt allows plugins to initialize their own projects based 
 on user input. A plugin can serve as a project initializer by 
 defining a templating script and associated template files. This functionality enables plugins 
@@ -1333,7 +1333,7 @@ LABt uses the Tera library for templating, which is inspired by Jinja2
 and Django templates. For detailed information on the templating syntax, please 
 refer to the [Tera documentation.](https://keats.github.io/tera/docs/#templates).
 
-### Configuration
+## Configuration
 You need to provide a templating script that LABt will call when the user executes the following command:
 
 ```bash
@@ -1364,7 +1364,7 @@ labt-java
     └── strings.xml
 ```
 
-#### `init` Table
+### `init` Table
 
 The init table contains the configuration that instructs LABt on how to load the template script. The following keys are allowed:
 
@@ -1443,14 +1443,14 @@ labt plugin fetch
 labt resolve
 ```
 
-### Modules Available to the Loaded Templating Script.
+## Modules Available to the Loaded Templating Script.
 When LABt loads a plugin, it provides access to all standard tables 
 from the plugin API. Note that unsafe mode is disabled, meaning 
 that the `ffi` module and loading of Lua shared objects are not available
 . Additionally, an extra global Lua table is introduced to facilitate interaction 
 with the templating API.
 
-#### `template` table
+### `template` table
 The template table contains functions that allow you to call rendering functions for 
 your templates. The following function is available through this table:
 
