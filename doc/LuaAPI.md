@@ -48,11 +48,11 @@ on any step and its not limited to what is described.
 Plugins are stored on `$LABT_HOME/plugins` directory. If `LABT_HOME` is not set `$HOME/.labt/plugins` is used.
 
 The plugin directory tree consists of a single `plugin.toml` file and any number of sub-folders or Lua files.
-For the following example, the directory structure of a plugin `example-0.1.0`.
+For the following example, the directory structure of a plugin `https://example.com/example@0.1.0`.
 
 ```
-/home/.labt/plugins
-└── example-0.1.0
+/home/.labt/plugins/example.com/versions
+└── v0.1.0
     ├── aapt.lua
     ├── bundle.lua
     ├── compile.lua
@@ -61,7 +61,6 @@ For the following example, the directory structure of a plugin `example-0.1.0`.
     ├── post.lua
     └── pre.lua
 
-2 directories, 7 files
 ```
 
 ## plugin.toml
