@@ -272,18 +272,6 @@ pub fn fetch_plugin(
     install_sdk: bool,
     iknow_what_iam_doing: &mut bool,
 ) -> anyhow::Result<Option<(PluginToml, PathBuf)>> {
-    if !*iknow_what_iam_doing {
-        warn!(target: "plugin", "You are about to install a plugin that may run arbitrary code on your system. Please ensure that you trust the source of this plugin before proceeding. Installing unverified plugins can pose significant security risks, including data loss or unauthorized access to your system. Proceed with caution and verify the plugin's authenticity.");
-        let trust = Confirm::new()
-            .with_prompt("Proceed with installation?")
-            .default(false)
-            .interact()?;
-        if !trust {
-            info!(target: "plugin", "The installation has been canceled. Remember to stay safe by only install plugins from trusted sources. Have a wonderful day!");
-            return Ok(None);
-        }
-    }
-
     const LATEST: &str = "latest";
     let version = version.unwrap_or(LATEST);
 
@@ -329,6 +317,17 @@ pub fn fetch_plugin(
 
         // no need to re install
         if !already_installed {
+            if !*iknow_what_iam_doing {
+                warn!(target: "plugin", "You are about to install a plugin that may run arbitrary code on your system. Please ensure that you trust the source of this plugin before proceeding. Installing unverified plugins can pose significant security risks, including data loss or unauthorized access to your system. Proceed with caution and verify the plugin's authenticity.");
+                let trust = Confirm::new()
+                    .with_prompt("Proceed with installation?")
+                    .default(false)
+                    .interact()?;
+                if !trust {
+                    info!(target: "plugin", "The installation has been canceled. Remember to stay safe by only install plugins from trusted sources. Have a wonderful day!");
+                    return Ok(None);
+                }
+            }
             let repo = build_repo(location, git_path)?;
 
             // create the worktree directory
@@ -375,6 +374,17 @@ pub fn fetch_plugin(
         }
     } else {
         already_installed = true;
+        if !*iknow_what_iam_doing {
+            warn!(target: "plugin", "You are about to execute non standard plugin from a path. Plugins have the ability to run arbitrary code on your system. Please ensure that you trust the source of this plugin before proceeding. Executing unverified plugins can pose significant security risks, including data loss or unauthorized access to your system. Proceed with caution and verify the plugin's authenticity.");
+            let trust = Confirm::new()
+                .with_prompt("Proceed ?")
+                .default(false)
+                .interact()?;
+            if !trust {
+                info!(target: "plugin", "The execution has been canceled. Remember to stay safe by only install plugins from trusted sources. Have a wonderful day!");
+                return Ok(None);
+            }
+        }
         let p = PathBuf::from(&location);
         if !p.exists() {
             bail!("The argument provided is neither a valid url nor a valid plugin directory. If you are providing a url, please include the protocol scheme e.g. https:// ");
