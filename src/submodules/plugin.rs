@@ -198,6 +198,70 @@ fn fetch_version<'a>(
 //         .join("\n")
 // }
 
+/// either clones or fetch a repository.
+/// It returns a repository object for the opened repo
+pub fn build_repo(location: &str, git_path: PathBuf) -> anyhow::Result<Repository> {
+    // TODO use git2 callbacks to display meaningfull progress
+    // TODO do a checkout for a specific tag
+    // start a new spinner progress bar and add it to the global multi progress bar
+    let spinner = MULTI_PROGRESS_BAR.add(ProgressBar::new_spinner());
+    spinner.enable_steady_tick(Duration::from_millis(100));
+    spinner.set_style(ProgressStyle::with_template("{spinner} {prefix:.blue} {wide_msg}").unwrap());
+    spinner.set_prefix("Plugin");
+    let repo = if !git_path.exists() {
+        // must be a fresh plugin. Clone it
+        create_dir_all(&git_path).context(format!(
+            "Unable to create plugin directory at {}",
+            git_path.to_string_lossy()
+        ))?;
+        // TODO Do a basic cleanup if cloning fails
+        spinner.set_message(format!("Clonning {}", location));
+        Repository::clone(location, git_path)
+            .context("Failed to clone plugin to local directory")?
+    } else {
+        // The git path exists, so the repository definately exists
+        // unless someone decides to tamper wit this directory.
+        spinner.set_message(format!("Opening repo at {}", location));
+        let repo = Repository::open(&git_path).context(format!(
+            "Failed to open plugin repository at {}",
+            git_path.to_string_lossy()
+        ))?;
+
+        // the repository could have changed alot since labt interacted with it.
+        // So try to fetch the latest updates from origin
+        spinner.set_message(format!("Fetching updates from {}", location));
+        let mut remote = repo
+            .find_remote("origin")
+            .context("Unable to get the repository \"origin\"")?;
+
+        // fetch all these lads
+        if let Err(err) = remote.fetch(
+            &[
+                "refs/heads/*:refs/remotes/origin/*",
+                "refs/tags/*:refs/tags/*",
+            ],
+            None,
+            None,
+        ) {
+            match (err.code(), err.class()) {
+                (git2::ErrorCode::GenericError, git2::ErrorClass::Net) => {
+                    warn!(target: "plugin", "A network request failed. We are unable to update the plugin git repo. We will proceed in offline mode but latest versions will be missing or incorrect.")
+                }
+                _ => {
+                    bail!(err);
+                }
+            }
+        }
+        // drop it so that the borrow checker does not try to crusify us.
+        drop(remote);
+
+        repo
+    };
+
+    spinner.finish_and_clear();
+    Ok(repo)
+}
+
 /// Do a clone if the location is a http url
 /// else if the path exists on os file system, add it to the config
 /// Returns an error if the underlying io/parsing operations fail.
@@ -223,6 +287,8 @@ pub fn fetch_plugin(
     const LATEST: &str = "latest";
     let version = version.unwrap_or(LATEST);
 
+    let mut already_installed: bool = false;
+
     let path = if let Ok(url) = Url::parse(location) {
         let mut path = get_home().context("Failed to get Labt Home")?;
         path.push("plugins");
@@ -243,110 +309,72 @@ pub fn fetch_plugin(
         let mut git_path = path.clone();
         git_path.push("git");
 
-        // TODO use git2 callbacks to display meaningfull progress
-        // TODO do a checkout for a specific tag
-        // start a new spinner progress bar and add it to the global multi progress bar
-        let spinner = MULTI_PROGRESS_BAR.add(ProgressBar::new_spinner());
-        spinner.enable_steady_tick(Duration::from_millis(100));
-        spinner.set_style(
-            ProgressStyle::with_template("{spinner} {prefix:.blue} {wide_msg}").unwrap(),
-        );
-        spinner.set_prefix("Plugin");
-        let repo = if !git_path.exists() {
-            // must be a fresh plugin. Clone it
-            create_dir_all(&git_path).context(format!(
-                "Unable to create plugin directory at {}",
-                git_path.to_string_lossy()
-            ))?;
-            // TODO Do a basic cleanup if cloning fails
-            spinner.set_message(format!("Clonning {}", location));
-            Repository::clone(location, git_path)
-                .context("Failed to clone plugin to local directory")?
-        } else {
-            // The git path exists, so the repository definately exists
-            // unless someone decides to tamper wit this directory.
-            spinner.set_message(format!("Opening repo at {}", location));
-            let repo = Repository::open(&git_path).context(format!(
-                "Failed to open plugin repository at {}",
-                git_path.to_string_lossy()
-            ))?;
-
-            // the repository could have changed alot since labt interacted with it.
-            // So try to fetch the latest updates from origin
-            spinner.set_message(format!("Fetching updates from {}", location));
-            let mut remote = repo
-                .find_remote("origin")
-                .context("Unable to get the repository \"origin\"")?;
-
-            // fetch all these lads
-            if let Err(err) = remote.fetch(
-                &[
-                    "refs/heads/*:refs/remotes/origin/*",
-                    "refs/tags/*:refs/tags/*",
-                ],
-                None,
-                None,
-            ) {
-                match (err.code(), err.class()) {
-                    (git2::ErrorCode::GenericError, git2::ErrorClass::Net) => {
-                        warn!(target: "plugin", "A network request failed. We are unable to update the plugin git repo. We will proceed in offline mode but latest versions will be missing or incorrect.")
-                    }
-                    _ => {
-                        bail!(err);
-                    }
-                }
-            }
-            // drop it so that the borrow checker does not try to crusify us.
-            drop(remote);
-
-            repo
-        };
-
         let mut worktrees_path = path.clone();
         worktrees_path.push("versions");
+        let mut worktrees_version_path = worktrees_path.clone();
 
-        // create the worktree directory
-        if !worktrees_path.exists() {
-            create_dir_all(&worktrees_path).context(format!(
-                "Unable to create plugin worktree directory at {}",
-                path.to_string_lossy()
-            ))?;
+        // check if we already checked out this particular version to avoid unecessary fetching
+        if version != LATEST {
+            if version.starts_with("v") {
+                worktrees_version_path.push(version);
+            } else {
+                worktrees_version_path.push(format!("v{}", version));
+            }
+
+            if worktrees_version_path.exists() {
+                // the version seems to be installed
+                already_installed = true;
+            }
         }
 
-        let (version, reference) =
-            fetch_version(&repo, version).context("Failed to resolve version from plugin repo")?;
+        // no need to re install
+        if !already_installed {
+            let repo = build_repo(location, git_path)?;
 
-        // obtain the tag name
-        worktrees_path.push(&version);
-        if !worktrees_path.exists() && reference.is_tag() {
-            let id = reference
-                .target()
-                .context("Unable to obtain reference oid")?;
-            let commit = repo.find_commit(id)?;
+            // create the worktree directory
+            if !worktrees_path.exists() {
+                create_dir_all(&worktrees_path).context(format!(
+                    "Unable to create plugin worktree directory at {}",
+                    path.to_string_lossy()
+                ))?;
+            }
 
-            let branch = match repo.branch(&version, &commit, false) {
-                Err(err) => {
-                    if let git2::ErrorCode::Exists = err.code() {
-                        repo.find_branch(&version, git2::BranchType::Local)?
-                    } else {
-                        return Err(err).context(format!(
-                            "Failed to branch out from selected tag: {}",
-                            version
-                        ));
+            let (version, reference) = fetch_version(&repo, version)
+                .context("Failed to resolve version from plugin repo")?;
+
+            // obtain the tag name
+            worktrees_path.push(&version);
+            if !worktrees_path.exists() && reference.is_tag() {
+                let id = reference
+                    .target()
+                    .context("Unable to obtain reference oid")?;
+                let commit = repo.find_commit(id)?;
+
+                let branch = match repo.branch(&version, &commit, false) {
+                    Err(err) => {
+                        if let git2::ErrorCode::Exists = err.code() {
+                            repo.find_branch(&version, git2::BranchType::Local)?
+                        } else {
+                            return Err(err).context(format!(
+                                "Failed to branch out from selected tag: {}",
+                                version
+                            ));
+                        }
                     }
-                }
-                Ok(branch) => branch,
-            };
+                    Ok(branch) => branch,
+                };
 
-            let mut worktree_options = WorktreeAddOptions::new();
-            worktree_options.reference(Some(branch.get()));
+                let mut worktree_options = WorktreeAddOptions::new();
+                worktree_options.reference(Some(branch.get()));
 
-            repo.worktree(&version, &worktrees_path, Some(&worktree_options))?;
+                repo.worktree(&version, &worktrees_path, Some(&worktree_options))?;
+            }
+            worktrees_path
+        } else {
+            worktrees_version_path
         }
-
-        spinner.finish_and_clear();
-        worktrees_path
     } else {
+        already_installed = true;
         let p = PathBuf::from(&location);
         if !p.exists() {
             bail!("The argument provided is neither a valid url nor a valid plugin directory. If you are providing a url, please include the protocol scheme e.g. https:// ");
@@ -587,7 +615,9 @@ pub fn fetch_plugin(
         .context("Failed to add plugin to project config")?;
     }
 
-    info!(target: "plugin", "Installed plugin: {}@{}", plugin_toml.name, plugin_toml.version);
+    if !already_installed {
+        info!(target: "plugin", "Installed plugin: {}@{}", plugin_toml.name, plugin_toml.version);
+    }
 
     Ok(Some((plugin_toml, path)))
 }
