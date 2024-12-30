@@ -48,11 +48,11 @@ on any step and its not limited to what is described.
 Plugins are stored on `$LABT_HOME/plugins` directory. If `LABT_HOME` is not set `$HOME/.labt/plugins` is used.
 
 The plugin directory tree consists of a single `plugin.toml` file and any number of sub-folders or Lua files.
-For the following example, the directory structure of a plugin `example-0.1.0`.
+For the following example, the directory structure of a plugin `https://example.com/example@0.1.0`.
 
 ```
-/home/.labt/plugins
-└── example-0.1.0
+/home/.labt/plugins/example.com/versions
+└── v0.1.0
     ├── aapt.lua
     ├── bundle.lua
     ├── compile.lua
@@ -61,7 +61,6 @@ For the following example, the directory structure of a plugin `example-0.1.0`.
     ├── post.lua
     └── pre.lua
 
-2 directories, 7 files
 ```
 
 ## plugin.toml
@@ -1321,3 +1320,191 @@ unsafe in rust context. So good programmer behavior should be considered to ensu
 memory safety an prevent memory leaks as it would greatly degrade performance.
 
 Using this module would require devs to ensure cross compatibility with other platforms.
+
+# Templating system
+The templating system in LABt allows plugins to initialize their own projects based 
+on user input. A plugin can serve as a project initializer by 
+defining a templating script and associated template files. This functionality enables plugins 
+to initialize and build projects simultaneously, utilizing all the APIs for project 
+building provided by LABt, along with additional template-specific APIs.
+
+LABt uses the Tera library for templating, which is inspired by Jinja2 
+and Django templates. For detailed information on the templating syntax, please 
+refer to the [Tera documentation.](https://keats.github.io/tera/docs/#templates).
+
+## Configuration
+You need to provide a templating script that LABt will call when the user executes the following command:
+
+```bash
+labt init <your project url> <target dir>
+```
+In your `plugin.toml` you need to define the `init` table that holds configuration for templating config.
+
+```toml
+name="example"
+version="0.1.0"
+author="omentum"
+
+[init]
+file = "template.lua"
+	
+```
+
+Directory structure:
+
+```
+labt-java
+├── plugin.toml
+├── template.lua
+└── templates
+    ├── Activity.java
+    ├── activity_main.xml
+    ├── AndroidManifest.xml
+    └── strings.xml
+```
+
+### `init` Table
+
+The init table contains the configuration that instructs LABt on how to load the template script. The following keys are allowed:
+
+- **file** (Required): Specifies the Lua file that LABt will call 
+	during project initialization.
+- **templates** (Optional): Defaults to "templates/*" if not specified
+	. This key points to the directory where template files are collected and 
+	parsed. The default value expects a templates folder in the plugin'
+	s root directory containing all required templates. It should match a globbing 
+	pattern that encompasses all your templates.
+
+
+## Execution
+When a user runs the init subcommand against your plugin, LABt follows these steps:
+
+### Step 1: Plugin Installation
+LABt fetches and installs your plugin. Note that it does not install 
+any of your plugin's SDK dependencies, as these are only 
+required during the build process.
+
+### Step 2: Configuration Loading
+After installation and version selection, LABt loads the plugin configuration and checks 
+for the presence of the `init` table. If the `init` table is 
+absent, project initialization fails, indicating that the plugin cannot create a 
+project. If the `init` table is present, LABt loads the specified 
+template script file and the template files defined in the `templates` field.
+
+### Step 3: Calling the init Function
+LABt calls the `init` function defined in the loaded script. The first 
+argument is the path provided by the user as the target directory, 
+or the current directory if no target path is specified. This function 
+should return a Lua table equivalent to `Labt.toml`. The init function can have 
+a second return value that point to a new target directory that the `Labt.toml` 
+will be written to. If not provided LABt will write it to the path passed to the
+init function path argment.
+
+Example init Function
+
+```lua
+	function init(path)
+		-- get input from users
+	  return {
+	    project = {
+	      name = "test",
+	      description = "",
+	      version = "0.1.0",
+	      version_number = 1,
+	      package = "com.example",
+	    },
+			-- a hash table of plugins
+	    plugins = {
+	      ["labt-java"] = {
+	        version = "0.1.0",
+	        location = "https://gitlab.com/lab-tool/plugins/labt-java"
+	      },
+	    },
+			-- a hash table of dependencies
+	    dependencies = {
+	      appcompact = {
+	        version = "1.1.0",
+	        group_id = "androidx.appcompact"
+	      },
+	    }
+	  }
+	end
+```
+
+The returned table will be output to `Labt.toml`, giving you 
+full control over the project configuration. You can configure aspects such as 
+plugins, dependencies, and resolvers.
+
+### Step 4: Finalizing Project Initialization
+LABt outputs the returned configuration to Labt.toml in the target directory
+, completing the project initialization process. The user can now run the 
+following commands to fetch plugins and resolve dependencies: 
+
+```
+labt plugin fetch
+labt resolve
+```
+
+## Modules Available to the Loaded Templating Script.
+When LABt loads a plugin, it provides access to all standard tables 
+from the plugin API. Note that unsafe mode is disabled, meaning 
+that the `ffi` module and loading of Lua shared objects are not available
+. Additionally, an extra global Lua table is introduced to facilitate interaction 
+with the templating API. A global variable named `PLUGIN_VERSION` is automatically added
+which contains this plugin version.
+
+### `template` table
+The template table contains functions that allow you to call rendering functions for 
+your templates. The following function is available through this table:
+
+***
+#### `render` function
+**arguments**: string: template name, table: template data  
+**returns**: string
+
+The render function calls the rendering function of the compiled templates. It 
+expects the template data to be provided for substitution within the template. 
+
+Returns an error if:
+
+- unable to load the provided template name
+
+**Example Template:** templates/Activity.java
+
+```java
+// templates/Activity.java
+package {{ package_name }};
+
+import android.app.Activity;
+import android.os.Bundle;
+
+import {{ package_name }}.R;
+
+public class {{ class_name }} extends Activity {
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        {% if xml_layout %}
+        setContentView(R.layout.{{ layout }});
+        {% endif %}
+
+    }
+
+}
+
+```
+
+**Example Usage in Your Template Script:**
+
+```lua
+function init(path)
+	local activity = template.render("Activity.java", {
+		package_name = "com.example",
+		xml_layout = "activity_main",
+		class_name = "MainActivity",
+	});
+
+	 -- Write the generated code to MainActivity.java
+end
+```

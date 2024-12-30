@@ -22,6 +22,18 @@ Install using cargo
 cargo install labt
 ```
 
+build from source
+
+```bash
+git clone https://gitlab.com/lab-tool/labt
+cd labt
+cargo build --release  
+# or 
+# cargo build --release --features vendored-lua
+```
+
+
+
 ### Os support
 Currently the base support is on *Linux* based OS
 
@@ -31,7 +43,9 @@ future cross platform support is planned
 Initialize a new a new android project
 
 ```bash
-labt init
+labt init <initializer url>
+
+labt init https://gitlab.com/lab-tool/plugins/labt-java@latest
 ```
 This creates a new project. 
 
@@ -118,7 +132,7 @@ For more information on plugin system check the [LABt Lua API documentation](doc
 ## TODO
 - [x] Add a FFI capability for plugins
 - [x] Support for windows file system
-- [ ] Add a configurable template system
+- [x] Add a configurable template system
 - [x] Stabilize the plugin api and interpret versions of plugins
 - [x] Shorten the plugin use command
 - [x] Sdkmanager support multiple repositories

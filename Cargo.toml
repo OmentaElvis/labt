@@ -1,7 +1,7 @@
 workspace = { members = ["labt-proc-macro"] }
 [package]
 name = "labt"
-version = "0.3.10"
+version = "0.3.12"
 edition = "2021"
 description = "Lab-t Lightweight Android build tool" 
 homepage = "https://gitlab.com/lab-tool/labt"
@@ -27,7 +27,6 @@ mlua = { version = "0.9.6", features = ["luajit", "serde", "serialize"] }
 quick-xml = { version = "0.31.0", features = ["async-tokio"] }
 regex = "1.10.2"
 reqwest = { version = "0.11.24", features = ["stream", "blocking"] }
-sailfish = "0.8.3"
 serde = { version = "1.0.196", features = ["derive"] }
 tokio = { version = "1.36.0", features = ["rt", "full", "io-util"] }
 tokio-util = { version = "0.7.10", features = ["io"] }
@@ -44,6 +43,7 @@ sha1 = "0.10.6"
 lazy_static = "1.5.0"
 ctrlc = { version = "3.4.5", features = ["termination"] }
 thiserror = "2.0.8"
+tera = { version = "1.20.0", default-features = false }
 
 [features]
 vendored-lua = ["mlua/vendored"]

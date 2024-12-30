@@ -94,25 +94,36 @@ impl Submodule for Build {
         // array of plugin locations to be loaded
         let mut paths: Vec<PathBuf> = vec![];
         if let Some(plugins) = config.plugins {
-            paths.extend(plugins.iter().map(|(name, plugin)| {
+            paths.extend(plugins.iter().filter_map(|(_name, plugin)| {
                 // check if plugin has location string
 
                 if let Some(location) = &plugin.location {
                     // if location is a valid url, load from labt home plugins
-                    if Url::parse(location.as_str()).is_ok() {
+                    if let Ok(url) = Url::parse(location.as_str()) {
                         let mut h = home.clone();
-                        h.push(format!("{}-{}", name.clone(), plugin.version.clone()));
-                        h
+                        if let Some(domain) = url.domain() {
+                            h.push(domain);
+                        } else {
+                            h.push("example.com"); // keep this
+                        }
+
+                        let url_path = url.path();
+                        let url_path = if let Some(p) = url_path.strip_suffix(".git") {
+                            p
+                        } else {
+                            url_path
+                        };
+                        h.extend(url_path.split('/'));
+                        h.push("versions");
+                        h.push(format!("v{}", &plugin.version));
+                        Some(h)
                     } else {
                         // else use the defined location
-                        PathBuf::from(location)
+                        Some(PathBuf::from(location))
                     }
                 } else {
-                    // TODO this branch is really confusing, but maybe in the future it wiil be used to load fro central repo
-                    // anyways load from home
-                    let mut h = home.clone();
-                    h.push(format!("{}-{}", name.clone(), plugin.version.clone()));
-                    h
+                    // Dont load plugin that we dont know where it is located
+                    None
                 }
             }));
         }
