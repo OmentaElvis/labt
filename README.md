@@ -10,10 +10,27 @@ resolve your project dependencies. It aims to work fully offline and only
 requiring network during resolution when the dependencies were not cached
 locally.
 
-At its core, labt provides a plugin system to build applications. The plugins
-system provides lua scripting for easy to implement and lightweight plugins.
+## Goals
+- Be very lightweight 
+- Be very simple and clear on what its happening internally for easier debugging of problems in projects. We dont like black boxes of magic that the user can't explain what is happening.
+- Be correct.
+- Be cache friendly at all times.
+- Be faster.
+- Be IDE independent.
 
-_NB: This project is a working progress and currently very unstable_
+## Features
+- M2 compatible dependency resolver
+- SDK package managers for both google and third party sdk
+- Simple build process
+- Plugin system with Lua based scripting
+- Priority to caching and less time doing "network stuff"
+- Project templating using Jinja2 and Django template syntax.
+- Only run plugins stage if code changes
+
+At its core, labt provides a plugin system to build applications. The plugins
+system provides lua scripting for easy implementation and lightweight plugins.
+
+_NB: This project is a working progress and currently unstable. More feedback is needed before we hit v1_
 
 ## Installation
 Install using cargo
@@ -32,12 +49,17 @@ cargo build --release
 # cargo build --release --features vendored-lua
 ```
 
+Check the releases page for prebuilt binaries.
+
 
 
 ### Os support
 Currently the base support is on *Linux* based OS
 
-future cross platform support is planned
+future full cross platform support is planned
+
+There are releases available for windows but they are mostly not properly tested.
+The platform support may differ depending on plugin used.
 
 ## Usage
 Initialize a new a new android project
@@ -55,7 +77,10 @@ Add a dependency to your project
 ```bash 
 labt add androidx.appcompat:appcompat:1.1.0
 ```
+
 the add subcommand automatically downloads and caches the provided dependency.
+LABt maintains this global cache of dependency files and plugins can query for 
+these files during build.
 You can also fetch the dependencies manually by running.
 
 ```bash
@@ -95,8 +120,6 @@ Options:
 
 ```
 
-Here's a more concise version:
-
 
 ## SDK Manager
 LABt's SDK Manager lets you manage Android SDK packages via a 
@@ -105,7 +128,7 @@ terminal interface. Sdk packages provide development tools to plugins e.g. aapt,
 - **Add repository**: Use `labt sdk add google` for default android google repo or any third party repository by `labt sdk add <name> <url>`.
 - **Interactive Management**: Use `labt sdk list <repo-name>` to view 
   and toggle package actions (install, uninstall, upgrade/downgrade) 
-  in a TUI.
+  in a TUI. Use space to toggle actions and press enter to confirm.
 - **Installing**: `labt sdk install <repo-name> --path <id> --version <version>` to install a package non interactively.
 - **Lua API Integration**: Plugins can access SDK packages directly through 
   LABt's Lua API. [More details here](doc/LuaAPI.md).
@@ -136,3 +159,4 @@ For more information on plugin system check the [LABt Lua API documentation](doc
 - [x] Stabilize the plugin api and interpret versions of plugins
 - [x] Shorten the plugin use command
 - [x] Sdkmanager support multiple repositories
+- [ ] Add a way to tell plugins what build profile they are on (debug, release, preview)
