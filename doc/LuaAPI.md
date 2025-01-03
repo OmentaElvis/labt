@@ -5,6 +5,12 @@ The LABt Lua API serves as the internally supported interface for
 developing plugins using Lua scripting language. These plugins are executed
 during the build stage (the build subcommand).
 
+```bash
+labt build
+#or specific stage
+labt build aapt
+```
+
 ### Build Steps
 Plugins in LABt are organized into distinct build steps, each serving a specific purpose in the build pipeline. These steps include:
 
@@ -62,6 +68,54 @@ For the following example, the directory structure of a plugin `https://example.
     └── pre.lua
 
 ```
+
+## plugin loading
+LABt loads all plugins defined in `Labt.toml` file. Local project specific plugins are 
+searched in `plugins` folder on the project root. 
+You can have:
+
+```
+Labt.toml
+Labt.lock
+plugins/
+	|- custom/
+	|----plugin.toml
+```
+You do not need to list a project specific plugin as LABt will automatically load and execute them.
+
+## Guide for plugin development.
+You can run `labt plugin create` to create a new plugin in your desired folder.
+To test your plugin, you need a dummy project to load your plugin. This is as simple
+as creating a `Labt.toml` file at a target folder.
+
+```toml
+[project]
+name = "test"
+description = "test"
+version_number = 1
+version = "0.1.0"
+package = "com.example.test"
+
+[plugins]
+my-plugin = { location = "path/to/your/plugin/folder", version = "0.1.0"}
+```
+
+Now if you run `labt build` it will load your plugin and execute it.
+
+### Publishing
+If you are happy with what you have created and want to share with the community,
+all you need is a public git based repository and git tags. It is as simple as
+sharing your plugin repository url and labt should handle the rest.
+
+The community would run:
+
+```bash
+labt plugin https://gitlab.com/lab-tool/plugins/labt-java@latest
+#or for project inits
+labt init https://gitlab.com/lab-tool/plugins/labt-java@latest
+```
+
+to pull your plugin.
 
 ## plugin.toml
 This is the configuration file for each plugin. It is required for every plugin.
@@ -157,6 +211,19 @@ priority = 1
 inputs = ["app/res/**/*", "app/AndroidManifest.xml"]
 outputs = ["build/res.apk"]
 ```
+
+## Priority based execution
+LABt runs everything sequentially. For a project, it loads all the required
+plugins. It groups code from all plugins by stages. For each stage it sorts them according to 
+their specified priority with highest priority number at the top. It then starts execution at the
+the first step(PRE) to the last(POST). In each step it runs the sorted plugins one after the other. 
+This adds some sort of predictability and removes the complexity of calculating complicated build
+tasks and dependency graphs.
+
+![Plugin Stafes](../assets/plugin_stages.png)
+
+It is recommended to set 5 or 10 as a priority number for public community plugins to allow users
+to have at least 5 priority numbers without venturing into negative numbers.
 
 # The Lua API
 At plugin loading, labt injects several functions and tables into the Lua
