@@ -44,6 +44,8 @@ pub enum Scope {
     PROVIDED,
     IMPORT,
     UNKOWN(String),
+    /// For parent dependency management
+    UNSET,
 }
 impl FromStr for Scope {
     type Err = anyhow::Error;
@@ -71,6 +73,7 @@ impl Display for Scope {
             Scope::SYSTEM => tags::SYSTEM,
             Scope::RUNTIME => tags::RUNTIME,
             Self::UNKOWN(s) => return write!(f, "{}", s),
+            Self::UNSET => return write!(f, ""),
         };
 
         write!(f, "{}", String::from_utf8_lossy(scope))
@@ -704,7 +707,10 @@ impl Project {
         if !parent.excludes.is_empty() {
             self.excludes.extend(parent.excludes.iter().cloned());
         }
-        self.scope = parent.scope.clone();
+        // since compile is the default scope, let the child override the parent scope
+        if self.scope == Scope::COMPILE || self.scope == Scope::UNSET {
+            self.scope = parent.scope.clone();
+        }
     }
     pub fn qualified_name(&self) -> anyhow::Result<String> {
         let version = self
