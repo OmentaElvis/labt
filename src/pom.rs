@@ -1406,6 +1406,27 @@ fn substitute_properties_vars(project: &mut Project) -> anyhow::Result<()> {
             project.selected_version = Some(project.substitute_string(version.as_str()));
         }
     }
+    // loop through dependencyManagement dependencies
+    let mut management: HashMap<String, Project> = HashMap::new();
+    for (id, dep) in project.dependency_management.iter() {
+        let mut dep = dep.clone();
+        let artifact_id = project.substitute_string(&dep.artifact_id.to_string());
+        let group_id = project.substitute_string(&dep.group_id);
+        let version: Option<String> = dep
+            .selected_version
+            .as_ref()
+            .map(|v| project.substitute_string(v));
+        dep.artifact_id = artifact_id;
+        dep.group_id = group_id;
+        if let Some(version) = version {
+            dep.version = version
+                .parse()
+                .context("Failed to select a suitable version for dependency")?;
+            dep.selected_version = Some(version);
+        }
+        management.insert(id.to_string(), dep);
+    }
+    project.dependency_management = management;
 
     // loop through all dependencies
     for (i, dep) in project.dependencies.clone().iter().enumerate() {
