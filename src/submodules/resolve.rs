@@ -1496,7 +1496,7 @@ impl BuildTree for ProjectWrapper {
         project.base_url = url;
         project.cache_hit = cache_hit;
 
-        if !resolved_earlier {
+        if !resolved_earlier && project.packaging != "pom" {
             resolved.push(project);
         }
         Ok(())
