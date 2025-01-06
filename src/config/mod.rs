@@ -14,6 +14,7 @@ use toml_edit::Document;
 
 use crate::{
     get_project_root,
+    pom::Exclusion,
     submodules::resolvers::{get_default_resolvers, NetResolver, Resolver},
 };
 
@@ -71,6 +72,8 @@ pub struct Dependency {
     pub dep_type: Option<String>,
     /// Where to fetch the project
     pub resolver: Option<String>,
+    /// Exclude a dependency
+    pub exclude: Option<Vec<Exclusion>>,
 }
 
 /// A resolver table

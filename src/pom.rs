@@ -1,6 +1,7 @@
 use anyhow::Context;
 use anyhow::Result;
 use quick_xml::{events::Event, Reader};
+use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -586,7 +587,7 @@ pub struct Project {
     pub parent: Option<ParentPom>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Exclusion {
     /// The actual project name
     pub artifact_id: String,

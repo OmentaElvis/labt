@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs::File;
 use std::path::PathBuf;
@@ -53,6 +54,11 @@ impl Submodule for Resolve {
                 .iter()
                 .map(|(artifact_id, table)| {
                     let mut p = Project::new(&table.group_id, artifact_id, &table.version);
+                    if let Some(exclusion) = &table.exclude {
+                        for exclude in exclusion {
+                            p.add_exclusion(exclude.clone());
+                        }
+                    }
                     p.set_selected_version(Some(table.version.clone()));
                     p
                 })
@@ -1052,6 +1058,8 @@ pub struct ProjectWrapper {
     project: Project,
     resolvers: Rc<RefCell<Vec<Box<dyn Resolver>>>>,
     progress: Option<Rc<RefCell<ProgressBar>>>,
+    // can be passed to the tree builder to allow them to safely resolve conflicts
+    project_dependencies: Option<Rc<HashMap<String, Project>>>,
 }
 
 impl ProjectWrapper {
@@ -1060,10 +1068,14 @@ impl ProjectWrapper {
             project,
             resolvers,
             progress: None,
+            project_dependencies: None,
         }
     }
     pub fn set_progress_bar(&mut self, progress: Option<Rc<RefCell<ProgressBar>>>) {
         self.progress = progress;
+    }
+    pub fn set_project_root_dependencies(&mut self, deps: Option<Rc<HashMap<String, Project>>>) {
+        self.project_dependencies = deps;
     }
     #[allow(unused)]
     pub fn add_resolver(&mut self, resolver: Box<dyn Resolver>) {
@@ -1216,6 +1228,22 @@ impl BuildTree for ProjectWrapper {
             qualified_name,
             self.project.get_scope(),
         );
+
+        // override versions defined on project root dependencies if available
+        if let Some(deps) = &self.project_dependencies {
+            let key = format!(
+                "{}:{}",
+                self.project.get_group_id(),
+                self.project.get_artifact_id()
+            );
+            if let Some(project) = deps.get(&key) {
+                if let VersionRequirement::Hard(v) = project.get_version() {
+                    self.project
+                        .set_version(VersionRequirement::Hard(v.clone()));
+                }
+            }
+        }
+
         // before we even proceed to do this "expensive" fetch just confirm this isn't a
         // potential version conflict and return instead
         if let Some((index, res)) = resolved.iter_mut().enumerate().find(|(_, res)| {
@@ -1312,6 +1340,18 @@ impl BuildTree for ProjectWrapper {
                                         resolved[index].constraints = Some(containment);
                                         resolved_earlier = true;
                                     } else {
+                                        log::error!(
+                                            r"A dependency version conflict has been detected.
+This is usually handled automatically, but both conflicting dependencies have enforced a specific version.
+We cannot proceed with resolution as manual intervention is required. You can adjust the versions or exclude the offending version.
+Here is a tree to trace back to the project root:"
+                                        );
+                                        let mut tree = TreeBuilder::new("Project root".to_string());
+                                        for dep in unresolved {
+                                            tree.begin_child(dep.to_string());
+                                        }
+
+                                        print_tree(&tree.build())?;
                                         // the constraint cannot fit in this. This is fatal.
                                         bail!(
                                             "Dependency version conflict. {}:{} has a hard set version requirements as {} which does not fit within previously set constraint of {constraints}. Canceling the resolution.",
@@ -1395,6 +1435,9 @@ impl BuildTree for ProjectWrapper {
             );
             if let Some(progress) = &self.progress {
                 wrapper.set_progress_bar(Some(progress.clone()));
+            }
+            if let Some(root_deps) = &self.project_dependencies {
+                wrapper.set_project_root_dependencies(Some(Rc::clone(root_deps)));
             }
             log::trace!(target: "fetch", "Fetching parent {}:{}:{} for {}:{}", 
                 parent.group_id,
@@ -1482,6 +1525,9 @@ impl BuildTree for ProjectWrapper {
             if let Some(progress) = &self.progress {
                 wrapper.set_progress_bar(Some(progress.clone()));
             }
+            if let Some(root_deps) = &self.project_dependencies {
+                wrapper.set_project_root_dependencies(Some(Rc::clone(root_deps)));
+            }
             wrapper.build_tree(resolved, unresolved)?;
         }
 
@@ -1547,11 +1593,27 @@ pub fn resolve(
         .set_style(ProgressStyle::with_template("\n{spinner} {prefix:.blue} {wide_msg}").unwrap());
 
     let mut resolved_projects: Vec<Project> = Vec::new();
+    let root_dependencies = Rc::new(
+        dependencies
+            .iter()
+            .map(|project| {
+                let key = format!("{}:{}", project.get_group_id(), project.get_artifact_id());
+                (key, project.clone())
+            })
+            .collect::<HashMap<String, Project>>(),
+    );
 
     for project in dependencies {
+        log::trace!(target: "resolve",
+            "Building tree for: {}:{}:{}",
+            project.get_group_id(),
+            project.get_artifact_id(),
+            project.get_version()
+        );
         // create a new project wrapper for dependency resolution
-        let mut wrapper = ProjectWrapper::new(project.clone(), Rc::clone(&resolvers));
+        let mut wrapper = ProjectWrapper::new(project, Rc::clone(&resolvers));
         wrapper.set_progress_bar(Some(spinner.clone()));
+        wrapper.set_project_root_dependencies(Some(Rc::clone(&root_dependencies)));
 
         // walk the dependency tree
         wrapper.build_tree(&mut lock.resolved, &mut unresolved)?;
@@ -1567,6 +1629,7 @@ pub fn resolve(
 }
 #[cfg(test)]
 use pretty_assertions::assert_eq;
+use ptree::{print_tree, TreeBuilder};
 
 #[test]
 fn check_base_url_conversion() {
