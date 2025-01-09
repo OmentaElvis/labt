@@ -30,7 +30,9 @@ use log::info;
 
 #[derive(Args, Clone)]
 pub struct ResolveArgs {
-    // TODO add arguments
+    /// Print the dependency tree
+    #[clap(long, action)]
+    tree: bool,
 }
 
 pub struct Resolve {
@@ -42,6 +44,27 @@ impl Resolve {
         Resolve { args: args.clone() }
     }
 }
+fn build_display_tree(
+    dep: String,
+    tree: &mut TreeBuilder,
+    lock: &HashMap<String, Vec<String>>,
+    added_branches: &mut Vec<String>,
+) {
+    // check if we have already encountered this particular entry
+    if added_branches.contains(&dep) {
+        tree.add_empty_child(format!("Circular: {}", dep));
+        return;
+    }
+    added_branches.push(dep.to_string());
+    tree.begin_child(dep.to_string());
+    if let Some(deps) = lock.get(&dep) {
+        for p in deps {
+            build_display_tree(p.to_string(), tree, lock, added_branches);
+        }
+    }
+    tree.end_child();
+    added_branches.pop();
+}
 // =================
 // Entry point
 // =================
@@ -49,24 +72,79 @@ impl Submodule for Resolve {
     fn run(&mut self) -> Result<()> {
         // try reading toml file
         let config = get_config()?;
-        if let Some(deps) = &config.dependencies {
-            let dependencies: Vec<Project> = deps
-                .iter()
-                .map(|(artifact_id, table)| {
-                    let mut p = Project::new(&table.group_id, artifact_id, &table.version);
-                    if let Some(exclusion) = &table.exclude {
-                        for exclude in exclusion {
-                            p.add_exclusion(exclude.clone());
+        if !self.args.tree {
+            if let Some(deps) = &config.dependencies {
+                let dependencies: Vec<Project> = deps
+                    .iter()
+                    .map(|(artifact_id, table)| {
+                        let mut p = Project::new(&table.group_id, artifact_id, &table.version);
+                        if let Some(exclusion) = &table.exclude {
+                            for exclude in exclusion {
+                                p.add_exclusion(exclude.clone());
+                            }
                         }
-                    }
-                    p.set_selected_version(Some(table.version.clone()));
-                    p
+                        p.set_selected_version(Some(table.version.clone()));
+                        p
+                    })
+                    .collect();
+                let resolvers =
+                    get_resolvers_from_config(&config).context("Failed to get resolvers")?;
+
+                resolve(dependencies, resolvers)?;
+            }
+        } else {
+            let mut tree = TreeBuilder::new(format!(
+                "{}:{}",
+                config.project.package, config.project.version
+            ));
+            let mut path: PathBuf = get_project_root()
+                .context("Failed to get project root directory")?
+                .clone();
+            path.push(LOCK_FILE);
+
+            // load resolved dependencies from lock file
+            let lock: LabtLock = if path.exists() {
+                load_labt_lock()?
+            } else {
+                LabtLock::default()
+            };
+            let lock: HashMap<String, Vec<String>> = lock
+                .resolved
+                .iter()
+                .map(|dep| {
+                    let key = format!("{}:{}:{}", dep.group_id, dep.artifact_id, dep.version);
+                    (key, dep.dependencies.clone())
                 })
                 .collect();
-            let resolvers =
-                get_resolvers_from_config(&config).context("Failed to get resolvers")?;
 
-            resolve(dependencies, resolvers)?;
+            // recursively build a tree for a particular dependency while checking for circular dependency for a current branch
+            let mut added_branches: Vec<String> = Vec::new();
+            // grab dependencies from config and build a tree
+            if let Some(deps) = config.dependencies {
+                for (artifact_id, dep) in deps {
+                    let name = format!(
+                        "{}:{}:{}",
+                        dep.group_id,
+                        dep.artifact_id.unwrap_or(artifact_id),
+                        dep.version
+                    );
+                    tree.begin_child(name.to_string());
+                    if let Some(child) = lock.get(&name) {
+                        for i in child {
+                            build_display_tree(
+                                i.to_string(),
+                                &mut tree,
+                                &lock,
+                                &mut added_branches,
+                            );
+                        }
+                    }
+
+                    tree.end_child();
+                }
+            }
+
+            print_tree(&tree.build())?;
         }
         Ok(())
     }
