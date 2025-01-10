@@ -48,7 +48,7 @@ impl Resolve {
 fn build_display_tree(
     dep: String,
     tree: &mut TreeBuilder,
-    lock: &HashMap<String, Vec<String>>,
+    lock: &HashMap<String, &ProjectDep>,
     added_branches: &mut Vec<String>,
 ) {
     // check if we have already encountered this particular entry
@@ -56,14 +56,43 @@ fn build_display_tree(
         tree.add_empty_child(format!("Circular: {}", dep));
         return;
     }
+    let mut iter = dep.split(":");
+    let group_id = iter.next().unwrap();
+    let artifact_id = iter.next().unwrap();
+
+    let id = format!("{}:{}", group_id, artifact_id);
     added_branches.push(dep.to_string());
-    tree.begin_child(dep.to_string());
-    if let Some(deps) = lock.get(&dep) {
-        for p in deps {
+    if let Some(dep) = lock.get(&id) {
+        if let Some(v) = iter.next() {
+            if v == dep.version {
+                tree.begin_child(format!(
+                    "{}:{} {}",
+                    id,
+                    v,
+                    dep.constraints.clone().unwrap_or(Constraint::default()),
+                ));
+            } else {
+                tree.begin_child(format!(
+                    "{}:{}->{} {}",
+                    id,
+                    v,
+                    dep.version,
+                    &dep.constraints.clone().unwrap_or(Constraint::default()),
+                ));
+            }
+        } else {
+            tree.begin_child(format!(
+                "{}:{}{}",
+                id,
+                dep.version,
+                dep.constraints.clone().unwrap_or(Constraint::default()),
+            ));
+        }
+        for p in &dep.dependencies {
             build_display_tree(p.to_string(), tree, lock, added_branches);
         }
+        tree.end_child();
     }
-    tree.end_child();
     added_branches.pop();
 }
 // =================
@@ -109,12 +138,12 @@ impl Submodule for Resolve {
             } else {
                 LabtLock::default()
             };
-            let lock: HashMap<String, Vec<String>> = lock
+            let lock: HashMap<String, &ProjectDep> = lock
                 .resolved
                 .iter()
                 .map(|dep| {
-                    let key = format!("{}:{}:{}", dep.group_id, dep.artifact_id, dep.version);
-                    (key, dep.dependencies.clone())
+                    let key = format!("{}:{}", dep.group_id, dep.artifact_id);
+                    (key, dep)
                 })
                 .collect();
 
@@ -124,14 +153,24 @@ impl Submodule for Resolve {
             if let Some(deps) = config.dependencies {
                 for (artifact_id, dep) in deps {
                     let name = format!(
-                        "{}:{}:{}",
+                        "{}:{}",
                         dep.group_id,
                         dep.artifact_id.unwrap_or(artifact_id),
-                        dep.version
                     );
-                    tree.begin_child(name.to_string());
-                    if let Some(child) = lock.get(&name) {
-                        for i in child {
+                    if let Some(entry) = lock.get(&name) {
+                        if entry.version != dep.version {
+                            tree.begin_child(format!(
+                                "{}:{}->{} {}",
+                                name,
+                                dep.version,
+                                entry.version,
+                                entry.constraints.clone().unwrap_or(Constraint::default())
+                            ));
+                        } else {
+                            tree.begin_child(format!("{}:{}", name, dep.version));
+                        }
+
+                        for i in &entry.dependencies {
                             build_display_tree(
                                 i.to_string(),
                                 &mut tree,
@@ -186,7 +225,7 @@ impl Display for Constraint {
                 write!(f, "{min}>")?;
             }
         }
-        write!(f, "v")?;
+        // write!(f, "v")?;
         if let Some((inclusive, max)) = &self.max {
             if *inclusive {
                 write!(f, "<={max}")?;
