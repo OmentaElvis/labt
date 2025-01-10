@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fs::File,
     io::{Read, Write},
 };
@@ -8,6 +7,7 @@ pub mod maven_metadata;
 pub mod repository;
 
 use anyhow::Context;
+use indexmap::IndexMap;
 use mlua::UserData;
 use serde::{Deserialize, Serialize};
 use toml_edit::Document;
@@ -28,19 +28,19 @@ pub struct LabToml {
     /// The project dependencies in the form of
     /// \[dependencies\]
     /// artifactId = {dependency inline table}
-    pub dependencies: Option<HashMap<String, Dependency>>,
+    pub dependencies: Option<IndexMap<String, Dependency>>,
     /// The list of configured resolvers
     /// ```toml
     /// [resolvers]
     /// central = {url= "https://repo1.maven.org/maven2", default= true}
     /// ```
-    pub resolvers: Option<HashMap<String, ResolverTable>>,
+    pub resolvers: Option<IndexMap<String, ResolverTable>>,
     /// Defines a list of plugins to use for this project
     /// ```toml
     /// [plugins]
     /// core-java = {url = "https://gitlab.com/lab-tool/core-java", version="v0.1.0"}
     /// ```
-    pub plugins: Option<HashMap<String, PluginTable>>,
+    pub plugins: Option<IndexMap<String, PluginTable>>,
 }
 
 /// The project details
@@ -307,7 +307,7 @@ fn get_resolvers_from_config_test() {
             version: String::from("0.0"),
             package: String::from("com.gitlab.labtool"),
         },
-        resolvers: Some(HashMap::from([
+        resolvers: Some(IndexMap::from([
             (
                 String::from("local"),
                 ResolverTable {
