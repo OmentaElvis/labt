@@ -1428,8 +1428,10 @@ Here is a tree to trace back to the project root:"
                                         for dep in unresolved {
                                             tree.begin_child(dep.to_string());
                                         }
-
-                                        print_tree(&tree.build())?;
+                                        #[cfg(not(test))]
+                                        {
+                                            print_tree(&tree.build())?;
+                                        }
                                         // the constraint cannot fit in this. This is fatal.
                                         bail!(
                                             "Dependency version conflict. {}:{} has a hard set version requirements as {} which does not fit within previously set constraint of {constraints}. Canceling the resolution.",
