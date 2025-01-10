@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
+use crate::caching::properties::write_properties;
 use crate::caching::save_dependencies;
 use crate::config::lock::strings::LOCK_FILE;
 use crate::config::lock::write_lock;
@@ -1621,6 +1622,11 @@ Here is a tree to trace back to the project root:"
         ))?;
         project.base_url = url;
         project.cache_hit = cache_hit;
+
+        // save the properties file to cache for future resolution
+        if !project.cache_hit {
+            write_properties(&project)?;
+        }
 
         if !resolved_earlier {
             resolved.push(project);

@@ -13,7 +13,7 @@ use log::info;
 
 use crate::{get_home, submodules::resolve::ProjectDep, MULTI_PROGRESS_BAR};
 
-use self::{download::download, properties::write_properties};
+use self::download::download;
 #[derive(Clone, Debug)]
 pub enum CacheType {
     POM,
@@ -226,10 +226,6 @@ impl From<&Cache> for Cache {
 }
 
 pub fn save_dependencies(deps: &Vec<ProjectDep>) -> anyhow::Result<()> {
-    // if it was a cache miss, then write properties to file for the next resolution
-    for project in deps.iter().filter(|p| !p.cache_hit) {
-        write_properties(project)?;
-    }
     // initialize a new progressbar
     let pb = MULTI_PROGRESS_BAR.add(ProgressBar::new(deps.len() as u64));
     // begin the download  of the dependencies
