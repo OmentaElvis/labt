@@ -104,19 +104,18 @@ impl Submodule for Resolve {
         let config = get_config()?;
         if !self.args.tree {
             if let Some(deps) = &config.dependencies {
-                let dependencies: Vec<Project> = deps
-                    .iter()
-                    .map(|(artifact_id, table)| {
-                        let mut p = Project::new(&table.group_id, artifact_id, &table.version);
-                        if let Some(exclusion) = &table.exclude {
-                            for exclude in exclusion {
-                                p.add_exclusion(exclude.clone());
-                            }
+                let mut dependencies: Vec<Project> = Vec::new();
+                for (artifact_id, table) in deps.iter() {
+                    let mut p = Project::new(&table.group_id, artifact_id, &table.version);
+                    if let Some(exclusion) = &table.exclude {
+                        for exclude in exclusion {
+                            p.add_exclusion(exclude.clone());
                         }
-                        p.set_selected_version(Some(table.version.clone()));
-                        p
-                    })
-                    .collect();
+                    }
+                    let version = table.version.clone();
+                    p.set_version(version.parse()?);
+                    dependencies.push(p);
+                }
                 let resolvers =
                     get_resolvers_from_config(&config).context("Failed to get resolvers")?;
 
@@ -1235,7 +1234,7 @@ impl ProjectWrapper {
         Ok((url, cache_hit))
     }
 
-    fn compute_version(
+    pub fn compute_version(
         resolvers: Rc<RefCell<Vec<Box<dyn Resolver>>>>,
         dep: &Project,
     ) -> anyhow::Result<String> {
@@ -1785,6 +1784,21 @@ pub fn resolve(
         wrapper.set_progress_bar(Some(spinner.clone()));
         wrapper.set_project_root_dependencies(Some(Rc::clone(&root_dependencies)));
 
+        // compute root versions
+        spinner.borrow().set_message(format!(
+            "Calculating versions for {}:{}:{}",
+            wrapper.project.get_group_id(),
+            wrapper.project.get_artifact_id(),
+            wrapper.project.get_version()
+        ));
+        let version = ProjectWrapper::compute_version(Rc::clone(&resolvers), &wrapper.project)
+            .context(format!(
+                "Failed to calculate a version for dependency {}:{}: {}.",
+                wrapper.project.get_group_id(),
+                wrapper.project.get_artifact_id(),
+                wrapper.project.get_version(),
+            ))?;
+        wrapper.project.set_selected_version(Some(version.clone()));
         // walk the dependency tree
         wrapper.build_tree(&mut lock.resolved, &mut unresolved)?;
         resolved_projects.push(wrapper.project);
