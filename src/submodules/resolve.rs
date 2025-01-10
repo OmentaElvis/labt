@@ -1647,7 +1647,10 @@ fn compute_lock_tree(
             }
         }
     }
-    new_lock.push(dep.to_owned());
+    // only push if it is not yet added
+    if !new_lock.contains(dep) {
+        new_lock.push(dep.to_owned());
+    }
 }
 
 /// Goes through the resolved dependency list and collapses them to only the used dependencies
