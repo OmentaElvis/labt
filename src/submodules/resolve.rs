@@ -1620,11 +1620,53 @@ Here is a tree to trace back to the project root:"
         project.base_url = url;
         project.cache_hit = cache_hit;
 
-        if !resolved_earlier && project.packaging != "pom" {
+        if !resolved_earlier {
             resolved.push(project);
         }
         Ok(())
     }
+}
+
+fn compute_lock_tree(
+    dep: &ProjectDep,
+    resolved: &HashMap<String, &ProjectDep>,
+    new_lock: &mut Vec<ProjectDep>,
+) {
+    for key in &dep.dependencies {
+        // remove the version suffix
+        let mut iter = key.split(":");
+        let group_id = iter.next().unwrap();
+        let artifact_id = iter.next().unwrap();
+        let id = format!("{}:{}", group_id, artifact_id);
+
+        if let Some(child) = resolved.get(&id) {
+            if !new_lock.contains(child) {
+                compute_lock_tree(child, resolved, new_lock);
+            }
+        }
+    }
+    new_lock.push(dep.to_owned());
+}
+
+/// Goes through the resolved dependency list and collapses them to only the used dependencies
+/// Yes it is another resolver to calculate the new lock file.
+fn crunch(lock: &[ProjectDep], root_dependencies: Vec<ProjectDep>) -> Vec<ProjectDep> {
+    let mut new_lock = Vec::new();
+    let lock_map: HashMap<String, &ProjectDep> = lock
+        .iter()
+        .map(|dep| {
+            let key = format!("{}:{}", dep.group_id, dep.artifact_id);
+            (key, dep)
+        })
+        .collect();
+
+    for dep in root_dependencies {
+        if let Some(dep) = lock_map.get(&format!("{}:{}", dep.group_id, dep.artifact_id)) {
+            compute_lock_tree(dep, &lock_map, &mut new_lock);
+        }
+    }
+
+    new_lock
 }
 
 /// Starts the resolution algorithm. Reads any existing Labt.lock and it includes
@@ -1697,6 +1739,14 @@ pub fn resolve(
         wrapper.build_tree(&mut lock.resolved, &mut unresolved)?;
         resolved_projects.push(wrapper.project);
     }
+    spinner.borrow().set_message("Calculating new lock file");
+    // compute the new lock file and remove orphaned dependencies
+    let deps = resolved_projects
+        .iter()
+        .map(|f| ProjectDep::try_from(f).unwrap())
+        .collect();
+    lock.resolved = crunch(&lock.resolved, deps);
+
     // clear progressbar
     spinner.borrow().finish_and_clear();
 
