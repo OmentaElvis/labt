@@ -1334,7 +1334,7 @@ impl BuildTree for ProjectWrapper {
         ));
 
         // Version was resolved earlier and this is just a version conflict
-        let mut resolved_earlier = false;
+        let mut resolved_earlier: Option<usize> = None;
 
         if let Some(prog) = &self.progress {
             let prog = prog.borrow();
@@ -1404,7 +1404,7 @@ impl BuildTree for ProjectWrapper {
                                             if let Some(con) = &mut resolved[index].constraints {
                                                 con.contain_mut(c)?;
                                             }
-                                            resolved_earlier = true;
+                                            resolved_earlier = Some(index);
                                         } else {
                                             // we don't need this tree direction, its older
                                             unresolved.pop();
@@ -1455,7 +1455,7 @@ impl BuildTree for ProjectWrapper {
                                         }
                                         // update contained constraints
                                         resolved[index].constraints = Some(containment);
-                                        resolved_earlier = true;
+                                        resolved_earlier = Some(index);
                                     } else {
                                         log::error!(
                                             r"A dependency version conflict has been detected.
@@ -1500,7 +1500,7 @@ Here is a tree to trace back to the project root:"
                                             version_compare::Cmp::Ge | version_compare::Cmp::Gt => {
                                                 // resolve this, it is bigger
                                                 resolved[index].version = v.clone();
-                                                resolved_earlier = true;
+                                                resolved_earlier = Some(index);
                                                 // This is a soft range no need to add a new one
                                             }
                                             version_compare::Cmp::Lt
@@ -1522,7 +1522,7 @@ Here is a tree to trace back to the project root:"
                                     new_constraint.contain_mut(c)?;
                                     resolved[index].version = version.clone();
                                     resolved[index].constraints = Some(new_constraint);
-                                    resolved_earlier = true;
+                                    resolved_earlier = Some(index);
                                 }
                             }
                         }
@@ -1666,7 +1666,10 @@ Here is a tree to trace back to the project root:"
             write_properties(&project)?;
         }
 
-        if !resolved_earlier {
+        if let Some(index) = resolved_earlier {
+            // replace
+            resolved[index] = project;
+        } else {
             resolved.push(project);
         }
         Ok(())
