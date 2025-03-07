@@ -36,6 +36,7 @@ mod tags {
     pub const MICRO: &[u8] = b"micro";
     pub const PREVIEW: &[u8] = b"preview";
     pub const LICENSE: &[u8] = b"license";
+    pub const MODULE: &[u8] = b"module";
 }
 
 mod channel_strings {
@@ -194,6 +195,8 @@ pub struct Archive {
     url: String,
     host_os: String,
     host_bits: BitSizeType,
+    /// Treat this as a lua module. Labt will try to load init.lua when this module is required by plugins.
+    module: Option<bool>,
 }
 
 impl RemotePackage {
@@ -281,6 +284,9 @@ impl Archive {
     pub fn get_host_bits(&self) -> BitSizeType {
         self.host_bits
     }
+    pub fn is_module(&self) -> bool {
+        self.module.unwrap_or(false)
+    }
 
     pub fn set_size(&mut self, value: usize) {
         self.size = value;
@@ -296,6 +302,9 @@ impl Archive {
     }
     pub fn set_host_bits(&mut self, value: BitSizeType) {
         self.host_bits = value;
+    }
+    pub fn set_is_module(&mut self, value: bool) {
+        self.module = Some(value);
     }
 }
 
@@ -371,6 +380,7 @@ enum ArchiveState {
     ReadUrl,
     ReadHostOs,
     ReadHostBits,
+    ReadModule,
 }
 #[derive(Debug, Clone, Copy)]
 enum RevisionState {
@@ -668,6 +678,7 @@ impl RepositoryXmlParser {
                     tags::URL => ArchiveState::ReadUrl,
                     tags::HOST_OS => ArchiveState::ReadHostOs,
                     tags::HOST_BITS => ArchiveState::ReadHostBits,
+                    tags::MODULE => ArchiveState::ReadModule,
                     _ => ArchiveState::Archive,
                 },
                 Event::End(tag) if tag.local_name().into_inner() == tags::ARCHIVE => {
@@ -753,6 +764,22 @@ impl RepositoryXmlParser {
                     ArchiveState::ReadHostBits
                 }
                 _ => ArchiveState::ReadHostBits,
+            },
+            // <module></module>
+            ArchiveState::ReadModule => match event {
+                Event::End(tag) if tag.local_name().into_inner() == tags::MODULE => {
+                    ArchiveState::Archive
+                }
+                Event::Text(text) => {
+                    let module = text
+                        .unescape()?
+                        .to_string()
+                        .parse::<bool>()
+                        .context("Failed to parse module value to boolean")?;
+                    self.current_archive.module = Some(module);
+                    ArchiveState::ReadModule
+                }
+                _ => ArchiveState::ReadModule,
             },
         };
         Ok(new_state)

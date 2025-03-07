@@ -27,6 +27,7 @@ pub struct InstalledPackage {
     pub channel: ChannelType,
     pub url: String,
     pub directory: Option<PathBuf>,
+    pub module: Option<bool>,
 }
 impl InstalledPackage {
     pub fn new(
@@ -42,6 +43,7 @@ impl InstalledPackage {
             channel,
             url: String::default(),
             directory: None,
+            module: None,
         }
     }
 }
@@ -451,6 +453,11 @@ impl FromStr for InstalledList {
                         );
                     }
 
+                    // parse module
+                    if let Some(module) = package.get(toml_strings::MODULE) {
+                        p.module = module.as_bool();
+                    }
+
                     package_list.push(p);
                 }
             }
@@ -512,6 +519,9 @@ impl Display for InstalledList {
                 );
             }
             table.insert(toml_strings::URL, value(&package.url));
+            if let Some(module) = &package.module {
+                table.insert(toml_strings::MODULE, value(*module));
+            }
 
             packages.push(table);
         }
@@ -642,6 +652,7 @@ mod installed_list_test {
             channel: ChannelType::Stable,
             url: "gitlab.com".to_string(),
             directory: None,
+            module: None,
         };
 
         let mut list = InstalledList::new();
@@ -659,6 +670,7 @@ mod installed_list_test {
             channel: ChannelType::Stable,
             url: "gitlab.com".to_string(),
             directory: None,
+            module: None,
         };
         let package_2: InstalledPackage = InstalledPackage {
             repository_name: "google".to_string(),
@@ -667,6 +679,7 @@ mod installed_list_test {
             channel: ChannelType::Stable,
             url: "gitlab.com".to_string(),
             directory: None,
+            module: None,
         };
 
         let mut list = InstalledList::new();
@@ -681,6 +694,7 @@ mod installed_list_test {
             channel: ChannelType::Stable,
             url: "gitlab.com".to_string(),
             directory: None,
+            module: None,
         };
 
         list.insert_installed_package(package_3);
@@ -725,6 +739,7 @@ url = "http://example.com"
             channel: ChannelType::Stable,
             url: "http://example.com".to_string(),
             directory: None,
+            module: None,
         };
 
         assert_eq!(value.to_id(), package.to_id());
@@ -763,6 +778,7 @@ url = "http://example.com"
             channel: ChannelType::Stable,
             url: "http://example.com".to_string(),
             directory: None,
+            module: None,
         };
 
         list.add_installed_package(package.clone());

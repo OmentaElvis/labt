@@ -77,7 +77,12 @@ impl<'lua, 'a> ExecutableLua {
             .load(lua_string)
             .set_name(self.path.to_str().unwrap_or("[unknown]"));
 
-        let globs = &self.lua.globals();
+        Self::add_path(&self.lua, &self.package_paths)?;
+
+        Ok(chunk)
+    }
+    pub fn add_path(lua: &'lua Lua, package_paths: &str) -> Result<()> {
+        let globs = &lua.globals();
         let package: Table = globs
             .get("package")
             .context("Failed to get package table from lua global context")?;
@@ -87,12 +92,28 @@ impl<'lua, 'a> ExecutableLua {
 
         let package_path = package_path.trim_end_matches(';').to_string();
 
-        let package_path = [package_path, self.package_paths.clone()].join(";");
+        let package_path = [&package_path, package_paths].join(";");
         package
             .set("path", package_path)
             .context("Failed to set package.path in lua global context")?;
+        Ok(())
+    }
+    pub fn add_cpath(lua: &'lua Lua, package_paths: &str) -> Result<()> {
+        let globs = &lua.globals();
+        let package: Table = globs
+            .get("package")
+            .context("Failed to get package table from lua global context")?;
+        let package_path: String = package
+            .get("cpath")
+            .context("Failed to get package.cpath from lua global context")?;
 
-        Ok(chunk)
+        let package_path = package_path.trim_end_matches(';').to_string();
+
+        let package_path = [&package_path, package_paths].join(";");
+        package
+            .set("cpath", package_path)
+            .context("Failed to set package.cpath in lua global context")?;
+        Ok(())
     }
     pub fn get_build_step(&self) -> Step {
         self.build_step
@@ -271,18 +292,45 @@ impl<'lua, 'a> ExecutableLua {
                     // only allow explicitly declared sdk modules in plugin.toml
                     if let Some(sdk) = sdk.iter().find(|s| s.name.eq(module)).cloned() {
                         if let Some(package) = installed_list.get(&sdk.to_id()) {
-                            Ok(
-                                    Value::Function(lua.create_function(move |lua, module:String | {
-                                        let table = lua.create_table()?;
-                                        // only load the bare minimal required to index the hashmap
-                                        table.set("name", sdk.name.clone())?;
-                                        table.set(REPOSITORY_NAME, package.repository_name.to_string())?;
-                                        table.set(VERSION, package.version.to_string())?;
-                                        table.set(PATH, package.path.clone())?;
-                                        table.set(CHANNEL, package.channel.to_string())?;
-                                        Self::build_sdk_module(lua, module, package.to_id(), table)
-                                    })?),
-                            )
+                            if package.module.unwrap_or(false) {
+                                Ok(
+                                    Value::Function(lua.create_function(move |lua, _: String| {
+                                        let dir = Self::get_package_directory(package)
+                                            .context(format!(
+                                                "Failed to obtain sdk install directory for package: {}",
+                                                package.to_id()
+                                            ))
+                                            .map_err(MluaAnyhowWrapper::external)?;
+                                        let init = dir.join("init.lua");
+                                        
+                                        let lua_string =
+                                            read_to_string(&init).context(format!("Failed to read {:?}", init)).map_err(MluaAnyhowWrapper::external)?;
+                                        ExecutableLua::add_path(lua, &dir.join("?.lua").to_string_lossy()).map_err(MluaAnyhowWrapper::external)?;
+                                        ExecutableLua::add_path(lua, &dir.join("?").join("init.lua").to_string_lossy()).map_err(MluaAnyhowWrapper::external)?;
+                                        ExecutableLua::add_cpath(lua, &dir.join("?.so").to_string_lossy()).map_err(MluaAnyhowWrapper::external)?;
+
+                                        // add default paths and those defined by the plugin
+                                        let chunk = lua
+                                            .load(lua_string)
+                                            .set_name(init.to_str().unwrap_or("[unknown]"));
+                                        chunk.into_function()?.call::<_, Value>(())
+                                    })?)
+                                )
+                            } else {
+                                Ok(
+                                        Value::Function(lua.create_function(move |lua, module:String | {
+
+                                            let table = lua.create_table()?;
+                                            // only load the bare minimal required to index the hashmap
+                                            table.set("name", sdk.name.clone())?;
+                                            table.set(REPOSITORY_NAME, package.repository_name.to_string())?;
+                                            table.set(VERSION, package.version.to_string())?;
+                                            table.set(PATH, package.path.clone())?;
+                                            table.set(CHANNEL, package.channel.to_string())?;
+                                            Self::build_sdk_module(lua, module, package.to_id(), table)
+                                        })?),
+                                )
+                            }
                         } else {
                             Err(MluaAnyhowWrapper::external(anyhow!(
                                 "Sdk package {} is not installed.",

@@ -614,6 +614,7 @@ pub mod toml_strings {
     pub const REMOTE_PACKAGE: &str = "remote_package";
     pub const CONFIG_FILE: &str = "repository.toml";
     pub const DIRECTORY: &str = "directory";
+    pub const MODULE: &str = "module";
 }
 
 // Entry point
@@ -732,6 +733,7 @@ pub fn write_repository_config(repo: &RepositoryXml, path: &Path) -> anyhow::Res
             archive_table.insert(URL, value(archive.get_url()));
             archive_table.insert(CHECKSUM, value(archive.get_checksum()));
             archive_table.insert(SIZE, value(archive.get_size() as i64));
+            archive_table.insert(MODULE, value(archive.is_module()));
 
             if !archive.get_host_os().is_empty() {
                 archive_table.insert(OS, value(archive.get_host_os()));
@@ -917,6 +919,13 @@ pub fn parse_repository_toml(path: &Path) -> anyhow::Result<RepositoryXml> {
                                 32 => crate::config::repository::BitSizeType::Bit32,
                                 _ => crate::config::repository::BitSizeType::Unset,
                             });
+                        }
+
+                        // module
+                        if let Some(module) = entry.get(MODULE) {
+                            if let Some(val) = module.as_bool() {
+                                archive.set_is_module(val);
+                            }
                         }
 
                         package.add_archive(archive);
@@ -1496,6 +1505,7 @@ impl Installer {
             directory: Some(target_path.to_path_buf()),
             channel: package.get_channel().to_owned(),
             repository_name: target.repository_name.to_string(),
+            module: None,
         })
     }
 
@@ -1660,6 +1670,7 @@ impl Installer {
             directory: Some(target_path.to_path_buf()),
             channel: package.get_channel().to_owned(),
             repository_name: target.repository_name.to_string(),
+            module: None,
         })
     }
     /// spawns a new tokio instance to do all the installs
@@ -1724,6 +1735,7 @@ impl Installer {
                             channel: target.package.get_channel().clone(),
                             url: String::new(),
                             directory: Some(target.target_path.clone()),
+                            module: None,
                         },
                         self.quiet,
                         true,
@@ -1757,6 +1769,7 @@ impl Installer {
                             channel: target.package.get_channel().clone(),
                             url: String::new(),
                             directory: Some(target.target_path.clone()),
+                            module: None,
                         },
                         self.quiet,
                         true,

@@ -1095,6 +1095,14 @@ SDK package. This module includes both predefined fields and dynamic functions.
   **Description**: The release channel of the SDK package, such 
 	as `stable`, `beta`, etc.
 
+### API
+LABt can load the SDK in two modes. If an SDK marks itself as a module by
+defining `<module>true</module>` in its repository.xml entry, LABt will
+treat it as a Lua project. In this case, it will attempt to load `init.lua` for
+the SDK into the current Lua context, behaving like the standard require function.
+If the SDK is not marked as a module, LABt will return an SDK table that contains the
+following utility functions.
+
 ### Functions
 
 ***
