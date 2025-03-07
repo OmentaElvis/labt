@@ -40,6 +40,9 @@ pub struct LabToml {
     /// core-java = {url = "https://gitlab.com/lab-tool/core-java", version="v0.1.0"}
     /// ```
     pub plugins: Option<HashMap<String, PluginTable>>,
+
+    #[serde(flatten)]
+    extra: HashMap<String, toml::Value>,
 }
 
 /// The project details
@@ -331,6 +334,7 @@ fn get_resolvers_from_config_test() {
             ),
         ])),
         plugins: None,
+        extra: HashMap::new(),
     };
 
     let resolvers = get_resolvers_from_config(&config).expect("Failed to get resolvers");
