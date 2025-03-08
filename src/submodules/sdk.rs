@@ -615,6 +615,7 @@ pub mod toml_strings {
     pub const CONFIG_FILE: &str = "repository.toml";
     pub const DIRECTORY: &str = "directory";
     pub const MODULE: &str = "module";
+    pub const COMMAND: &str = "command";
 }
 
 // Entry point
@@ -734,6 +735,9 @@ pub fn write_repository_config(repo: &RepositoryXml, path: &Path) -> anyhow::Res
             archive_table.insert(CHECKSUM, value(archive.get_checksum()));
             archive_table.insert(SIZE, value(archive.get_size() as i64));
             archive_table.insert(MODULE, value(archive.is_module()));
+            if let Some(command) = archive.get_command() {
+                archive_table.insert(COMMAND, value(command));
+            }
 
             if !archive.get_host_os().is_empty() {
                 archive_table.insert(OS, value(archive.get_host_os()));
@@ -925,6 +929,13 @@ pub fn parse_repository_toml(path: &Path) -> anyhow::Result<RepositoryXml> {
                         if let Some(module) = entry.get(MODULE) {
                             if let Some(val) = module.as_bool() {
                                 archive.set_is_module(val);
+                            }
+                        }
+
+                        // command
+                        if let Some(command) = entry.get(COMMAND) {
+                            if let Some(val) = command.as_str() {
+                                archive.set_command(Some(val.to_string()))
                             }
                         }
 
@@ -1506,6 +1517,7 @@ impl Installer {
             channel: package.get_channel().to_owned(),
             repository_name: target.repository_name.to_string(),
             module: None,
+            command: None,
         })
     }
 
@@ -1671,6 +1683,7 @@ impl Installer {
             channel: package.get_channel().to_owned(),
             repository_name: target.repository_name.to_string(),
             module: None,
+            command: None,
         })
     }
     /// spawns a new tokio instance to do all the installs
@@ -1736,6 +1749,7 @@ impl Installer {
                             url: String::new(),
                             directory: Some(target.target_path.clone()),
                             module: None,
+                            command: None,
                         },
                         self.quiet,
                         true,
@@ -1770,6 +1784,7 @@ impl Installer {
                             url: String::new(),
                             directory: Some(target.target_path.clone()),
                             module: None,
+                            command: None,
                         },
                         self.quiet,
                         true,

@@ -123,7 +123,7 @@ impl<'lua, 'a> ExecutableLua {
     }
 
     /// Builds the package directory if not already installed
-    fn get_package_directory(package: &InstalledPackage) -> anyhow::Result<PathBuf> {
+    pub fn get_package_directory(package: &InstalledPackage) -> anyhow::Result<PathBuf> {
         if let Some(dir) = &package.directory {
             return Ok(dir.clone());
         }

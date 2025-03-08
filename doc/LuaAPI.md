@@ -338,7 +338,60 @@ r55 = {repo = "labt", path = "r55;lua", version = "0.1.0", channel = "stable"}
 # r55 = "labt:r55;lua:0.1.0:stable"
 ```
 
-#### Custom behaviour implemented in parsing the repository xml.
+#### Dynamic SDK Command Resolution
+When you pass an unknown command to LABt, it attempts to resolve
+it dynamically from the list of installed SDK packages by examining custom repository
+tags.
+
+LABt first scans all installed SDK packages that have module mode enabled.
+If an entry is found with a `<command>` tag matching the
+subcommand and `<module>` set to true, LABt loads its init
+.lua file and executes the global run function with the command-line
+arguments as parameters.
+
+If no such module is found, LABt falls back to PATH mode
+. In this mode, it searches for an executable file named after
+the subcommand in the SDK root directories. If a matching executable is
+found, it is executed with the provided arguments; otherwise, LABt
+returns an error.
+
+**Example:**
+Running:
+
+```bash
+labt r55 --help
+```
+Since r55 is not a defined subcommand in LABt, it falls back
+to the SDK list. If an SDK package has defined `<command>r55</command>`
+and `<module>true</module>`, LABt
+will load its init.lua and execute its run function with the
+arguments. If no SDK package meets these requirements, LABt searches for
+a file named r55 in the SDK root directories and executes the first
+instance it finds.
+
+#### Dynamic SDK Command Resolution
+When you pass unknown command to LABt, it tries to dynamically resolve it from the list of
+installed sdk packages. 
+LABt determines how to execute SDK commands by examining custom repository tags.
+LABt first scans through all installed sdk packages that have defined module mode. If an entry
+is found which matches the subcommand, then LABt loads its init.lua and runs a `run` function as
+the entry point with the command line arguments as the parameters. If none is found, LABt fallsback to
+PATH mode where it tries to find a matching executable file in the sdk root directory. If no substitute is found
+it fails with an error. If it is found, the command is executed with the passed arguments.
+
+Example;
+running
+```bash
+labt r55 --help
+```
+LABt does not have 'r55' as an defined subcommand, so it will fallback to sdk list. If an sdk has defined `<command>r55</command>` and module as true,
+it will load its init.lua and execute it with the arguments. If no sdk meets the requirements, LABt proceeds to look for a file named 'r55' in all installed sdk package directories and
+executes the first found instance. 
+
+
+
+
+#### Custom behavior implemented in parsing the repository xml.
 You can specify an archive download url using `<base-url>` tag.
 You need to specify this for archives otherwise it will default to google repo base url.
 
@@ -359,6 +412,42 @@ You need to specify this for archives otherwise it will default to google repo b
 					<url>platform-34-ext11_r01.zip</url>
 					<!-- or -->
 					<!-- <url>https://example.com/repository/platform-34-ext11_r01.zip</url> -->
+			</complete>
+		</archive>
+	</archives>
+</remotePackage>
+```
+
+LABt uses additional custom XML tags to determine how SDK commands are resolved.
+The following changes the behavior of LABt during command parsing and require lua function.
+
+- `<module>`:
+	If set to true, LABt treats the SDK package as a Lua module.
+	In this mode, the package must include an `init.lua` file.
+	If parsing command line args, the init script must define a global `run` function that will be called with commandline args.
+	`<command>` tag then pecifies the subcommand that triggers the execution of this module.
+
+- `<command>`:
+	This tag specifies the subcommand name that LABt uses to identify and run the SDK command.
+	If module mode is not activated, the value from `<command>` is used as a subdirectory in the sdk folder to locate and execute the corresponding SDK tool.
+
+```xml
+<remotePackage path="r55;lua">
+	<revision>
+		<major>1</major>
+	</revision>
+	<display-name>Android SDK Platform 34-ext11</display-name>
+	<uses-license ref="r55-bsd"/>
+	<channelRef ref="channel-0"/>
+	<archives>
+		<archive>
+			<complete>
+				<size>634467</size>
+					<checksum>dfb498e3d0d97769aef5e1eb9ddff5b001e65829</checksum>
+					<url>platform-34-ext11_r01.zip</url>
+					+ <module>true</module>
+					<!-- when we run `labt r55`, execute this module -->
+					+ <command>r55</command>
 			</complete>
 		</archive>
 	</archives>

@@ -28,6 +28,7 @@ pub struct InstalledPackage {
     pub url: String,
     pub directory: Option<PathBuf>,
     pub module: Option<bool>,
+    pub command: Option<String>,
 }
 impl InstalledPackage {
     pub fn new(
@@ -44,6 +45,7 @@ impl InstalledPackage {
             url: String::default(),
             directory: None,
             module: None,
+            command: None,
         }
     }
 }
@@ -458,6 +460,11 @@ impl FromStr for InstalledList {
                         p.module = module.as_bool();
                     }
 
+                    // parse command
+                    if let Some(command) = package.get(toml_strings::COMMAND) {
+                        p.command = command.as_str().map(|c| c.to_string());
+                    }
+
                     package_list.push(p);
                 }
             }
@@ -521,6 +528,10 @@ impl Display for InstalledList {
             table.insert(toml_strings::URL, value(&package.url));
             if let Some(module) = &package.module {
                 table.insert(toml_strings::MODULE, value(*module));
+            }
+
+            if let Some(command) = &package.command {
+                table.insert(toml_strings::COMMAND, value(command.clone()));
             }
 
             packages.push(table);
@@ -653,6 +664,7 @@ mod installed_list_test {
             url: "gitlab.com".to_string(),
             directory: None,
             module: None,
+            command: None,
         };
 
         let mut list = InstalledList::new();
@@ -671,6 +683,7 @@ mod installed_list_test {
             url: "gitlab.com".to_string(),
             directory: None,
             module: None,
+            command: None,
         };
         let package_2: InstalledPackage = InstalledPackage {
             repository_name: "google".to_string(),
@@ -680,6 +693,7 @@ mod installed_list_test {
             url: "gitlab.com".to_string(),
             directory: None,
             module: None,
+            command: None,
         };
 
         let mut list = InstalledList::new();
@@ -695,6 +709,7 @@ mod installed_list_test {
             url: "gitlab.com".to_string(),
             directory: None,
             module: None,
+            command: None,
         };
 
         list.insert_installed_package(package_3);
@@ -740,6 +755,7 @@ url = "http://example.com"
             url: "http://example.com".to_string(),
             directory: None,
             module: None,
+            command: None,
         };
 
         assert_eq!(value.to_id(), package.to_id());
@@ -779,6 +795,7 @@ url = "http://example.com"
             url: "http://example.com".to_string(),
             directory: None,
             module: None,
+            command: None,
         };
 
         list.add_installed_package(package.clone());

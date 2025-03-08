@@ -37,6 +37,7 @@ mod tags {
     pub const PREVIEW: &[u8] = b"preview";
     pub const LICENSE: &[u8] = b"license";
     pub const MODULE: &[u8] = b"module";
+    pub const COMMAND: &[u8] = b"command";
 }
 
 mod channel_strings {
@@ -197,6 +198,8 @@ pub struct Archive {
     host_bits: BitSizeType,
     /// Treat this as a lua module. Labt will try to load init.lua when this module is required by plugins.
     module: Option<bool>,
+    /// Export init.lua:run function in which LABt will execute it when LABt fails to match internal subcommands
+    command: Option<String>,
 }
 
 impl RemotePackage {
@@ -284,6 +287,9 @@ impl Archive {
     pub fn get_host_bits(&self) -> BitSizeType {
         self.host_bits
     }
+    pub fn get_command(&self) -> &Option<String> {
+        &self.command
+    }
     pub fn is_module(&self) -> bool {
         self.module.unwrap_or(false)
     }
@@ -305,6 +311,9 @@ impl Archive {
     }
     pub fn set_is_module(&mut self, value: bool) {
         self.module = Some(value);
+    }
+    pub fn set_command(&mut self, command: Option<String>) {
+        self.command = command;
     }
 }
 
@@ -381,6 +390,7 @@ enum ArchiveState {
     ReadHostOs,
     ReadHostBits,
     ReadModule,
+    ReadCommand,
 }
 #[derive(Debug, Clone, Copy)]
 enum RevisionState {
@@ -679,6 +689,7 @@ impl RepositoryXmlParser {
                     tags::HOST_OS => ArchiveState::ReadHostOs,
                     tags::HOST_BITS => ArchiveState::ReadHostBits,
                     tags::MODULE => ArchiveState::ReadModule,
+                    tags::COMMAND => ArchiveState::ReadCommand,
                     _ => ArchiveState::Archive,
                 },
                 Event::End(tag) if tag.local_name().into_inner() == tags::ARCHIVE => {
@@ -780,6 +791,18 @@ impl RepositoryXmlParser {
                     ArchiveState::ReadModule
                 }
                 _ => ArchiveState::ReadModule,
+            },
+            // <command></command>
+            ArchiveState::ReadCommand => match event {
+                Event::End(tag) if tag.local_name().into_inner() == tags::COMMAND => {
+                    ArchiveState::Archive
+                }
+                Event::Text(text) => {
+                    let command = text.unescape()?.to_string();
+                    self.current_archive.command = Some(command);
+                    ArchiveState::ReadCommand
+                }
+                _ => ArchiveState::ReadCommand,
             },
         };
         Ok(new_state)
