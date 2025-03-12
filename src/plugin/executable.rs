@@ -4,7 +4,7 @@ use std::process::Command;
 use std::rc::Rc;
 
 use anyhow::{anyhow, Context, Result};
-use mlua::{Chunk, IntoLuaMulti, Lua, MultiValue, Table, Value};
+use mlua::{Chunk, IntoLuaMulti, Lua, LuaSerdeExt, MultiValue, Table, Value};
 
 use crate::get_project_root;
 use crate::submodules::build::Step;
@@ -313,7 +313,11 @@ impl<'lua, 'a> ExecutableLua {
                                         let chunk = lua
                                             .load(lua_string)
                                             .set_name(init.to_str().unwrap_or("[unknown]"));
-                                        chunk.into_function()?.call::<_, Value>(())
+                                        let table = chunk.into_function()?.call::<_, Value>(())?;
+                                        if let Some(table) = table.as_table() {
+                                            table.set("_SDK", lua.to_value(package)?)?;
+                                        }
+                                        Ok(table)
                                     })?)
                                 )
                             } else {

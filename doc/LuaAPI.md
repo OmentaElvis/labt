@@ -346,8 +346,50 @@ tags.
 LABt first scans all installed SDK packages that have module mode enabled.
 If an entry is found with a `<command>` tag matching the
 subcommand and `<module>` set to true, LABt loads its init
-.lua file and executes the global run function with the command-line
-arguments as parameters.
+.lua file and executes the run function with the command-line
+arguments as first parameter and the sdk info as the second parameter.
+
+```lua
+--- Example module
+--- init.lua
+
+--- executed by
+--- labt icons --web
+
+local M = {}
+
+---The entry point from the command line
+---@param args table - List of command line args passed to LABt. The first at index 1 is the command name
+---@params sdk table - The sdk table that contains information about this sdk package. Its path, version etc.
+function M.run(args, sdk)
+	log.dump(args)
+-- outputs
+--{
+--	[1] = "icons",
+--  [2] = "--web",
+--}
+
+	log.dump(sdk)
+---{
+---  ["channel"] = "Beta",
+---  ["command"] = "icons",
+---  ["directory"] = "/home/metro/.labt/sdk/labt-icons/",
+---  ["module"] = true,
+---  ["path"] = "labt-icons",
+---  ["repository_name"] = "labt",
+---  ["url"] = "",
+---  ["version"] = {
+---    ["major"] = 0,
+---    ["micro"] = 2,
+---    ["minor"] = 1,
+---    ["preview"] = 0,
+---  },
+---}
+
+end
+
+return M
+```
 
 If no such module is found, LABt falls back to PATH mode
 . In this mode, it searches for an executable file named after
@@ -424,7 +466,7 @@ The following changes the behavior of LABt during command parsing and require lu
 - `<module>`:
 	If set to true, LABt treats the SDK package as a Lua module.
 	In this mode, the package must include an `init.lua` file.
-	If parsing command line args, the init script must define a global `run` function that will be called with commandline args.
+	If parsing command line args, the init script must define a `run` function that will be called with commandline args.
 	`<command>` tag then pecifies the subcommand that triggers the execution of this module.
 
 - `<command>`:

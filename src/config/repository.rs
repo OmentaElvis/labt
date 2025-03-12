@@ -48,7 +48,7 @@ mod channel_strings {
     pub const CANARY: &str = "canary";
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum ChannelType {
     Stable,
     Beta,
@@ -402,7 +402,7 @@ enum RevisionState {
 }
 /// A full revision, with a major.minor.micro and an
 /// optional preview number. The major number is mandatory.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct Revision {
     pub major: u32,
     pub minor: u32,

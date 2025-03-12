@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{bail, Context};
+use serde::Serialize;
 use toml_edit::{value, ArrayOfTables, Document, Table};
 
 use crate::config::repository::{ChannelType, Revision};
@@ -19,7 +20,7 @@ const PACKAGE: &str = "package";
 const ACCEPTED_LICENSES: &str = "accepted_licenses";
 pub const SDK_PATH_ERR_STRING: &str = "Failed to get android sdk path";
 
-#[derive(Debug, Default, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, Default, PartialEq, Eq, Hash, Clone, Serialize)]
 pub struct InstalledPackage {
     pub repository_name: String,
     pub path: String,

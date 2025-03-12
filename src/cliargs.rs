@@ -17,7 +17,7 @@ use anyhow::Context;
 use clap::{CommandFactory, Parser, Subcommand};
 use console::style;
 use log::error;
-use mlua::Function;
+use mlua::{Function, LuaSerdeExt};
 
 #[derive(Parser)]
 #[clap(version = LABT_VERSION)]
@@ -72,12 +72,14 @@ fn run_sdk_command(package: &InstalledPackage, args: Vec<String>) -> anyhow::Res
     ExecutableLua::add_cpath(lua, &dir.join("?.so").to_string_lossy())?;
 
     let chunk = exe.load()?;
-    chunk.exec()?;
-    let globals = lua.globals();
-    let function: Function = globals.get("run").context(
-        "Failed to find `run` function in global context. Unable to locate entry point.",
-    )?;
-    function.call::<&[String], mlua::Value>(&args[1..])?;
+    let table: Option<mlua::Table> = chunk.eval()?;
+    if let Some(table) = table {
+        table.set("_SDK", lua.to_value(package)?)?;
+        let function: Function = table
+            .get("run")
+            .context("Failed to find `run` function in sdk table. Unable to locate entry point.")?;
+        function.call::<_, mlua::MultiValue>((&args[1..], lua.to_value(package)?))?;
+    }
 
     Ok(())
 }
