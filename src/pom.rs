@@ -1011,7 +1011,7 @@ impl Parser {
                 }
                 Event::Text(e) => {
                     if let Some(dep) = &mut self.current_dependency {
-                        dep.artifact_id = e.unescape()?.to_string();
+                        dep.artifact_id = e.unescape()?.trim().to_string();
                     }
                     DependencyState::ReadArtifactId
                 }
@@ -1025,7 +1025,7 @@ impl Parser {
 
                 Event::Text(e) => {
                     if let Some(dep) = &mut self.current_dependency {
-                        dep.group_id = e.unescape()?.to_string();
+                        dep.group_id = e.unescape()?.trim().to_string();
                     }
                     DependencyState::ReadGroupId
                 }
@@ -1038,7 +1038,7 @@ impl Parser {
                 }
                 Event::Text(e) => {
                     if let Some(dep) = &mut self.current_dependency {
-                        dep.selected_version = Some(e.unescape()?.to_string());
+                        dep.selected_version = Some(e.unescape()?.trim().to_string());
                     }
                     DependencyState::ReadVersion
                 }
@@ -1158,7 +1158,7 @@ impl Parser {
                     ExclusionsState::Exclusion(exclusion)
                 }
                 Event::Text(e) => {
-                    let artifact_id = e.unescape()?.to_string();
+                    let artifact_id = e.unescape()?.trim().to_string();
                     exclusion.artifact_id = artifact_id;
                     ExclusionsState::ReadArtifactId(exclusion)
                 }
@@ -1171,7 +1171,7 @@ impl Parser {
                     ExclusionsState::Exclusion(exclusion)
                 }
                 Event::Text(e) => {
-                    let group_id = e.unescape()?.to_string();
+                    let group_id = e.unescape()?.trim().to_string();
                     exclusion.group_id = group_id;
                     ExclusionsState::ReadGroupId(exclusion)
                 }
@@ -1210,7 +1210,7 @@ impl Parser {
                     PropertiesState::Properties
                 }
                 Event::Text(e) => {
-                    let value = e.unescape()?.to_string();
+                    let value = e.unescape()?.trim().to_string();
                     self.current_property_value.push(value);
 
                     PropertiesState::ReadEntry
@@ -1243,7 +1243,7 @@ impl Parser {
                 }
                 Event::Text(e) => {
                     if let Some(parent) = &mut self.project.parent {
-                        parent.artifact_id = e.unescape()?.to_string();
+                        parent.artifact_id = e.unescape()?.trim().to_string();
                     }
                     ParentState::Parent
                 }
@@ -1257,7 +1257,7 @@ impl Parser {
 
                 Event::Text(e) => {
                     if let Some(parent) = &mut self.project.parent {
-                        parent.group_id = e.unescape()?.to_string();
+                        parent.group_id = e.unescape()?.trim().to_string();
                     }
                     ParentState::ReadGroupId
                 }
@@ -1270,7 +1270,7 @@ impl Parser {
                 }
                 Event::Text(e) => {
                     if let Some(parent) = &mut self.project.parent {
-                        parent.version = e.unescape()?.to_string();
+                        parent.version = e.unescape()?.trim().to_string();
                     }
                     ParentState::ReadVersion
                 }
@@ -1325,7 +1325,7 @@ impl Parser {
                     ParserState::Project
                 }
                 Event::Text(e) => {
-                    self.project.artifact_id = e.unescape()?.to_string();
+                    self.project.artifact_id = e.unescape()?.trim().to_string();
                     ParserState::ReadArtifactId
                 }
                 _ => ParserState::ReadArtifactId,
@@ -1337,7 +1337,7 @@ impl Parser {
                     ParserState::Project
                 }
                 Event::Text(e) => {
-                    self.project.group_id = e.unescape()?.to_string();
+                    self.project.group_id = e.unescape()?.trim().to_string();
                     ParserState::ReadGroupId
                 }
                 _ => ParserState::ReadGroupId,
@@ -1349,7 +1349,7 @@ impl Parser {
                     ParserState::Project
                 }
                 Event::Text(e) => {
-                    self.project.selected_version = Some(e.unescape()?.to_string());
+                    self.project.selected_version = Some(e.unescape()?.trim().to_string());
                     ParserState::ReadVersion
                 }
                 _ => ParserState::ReadVersion,
@@ -1359,7 +1359,7 @@ impl Parser {
                     ParserState::Project
                 }
                 Event::Text(e) => {
-                    self.project.packaging = e.unescape()?.to_string();
+                    self.project.packaging = e.unescape()?.trim().to_string();
                     ParserState::ReadPackaging
                 }
                 _ => ParserState::ReadPackaging,

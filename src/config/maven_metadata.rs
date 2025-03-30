@@ -280,7 +280,7 @@ impl Parser {
                     VersionsState::Versions
                 }
                 Event::Text(text) => {
-                    self.current_version = text.unescape()?.to_string();
+                    self.current_version = text.unescape()?.trim().to_string();
                     VersionsState::ReadVersion
                 }
                 _ => VersionsState::ReadVersion,
@@ -309,7 +309,7 @@ impl Parser {
                     VersioningState::Versioning
                 }
                 Event::Text(text) => {
-                    self.metadata.latest = Some(text.unescape()?.to_string());
+                    self.metadata.latest = Some(text.unescape()?.trim().to_string());
                     VersioningState::ReadLatest
                 }
                 _ => VersioningState::ReadLatest,
@@ -320,7 +320,7 @@ impl Parser {
                     VersioningState::Versioning
                 }
                 Event::Text(text) => {
-                    self.metadata.release = Some(text.unescape()?.to_string());
+                    self.metadata.release = Some(text.unescape()?.trim().to_string());
                     VersioningState::ReadRelease
                 }
                 _ => VersioningState::ReadRelease,
@@ -355,7 +355,7 @@ impl Parser {
                     ParserState::Metadata
                 }
                 Event::Text(text) => {
-                    self.metadata.group_id = text.unescape()?.to_string();
+                    self.metadata.group_id = text.unescape()?.trim().to_string();
                     ParserState::ReadGroupId
                 }
                 _ => ParserState::ReadGroupId,
@@ -366,7 +366,7 @@ impl Parser {
                     ParserState::Metadata
                 }
                 Event::Text(text) => {
-                    self.metadata.artifact_id = text.unescape()?.to_string();
+                    self.metadata.artifact_id = text.unescape()?.trim().to_string();
                     ParserState::ReadArtifactId
                 }
                 _ => ParserState::ReadArtifactId,
@@ -377,7 +377,7 @@ impl Parser {
                     ParserState::Metadata
                 }
                 Event::Text(text) => {
-                    self.metadata.version = Some(text.unescape()?.to_string());
+                    self.metadata.version = Some(text.unescape()?.trim().to_string());
                     ParserState::ReadVersion
                 }
                 _ => ParserState::ReadVersion,
