@@ -3,12 +3,15 @@ use std::{
     io::{Read, Write},
 };
 
-use anyhow::Context;
+use anyhow::{bail, Context};
 use toml_edit::{value, Document};
 
 use crate::{
-    config::lock::strings::{ARTIFACT_ID, DEPENDENCIES, GROUP_ID, PACKAGING, URL, VERSION},
+    config::lock::strings::{
+        ARTIFACT_ID, DEPENDENCIES, GROUP_ID, LABT_VERSION_STR, PACKAGING, URL, VERSION,
+    },
     submodules::resolve::ProjectDep,
+    LABT_VERSION,
 };
 
 use super::Cache;
@@ -18,6 +21,7 @@ pub enum PropertiesError {
     ParseError,
     IOError(String),
     LabtHomeError,
+    LabtVersionError,
 }
 
 impl Display for PropertiesError {
@@ -31,6 +35,10 @@ impl Display for PropertiesError {
             }
             Self::ParseError => writeln!(f, "Failed to parse properties toml file"),
             Self::IOError(msg) => writeln!(f, "{}", msg),
+            Self::LabtVersionError => writeln!(
+                f,
+                "Current labt version is incompatible with properties version."
+            ),
         }
     }
 }
@@ -51,6 +59,7 @@ pub fn write_properties(project: &ProjectDep) -> anyhow::Result<()> {
     })?;
 
     let mut table = toml_edit::table();
+    table[LABT_VERSION_STR] = value(LABT_VERSION);
     table[GROUP_ID] = value(&project.group_id);
     table[ARTIFACT_ID] = value(&project.artifact_id);
     table[VERSION] = value(&project.version);
@@ -71,6 +80,13 @@ pub fn write_properties(project: &ProjectDep) -> anyhow::Result<()> {
 }
 
 pub fn read_properties(project: &mut ProjectDep) -> anyhow::Result<()> {
+    read_properties_version(project, false)
+}
+
+pub fn read_properties_version(
+    project: &mut ProjectDep,
+    ignore_version: bool,
+) -> anyhow::Result<()> {
     let mut cache = Cache::new(
         project.group_id.clone(),
         project.artifact_id.clone(),
@@ -92,6 +108,14 @@ pub fn read_properties(project: &mut ProjectDep) -> anyhow::Result<()> {
     let toml = toml
         .parse::<Document>()
         .context(PropertiesError::ParseError)?;
+
+    if !ignore_version {
+        if let Some(version) = toml.get(LABT_VERSION_STR) {
+            if version.as_str().unwrap_or("") != LABT_VERSION {
+                bail!(PropertiesError::LabtVersionError);
+            }
+        }
+    }
 
     if let Some(url) = toml.get(URL) {
         project.base_url = url

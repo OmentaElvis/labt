@@ -102,13 +102,11 @@ impl Resolver for CacheResolver {
             if let Some(prop_error) = err.downcast_ref::<PropertiesError>() {
                 match prop_error {
                     // A cache miss
-                    PropertiesError::IOError(msg) => {
-                        return ResolverError::new(
-                            msg.to_string().as_str(),
-                            ResolverErrorKind::NotFound,
-                            Some(err),
-                        )
-                    }
+                    PropertiesError::IOError(msg) => ResolverError::new(
+                        msg.to_string().as_str(),
+                        ResolverErrorKind::NotFound,
+                        Some(err),
+                    ),
                     // A malformed toml error so ideally if it is a cache resolver
                     // we should proceed to do a network fetch. hopefully it should
                     // fix the syntax errors
@@ -121,6 +119,11 @@ impl Resolver for CacheResolver {
                     PropertiesError::LabtHomeError => ResolverError::new(
                         "Failed to fetch from cache dir",
                         ResolverErrorKind::Internal,
+                        Some(err),
+                    ),
+                    PropertiesError::LabtVersionError => ResolverError::new(
+                        "The cached version is incompatible",
+                        ResolverErrorKind::NotFound,
                         Some(err),
                     ),
                 }

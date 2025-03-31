@@ -1310,7 +1310,7 @@ impl BuildTree for ProjectWrapper {
                 artifact_id
             )
         };
-        let qualified_name = self.project.qualified_name().context(selected_version_err(
+        let mut qualified_name = self.project.qualified_name().context(selected_version_err(
             self.project.get_group_id(),
             self.project.get_artifact_id(),
         ))?;
@@ -1360,6 +1360,9 @@ impl BuildTree for ProjectWrapper {
                 }
             }
         }
+
+        // if true, we should resolve the tree
+        let mut solved_conflict = false;
 
         // before we even proceed to do this "expensive" fetch just confirm this isn't a
         // potential version conflict and return instead
@@ -1535,6 +1538,14 @@ Here is a tree to trace back to the project root:"
                     )));
                 }
             }
+            solved_conflict = true;
+        }
+
+        if solved_conflict {
+            qualified_name = self.project.qualified_name().context(selected_version_err(
+                self.project.get_group_id(),
+                self.project.get_artifact_id(),
+            ))?;
         }
         // fetch the dependencies of this project
         let (url, cache_hit) = self.fetch().context(format!(
