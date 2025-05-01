@@ -1402,6 +1402,7 @@ impl Parser {
     //     return &self.project;
     // }
 }
+// TODO optimize this function
 fn substitute_properties_vars(project: &mut Project) -> anyhow::Result<()> {
     // try to substitute properties.
     // some basic intelligence can be applied here since not all projects use variables
@@ -1446,6 +1447,22 @@ fn substitute_properties_vars(project: &mut Project) -> anyhow::Result<()> {
                 .context("Failed to select a suitable version for dependency")?;
         }
     }
+
+    // substitute dependency management
+    let old_management = &project.dependency_management;
+    let mut new_management = HashMap::new();
+
+    for (key, value) in old_management {
+        let new_key = project.substitute_string(key);
+        let mut dep = value.clone();
+        dep.artifact_id = project.substitute_string(&dep.artifact_id);
+        dep.group_id = project.substitute_string(&dep.group_id);
+        if let Some(v) = dep.selected_version {
+            dep.selected_version = Some(project.substitute_string(&v));
+        }
+        new_management.insert(new_key, dep);
+    }
+    project.dependency_management = new_management;
 
     Ok(())
 }
