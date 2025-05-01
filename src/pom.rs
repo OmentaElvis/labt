@@ -1,6 +1,7 @@
 use anyhow::Context;
 use anyhow::Result;
 use quick_xml::{events::Event, Reader};
+use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -44,6 +45,8 @@ pub enum Scope {
     PROVIDED,
     IMPORT,
     UNKOWN(String),
+    /// For parent dependency management
+    UNSET,
 }
 impl FromStr for Scope {
     type Err = anyhow::Error;
@@ -71,6 +74,7 @@ impl Display for Scope {
             Scope::SYSTEM => tags::SYSTEM,
             Scope::RUNTIME => tags::RUNTIME,
             Self::UNKOWN(s) => return write!(f, "{}", s),
+            Self::UNSET => return write!(f, ""),
         };
 
         write!(f, "{}", String::from_utf8_lossy(scope))
@@ -583,7 +587,7 @@ pub struct Project {
     pub parent: Option<ParentPom>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Exclusion {
     /// The actual project name
     pub artifact_id: String,
@@ -704,7 +708,10 @@ impl Project {
         if !parent.excludes.is_empty() {
             self.excludes.extend(parent.excludes.iter().cloned());
         }
-        self.scope = parent.scope.clone();
+        // since compile is the default scope, let the child override the parent scope
+        if self.scope == Scope::COMPILE || self.scope == Scope::UNSET {
+            self.scope = parent.scope.clone();
+        }
     }
     pub fn qualified_name(&self) -> anyhow::Result<String> {
         let version = self
@@ -1004,7 +1011,7 @@ impl Parser {
                 }
                 Event::Text(e) => {
                     if let Some(dep) = &mut self.current_dependency {
-                        dep.artifact_id = e.unescape()?.to_string();
+                        dep.artifact_id = e.unescape()?.trim().to_string();
                     }
                     DependencyState::ReadArtifactId
                 }
@@ -1018,7 +1025,7 @@ impl Parser {
 
                 Event::Text(e) => {
                     if let Some(dep) = &mut self.current_dependency {
-                        dep.group_id = e.unescape()?.to_string();
+                        dep.group_id = e.unescape()?.trim().to_string();
                     }
                     DependencyState::ReadGroupId
                 }
@@ -1031,7 +1038,7 @@ impl Parser {
                 }
                 Event::Text(e) => {
                     if let Some(dep) = &mut self.current_dependency {
-                        dep.selected_version = Some(e.unescape()?.to_string());
+                        dep.selected_version = Some(e.unescape()?.trim().to_string());
                     }
                     DependencyState::ReadVersion
                 }
@@ -1151,7 +1158,7 @@ impl Parser {
                     ExclusionsState::Exclusion(exclusion)
                 }
                 Event::Text(e) => {
-                    let artifact_id = e.unescape()?.to_string();
+                    let artifact_id = e.unescape()?.trim().to_string();
                     exclusion.artifact_id = artifact_id;
                     ExclusionsState::ReadArtifactId(exclusion)
                 }
@@ -1164,7 +1171,7 @@ impl Parser {
                     ExclusionsState::Exclusion(exclusion)
                 }
                 Event::Text(e) => {
-                    let group_id = e.unescape()?.to_string();
+                    let group_id = e.unescape()?.trim().to_string();
                     exclusion.group_id = group_id;
                     ExclusionsState::ReadGroupId(exclusion)
                 }
@@ -1203,7 +1210,7 @@ impl Parser {
                     PropertiesState::Properties
                 }
                 Event::Text(e) => {
-                    let value = e.unescape()?.to_string();
+                    let value = e.unescape()?.trim().to_string();
                     self.current_property_value.push(value);
 
                     PropertiesState::ReadEntry
@@ -1236,7 +1243,7 @@ impl Parser {
                 }
                 Event::Text(e) => {
                     if let Some(parent) = &mut self.project.parent {
-                        parent.artifact_id = e.unescape()?.to_string();
+                        parent.artifact_id = e.unescape()?.trim().to_string();
                     }
                     ParentState::Parent
                 }
@@ -1250,7 +1257,7 @@ impl Parser {
 
                 Event::Text(e) => {
                     if let Some(parent) = &mut self.project.parent {
-                        parent.group_id = e.unescape()?.to_string();
+                        parent.group_id = e.unescape()?.trim().to_string();
                     }
                     ParentState::ReadGroupId
                 }
@@ -1263,7 +1270,7 @@ impl Parser {
                 }
                 Event::Text(e) => {
                     if let Some(parent) = &mut self.project.parent {
-                        parent.version = e.unescape()?.to_string();
+                        parent.version = e.unescape()?.trim().to_string();
                     }
                     ParentState::ReadVersion
                 }
@@ -1318,7 +1325,7 @@ impl Parser {
                     ParserState::Project
                 }
                 Event::Text(e) => {
-                    self.project.artifact_id = e.unescape()?.to_string();
+                    self.project.artifact_id = e.unescape()?.trim().to_string();
                     ParserState::ReadArtifactId
                 }
                 _ => ParserState::ReadArtifactId,
@@ -1330,7 +1337,7 @@ impl Parser {
                     ParserState::Project
                 }
                 Event::Text(e) => {
-                    self.project.group_id = e.unescape()?.to_string();
+                    self.project.group_id = e.unescape()?.trim().to_string();
                     ParserState::ReadGroupId
                 }
                 _ => ParserState::ReadGroupId,
@@ -1342,7 +1349,7 @@ impl Parser {
                     ParserState::Project
                 }
                 Event::Text(e) => {
-                    self.project.selected_version = Some(e.unescape()?.to_string());
+                    self.project.selected_version = Some(e.unescape()?.trim().to_string());
                     ParserState::ReadVersion
                 }
                 _ => ParserState::ReadVersion,
@@ -1352,7 +1359,7 @@ impl Parser {
                     ParserState::Project
                 }
                 Event::Text(e) => {
-                    self.project.packaging = e.unescape()?.to_string();
+                    self.project.packaging = e.unescape()?.trim().to_string();
                     ParserState::ReadPackaging
                 }
                 _ => ParserState::ReadPackaging,
@@ -1407,6 +1414,27 @@ fn substitute_properties_vars(project: &mut Project) -> anyhow::Result<()> {
             project.selected_version = Some(project.substitute_string(version.as_str()));
         }
     }
+    // loop through dependencyManagement dependencies
+    let mut management: HashMap<String, Project> = HashMap::new();
+    for (id, dep) in project.dependency_management.iter() {
+        let mut dep = dep.clone();
+        let artifact_id = project.substitute_string(&dep.artifact_id.to_string());
+        let group_id = project.substitute_string(&dep.group_id);
+        let version: Option<String> = dep
+            .selected_version
+            .as_ref()
+            .map(|v| project.substitute_string(v));
+        dep.artifact_id = artifact_id;
+        dep.group_id = group_id;
+        if let Some(version) = version {
+            dep.version = version
+                .parse()
+                .context("Failed to select a suitable version for dependency")?;
+            dep.selected_version = Some(version);
+        }
+        management.insert(id.to_string(), dep);
+    }
+    project.dependency_management = management;
 
     // loop through all dependencies
     for (i, dep) in project.dependencies.clone().iter().enumerate() {

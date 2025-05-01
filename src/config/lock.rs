@@ -26,6 +26,7 @@ use self::strings::{
 /// containst string constants to be used in writing
 /// and parsing lock files
 pub mod strings {
+    pub const LABT_VERSION_STR: &str = "labt_version";
     pub const GROUP_ID: &str = "group_id";
     pub const ARTIFACT_ID: &str = "artifact_id";
     pub const VERSION: &str = "version";

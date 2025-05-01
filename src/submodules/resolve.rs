@@ -1,11 +1,13 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs::File;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
+use crate::caching::properties::write_properties;
 use crate::caching::save_dependencies;
 use crate::config::lock::strings::LOCK_FILE;
 use crate::config::lock::write_lock;
@@ -29,7 +31,9 @@ use log::info;
 
 #[derive(Args, Clone)]
 pub struct ResolveArgs {
-    // TODO add arguments
+    /// Print the dependency tree
+    #[clap(long, action)]
+    tree: bool,
 }
 
 pub struct Resolve {
@@ -41,6 +45,56 @@ impl Resolve {
         Resolve { args: args.clone() }
     }
 }
+fn build_display_tree(
+    dep: String,
+    tree: &mut TreeBuilder,
+    lock: &HashMap<String, &ProjectDep>,
+    added_branches: &mut Vec<String>,
+) {
+    // check if we have already encountered this particular entry
+    if added_branches.contains(&dep) {
+        tree.add_empty_child(format!("Circular: {}", dep));
+        return;
+    }
+    let mut iter = dep.split(":");
+    let group_id = iter.next().unwrap();
+    let artifact_id = iter.next().unwrap();
+
+    let id = format!("{}:{}", group_id, artifact_id);
+    added_branches.push(dep.to_string());
+    if let Some(dep) = lock.get(&id) {
+        if let Some(v) = iter.next() {
+            if v == dep.version {
+                tree.begin_child(format!(
+                    "{}:{} {}",
+                    id,
+                    v,
+                    dep.constraints.clone().unwrap_or(Constraint::default()),
+                ));
+            } else {
+                tree.begin_child(format!(
+                    "{}:{}->{} {}",
+                    id,
+                    v,
+                    dep.version,
+                    &dep.constraints.clone().unwrap_or(Constraint::default()),
+                ));
+            }
+        } else {
+            tree.begin_child(format!(
+                "{}:{}{}",
+                id,
+                dep.version,
+                dep.constraints.clone().unwrap_or(Constraint::default()),
+            ));
+        }
+        for p in &dep.dependencies {
+            build_display_tree(p.to_string(), tree, lock, added_branches);
+        }
+        tree.end_child();
+    }
+    added_branches.pop();
+}
 // =================
 // Entry point
 // =================
@@ -48,19 +102,88 @@ impl Submodule for Resolve {
     fn run(&mut self) -> Result<()> {
         // try reading toml file
         let config = get_config()?;
-        if let Some(deps) = &config.dependencies {
-            let dependencies: Vec<Project> = deps
-                .iter()
-                .map(|(artifact_id, table)| {
+        if !self.args.tree {
+            if let Some(deps) = &config.dependencies {
+                let mut dependencies: Vec<Project> = Vec::new();
+                for (artifact_id, table) in deps.iter() {
                     let mut p = Project::new(&table.group_id, artifact_id, &table.version);
-                    p.set_selected_version(Some(table.version.clone()));
-                    p
+                    if let Some(exclusion) = &table.exclude {
+                        for exclude in exclusion {
+                            p.add_exclusion(exclude.clone());
+                        }
+                    }
+                    let version = table.version.clone();
+                    p.set_version(version.parse()?);
+                    dependencies.push(p);
+                }
+                let resolvers =
+                    get_resolvers_from_config(&config).context("Failed to get resolvers")?;
+
+                resolve(dependencies, resolvers)?;
+            }
+        } else {
+            let mut tree = TreeBuilder::new(format!(
+                "{}:{}",
+                config.project.package, config.project.version
+            ));
+            let mut path: PathBuf = get_project_root()
+                .context("Failed to get project root directory")?
+                .clone();
+            path.push(LOCK_FILE);
+
+            // load resolved dependencies from lock file
+            let lock: LabtLock = if path.exists() {
+                load_labt_lock()?
+            } else {
+                LabtLock::default()
+            };
+            let lock: HashMap<String, &ProjectDep> = lock
+                .resolved
+                .iter()
+                .map(|dep| {
+                    let key = format!("{}:{}", dep.group_id, dep.artifact_id);
+                    (key, dep)
                 })
                 .collect();
-            let resolvers =
-                get_resolvers_from_config(&config).context("Failed to get resolvers")?;
 
-            resolve(dependencies, resolvers)?;
+            // recursively build a tree for a particular dependency while checking for circular dependency for a current branch
+            let mut added_branches: Vec<String> = Vec::new();
+            // grab dependencies from config and build a tree
+            if let Some(deps) = config.dependencies {
+                for (artifact_id, dep) in deps {
+                    let name = format!(
+                        "{}:{}",
+                        dep.group_id,
+                        dep.artifact_id.unwrap_or(artifact_id),
+                    );
+                    if let Some(entry) = lock.get(&name) {
+                        if entry.version != dep.version {
+                            tree.begin_child(format!(
+                                "{}:{}->{} {}",
+                                name,
+                                dep.version,
+                                entry.version,
+                                entry.constraints.clone().unwrap_or(Constraint::default())
+                            ));
+                        } else {
+                            tree.begin_child(format!("{}:{}", name, dep.version));
+                        }
+
+                        for i in &entry.dependencies {
+                            build_display_tree(
+                                i.to_string(),
+                                &mut tree,
+                                &lock,
+                                &mut added_branches,
+                            );
+                        }
+                    }
+
+                    tree.end_child();
+                }
+            }
+
+            print_tree(&tree.build())?;
         }
         Ok(())
     }
@@ -101,7 +224,7 @@ impl Display for Constraint {
                 write!(f, "{min}>")?;
             }
         }
-        write!(f, "v")?;
+        // write!(f, "v")?;
         if let Some((inclusive, max)) = &self.max {
             if *inclusive {
                 write!(f, "<={max}")?;
@@ -1052,6 +1175,8 @@ pub struct ProjectWrapper {
     project: Project,
     resolvers: Rc<RefCell<Vec<Box<dyn Resolver>>>>,
     progress: Option<Rc<RefCell<ProgressBar>>>,
+    // can be passed to the tree builder to allow them to safely resolve conflicts
+    project_dependencies: Option<Rc<HashMap<String, Project>>>,
 }
 
 impl ProjectWrapper {
@@ -1060,10 +1185,14 @@ impl ProjectWrapper {
             project,
             resolvers,
             progress: None,
+            project_dependencies: None,
         }
     }
     pub fn set_progress_bar(&mut self, progress: Option<Rc<RefCell<ProgressBar>>>) {
         self.progress = progress;
+    }
+    pub fn set_project_root_dependencies(&mut self, deps: Option<Rc<HashMap<String, Project>>>) {
+        self.project_dependencies = deps;
     }
     #[allow(unused)]
     pub fn add_resolver(&mut self, resolver: Box<dyn Resolver>) {
@@ -1105,7 +1234,7 @@ impl ProjectWrapper {
         Ok((url, cache_hit))
     }
 
-    fn compute_version(
+    pub fn compute_version(
         resolvers: Rc<RefCell<Vec<Box<dyn Resolver>>>>,
         dep: &Project,
     ) -> anyhow::Result<String> {
@@ -1181,7 +1310,7 @@ impl BuildTree for ProjectWrapper {
                 artifact_id
             )
         };
-        let qualified_name = self.project.qualified_name().context(selected_version_err(
+        let mut qualified_name = self.project.qualified_name().context(selected_version_err(
             self.project.get_group_id(),
             self.project.get_artifact_id(),
         ))?;
@@ -1205,7 +1334,7 @@ impl BuildTree for ProjectWrapper {
         ));
 
         // Version was resolved earlier and this is just a version conflict
-        let mut resolved_earlier = false;
+        let mut resolved_earlier: Option<usize> = None;
 
         if let Some(prog) = &self.progress {
             let prog = prog.borrow();
@@ -1216,6 +1345,25 @@ impl BuildTree for ProjectWrapper {
             qualified_name,
             self.project.get_scope(),
         );
+
+        // override versions defined on project root dependencies if available
+        if let Some(deps) = &self.project_dependencies {
+            let key = format!(
+                "{}:{}",
+                self.project.get_group_id(),
+                self.project.get_artifact_id()
+            );
+            if let Some(project) = deps.get(&key) {
+                if let VersionRequirement::Hard(v) = project.get_version() {
+                    self.project
+                        .set_version(VersionRequirement::Hard(v.clone()));
+                }
+            }
+        }
+
+        // if true, we should resolve the tree
+        let mut solved_conflict = false;
+
         // before we even proceed to do this "expensive" fetch just confirm this isn't a
         // potential version conflict and return instead
         if let Some((index, res)) = resolved.iter_mut().enumerate().find(|(_, res)| {
@@ -1259,7 +1407,7 @@ impl BuildTree for ProjectWrapper {
                                             if let Some(con) = &mut resolved[index].constraints {
                                                 con.contain_mut(c)?;
                                             }
-                                            resolved_earlier = true;
+                                            resolved_earlier = Some(index);
                                         } else {
                                             // we don't need this tree direction, its older
                                             unresolved.pop();
@@ -1310,8 +1458,22 @@ impl BuildTree for ProjectWrapper {
                                         }
                                         // update contained constraints
                                         resolved[index].constraints = Some(containment);
-                                        resolved_earlier = true;
+                                        resolved_earlier = Some(index);
                                     } else {
+                                        log::error!(
+                                            r"A dependency version conflict has been detected.
+This is usually handled automatically, but both conflicting dependencies have enforced a specific version.
+We cannot proceed with resolution as manual intervention is required. You can adjust the versions or exclude the offending version.
+Here is a tree to trace back to the project root:"
+                                        );
+                                        let mut tree = TreeBuilder::new("Project root".to_string());
+                                        for dep in unresolved {
+                                            tree.begin_child(dep.to_string());
+                                        }
+                                        #[cfg(not(test))]
+                                        {
+                                            print_tree(&tree.build())?;
+                                        }
                                         // the constraint cannot fit in this. This is fatal.
                                         bail!(
                                             "Dependency version conflict. {}:{} has a hard set version requirements as {} which does not fit within previously set constraint of {constraints}. Canceling the resolution.",
@@ -1341,7 +1503,7 @@ impl BuildTree for ProjectWrapper {
                                             version_compare::Cmp::Ge | version_compare::Cmp::Gt => {
                                                 // resolve this, it is bigger
                                                 resolved[index].version = v.clone();
-                                                resolved_earlier = true;
+                                                resolved_earlier = Some(index);
                                                 // This is a soft range no need to add a new one
                                             }
                                             version_compare::Cmp::Lt
@@ -1363,7 +1525,7 @@ impl BuildTree for ProjectWrapper {
                                     new_constraint.contain_mut(c)?;
                                     resolved[index].version = version.clone();
                                     resolved[index].constraints = Some(new_constraint);
-                                    resolved_earlier = true;
+                                    resolved_earlier = Some(index);
                                 }
                             }
                         }
@@ -1376,6 +1538,14 @@ impl BuildTree for ProjectWrapper {
                     )));
                 }
             }
+            solved_conflict = true;
+        }
+
+        if solved_conflict {
+            qualified_name = self.project.qualified_name().context(selected_version_err(
+                self.project.get_group_id(),
+                self.project.get_artifact_id(),
+            ))?;
         }
         // fetch the dependencies of this project
         let (url, cache_hit) = self.fetch().context(format!(
@@ -1395,6 +1565,9 @@ impl BuildTree for ProjectWrapper {
             );
             if let Some(progress) = &self.progress {
                 wrapper.set_progress_bar(Some(progress.clone()));
+            }
+            if let Some(root_deps) = &self.project_dependencies {
+                wrapper.set_project_root_dependencies(Some(Rc::clone(root_deps)));
             }
             log::trace!(target: "fetch", "Fetching parent {}:{}:{} for {}:{}", 
                 parent.group_id,
@@ -1482,6 +1655,9 @@ impl BuildTree for ProjectWrapper {
             if let Some(progress) = &self.progress {
                 wrapper.set_progress_bar(Some(progress.clone()));
             }
+            if let Some(root_deps) = &self.project_dependencies {
+                wrapper.set_project_root_dependencies(Some(Rc::clone(root_deps)));
+            }
             wrapper.build_tree(resolved, unresolved)?;
         }
 
@@ -1496,11 +1672,64 @@ impl BuildTree for ProjectWrapper {
         project.base_url = url;
         project.cache_hit = cache_hit;
 
-        if !resolved_earlier {
+        // save the properties file to cache for future resolution
+        if !project.cache_hit {
+            write_properties(&project)?;
+        }
+
+        if let Some(index) = resolved_earlier {
+            // replace
+            resolved[index] = project;
+        } else {
             resolved.push(project);
         }
         Ok(())
     }
+}
+
+fn compute_lock_tree(
+    dep: &ProjectDep,
+    resolved: &HashMap<String, &ProjectDep>,
+    new_lock: &mut Vec<ProjectDep>,
+) {
+    for key in &dep.dependencies {
+        // remove the version suffix
+        let mut iter = key.split(":");
+        let group_id = iter.next().unwrap();
+        let artifact_id = iter.next().unwrap();
+        let id = format!("{}:{}", group_id, artifact_id);
+
+        if let Some(child) = resolved.get(&id) {
+            if !new_lock.contains(child) {
+                compute_lock_tree(child, resolved, new_lock);
+            }
+        }
+    }
+    // only push if it is not yet added
+    if !new_lock.contains(dep) {
+        new_lock.push(dep.to_owned());
+    }
+}
+
+/// Goes through the resolved dependency list and collapses them to only the used dependencies
+/// Yes it is another resolver to calculate the new lock file.
+fn crunch(lock: &[ProjectDep], root_dependencies: Vec<ProjectDep>) -> Vec<ProjectDep> {
+    let mut new_lock = Vec::new();
+    let lock_map: HashMap<String, &ProjectDep> = lock
+        .iter()
+        .map(|dep| {
+            let key = format!("{}:{}", dep.group_id, dep.artifact_id);
+            (key, dep)
+        })
+        .collect();
+
+    for dep in root_dependencies {
+        if let Some(dep) = lock_map.get(&format!("{}:{}", dep.group_id, dep.artifact_id)) {
+            compute_lock_tree(dep, &lock_map, &mut new_lock);
+        }
+    }
+
+    new_lock
 }
 
 /// Starts the resolution algorithm. Reads any existing Labt.lock and it includes
@@ -1547,16 +1776,55 @@ pub fn resolve(
         .set_style(ProgressStyle::with_template("\n{spinner} {prefix:.blue} {wide_msg}").unwrap());
 
     let mut resolved_projects: Vec<Project> = Vec::new();
+    let root_dependencies = Rc::new(
+        dependencies
+            .iter()
+            .map(|project| {
+                let key = format!("{}:{}", project.get_group_id(), project.get_artifact_id());
+                (key, project.clone())
+            })
+            .collect::<HashMap<String, Project>>(),
+    );
 
     for project in dependencies {
+        log::trace!(target: "resolve",
+            "Building tree for: {}:{}:{}",
+            project.get_group_id(),
+            project.get_artifact_id(),
+            project.get_version()
+        );
         // create a new project wrapper for dependency resolution
-        let mut wrapper = ProjectWrapper::new(project.clone(), Rc::clone(&resolvers));
+        let mut wrapper = ProjectWrapper::new(project, Rc::clone(&resolvers));
         wrapper.set_progress_bar(Some(spinner.clone()));
+        wrapper.set_project_root_dependencies(Some(Rc::clone(&root_dependencies)));
 
+        // compute root versions
+        spinner.borrow().set_message(format!(
+            "Calculating versions for {}:{}:{}",
+            wrapper.project.get_group_id(),
+            wrapper.project.get_artifact_id(),
+            wrapper.project.get_version()
+        ));
+        let version = ProjectWrapper::compute_version(Rc::clone(&resolvers), &wrapper.project)
+            .context(format!(
+                "Failed to calculate a version for dependency {}:{}: {}.",
+                wrapper.project.get_group_id(),
+                wrapper.project.get_artifact_id(),
+                wrapper.project.get_version(),
+            ))?;
+        wrapper.project.set_selected_version(Some(version.clone()));
         // walk the dependency tree
         wrapper.build_tree(&mut lock.resolved, &mut unresolved)?;
         resolved_projects.push(wrapper.project);
     }
+    spinner.borrow().set_message("Calculating new lock file");
+    // compute the new lock file and remove orphaned dependencies
+    let deps = resolved_projects
+        .iter()
+        .map(|f| ProjectDep::try_from(f).unwrap())
+        .collect();
+    lock.resolved = crunch(&lock.resolved, deps);
+
     // clear progressbar
     spinner.borrow().finish_and_clear();
 
@@ -1567,6 +1835,7 @@ pub fn resolve(
 }
 #[cfg(test)]
 use pretty_assertions::assert_eq;
+use ptree::{print_tree, TreeBuilder};
 
 #[test]
 fn check_base_url_conversion() {
