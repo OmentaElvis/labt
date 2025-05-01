@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "labt"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "anyhow",
  "clap",
